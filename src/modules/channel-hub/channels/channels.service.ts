@@ -51,6 +51,18 @@ export class ChannelsService {
       );
     }
 
+    // WA Official needs the app explicitly subscribed to the WABA before Meta
+    // starts delivering webhooks. Fire-and-forget — fails silently when the
+    // token lacks `whatsapp_business_management` scope or businessAccountId
+    // is missing; the user can retry via PATCH /channels/:id/test.
+    if (dto.type === ChannelType.WHATSAPP_OFFICIAL) {
+      this.subscribeWaOfficialApp(channel.id).catch((err) =>
+        this.logger.warn(
+          `WA Official subscribe failed for channel ${channel.id}: ${err.message}`,
+        ),
+      );
+    }
+
     // Unified sync path — any adapter that registered a HistorySyncPort.
     if (this.adapterRegistry.hasHistorySync(dto.type)) {
       this.syncOrchestrator
@@ -116,6 +128,22 @@ export class ChannelsService {
     const webhookUrl = `${appUrl}/api/v1/webhooks/WHATSAPP_ZAPPFY`;
     await this.zappfyHttpClient.configureWebhook(channel, webhookUrl);
     this.logger.log(`Zappfy webhook configured: ${webhookUrl}`);
+  }
+
+  private async subscribeWaOfficialApp(channelId: string): Promise<void> {
+    const channel = await this.repository.findById(channelId);
+    if (!channel) return;
+    const config = (channel.config as Record<string, any>) || {};
+    if (!config.businessAccountId) {
+      this.logger.warn(
+        `WA Official channel ${channelId} has no businessAccountId — skipping auto-subscribe (do it manually in Meta dashboard)`,
+      );
+      return;
+    }
+    await this.waOfficialHttpClient.subscribeApp(channel);
+    this.logger.log(
+      `WA Official app subscribed to WABA ${config.businessAccountId} (channel ${channelId})`,
+    );
   }
 
   async findAll(organizationId: string) {

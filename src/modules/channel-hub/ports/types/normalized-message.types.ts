@@ -14,6 +14,21 @@ export enum MessageContentType {
   SYSTEM = 'SYSTEM',
 }
 
+export interface TemplateButton {
+  type: string;
+  title: string;
+  url?: string;
+  payload?: string;
+}
+
+export interface TemplateElement {
+  title?: string;
+  subtitle?: string;
+  imageUrl?: string;
+  defaultActionUrl?: string;
+  buttons?: TemplateButton[];
+}
+
 export interface NormalizedMessageContent {
   text?: string;
   mediaUrl?: string;
@@ -26,6 +41,12 @@ export interface NormalizedMessageContent {
   longitude?: number;
   reaction?: { emoji: string; targetMessageId: string };
   interactive?: { type: string; buttonId?: string; listRowId?: string };
+  template?: {
+    templateType?: string;
+    text?: string;
+    buttons?: TemplateButton[];
+    elements?: TemplateElement[];
+  };
 }
 
 /**

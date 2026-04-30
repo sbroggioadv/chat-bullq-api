@@ -73,11 +73,19 @@ export class InboundMessageProcessor extends WorkerHost {
       const { contactId, isNew: isNewContact } =
         await this.contactResolver.resolve(organizationId, channelId, message);
 
-      if (isNewContact && message.channelType === ChannelType.INSTAGRAM) {
-        const channel = await this.prisma.channel.findUnique({
-          where: { id: channelId },
-        });
-        if (channel) {
+      if (message.channelType === ChannelType.INSTAGRAM) {
+        const [channel, contact] = await Promise.all([
+          this.prisma.channel.findUnique({ where: { id: channelId } }),
+          isNewContact
+            ? Promise.resolve(null)
+            : this.prisma.contact.findUnique({
+                where: { id: contactId },
+                select: { name: true, avatarUrl: true },
+              }),
+        ]);
+        const needsEnrichment =
+          isNewContact || !contact?.name || !contact?.avatarUrl;
+        if (channel && needsEnrichment) {
           this.instagramEnricher
             .enrich(channel, message.externalContactId)
             .catch((err) =>

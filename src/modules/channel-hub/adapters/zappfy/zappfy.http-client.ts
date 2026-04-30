@@ -91,4 +91,27 @@ export class ZappfyHttpClient {
     });
     return Buffer.from(response.data);
   }
+
+  /**
+   * Inbound media from WhatsApp is delivered as an encrypted .enc URL on
+   * mmg.whatsapp.net that the browser cannot play. Uazapi exposes
+   * /message/download which decrypts server-side and returns a playable
+   * URL on their own CDN. We hit that, then the caller can either redirect
+   * clients to it or fetch bytes for transcription.
+   */
+  async resolveInboundMediaUrl(
+    channel: Channel,
+    externalMessageId: string,
+  ): Promise<{ fileUrl: string; mimeType?: string }> {
+    const response = await this.sendRequest(channel, '/message/download', {
+      id: externalMessageId,
+    });
+    const fileUrl: string | undefined = response?.fileURL || response?.fileUrl;
+    if (!fileUrl) {
+      throw new Error(
+        `Uazapi /message/download returned no fileURL for ${externalMessageId}`,
+      );
+    }
+    return { fileUrl, mimeType: response?.mimetype };
+  }
 }

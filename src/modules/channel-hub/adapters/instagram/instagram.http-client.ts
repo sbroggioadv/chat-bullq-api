@@ -116,16 +116,65 @@ export class InstagramHttpClient {
     }
   }
 
+  /**
+   * Resolves a contact's profile (username + avatar). Combines:
+   *   - `/me/conversations?user_id=...&fields=participants` — reliable for
+   *     username/name on graph.instagram.com.
+   *   - `GET /{igsid}?fields=name,username,profile_pic` — best-effort for the
+   *     avatar. May return `IGApiException code=230 "User consent is required"`
+   *     depending on the user — we swallow it and return what we got.
+   */
   async getUserProfile(channel: Channel, igUserId: string): Promise<any> {
+    const businessId = await this.resolveBusinessId(channel);
     const client = this.createClient(channel);
+
+    let username: string | undefined;
+    let name: string | undefined;
+    let profile_pic: string | undefined;
+
+    try {
+      const { data } = await client.get('/me/conversations', {
+        params: {
+          user_id: igUserId,
+          fields: 'participants',
+        },
+      });
+      const participants: any[] = data?.data?.[0]?.participants?.data || [];
+      const contact = participants.find(
+        (p) => p?.id && String(p.id) !== String(businessId),
+      );
+      if (contact) {
+        username = contact.username;
+        name = contact.name;
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `Instagram getUserProfile via conversations failed for ${igUserId}: ${err.message}`,
+      );
+    }
+
     try {
       const { data } = await client.get(`/${igUserId}`, {
         params: { fields: 'name,username,profile_pic' },
       });
-      return data;
+      username = username || data?.username;
+      name = name || data?.name;
+      profile_pic = data?.profile_pic || profile_pic;
     } catch (err: any) {
-      throw this.wrapGraphError(err, 'getUserProfile');
+      // IG frequently refuses this for non-consenting users — don't throw if we
+      // already have a username/name.
+      const metaCode = err?.response?.data?.error?.code;
+      if (!username && !name) {
+        if (metaCode === undefined) {
+          this.logger.warn(
+            `Instagram getUserProfile direct failed for ${igUserId}: ${err.message}`,
+          );
+        }
+      }
     }
+
+    if (!username && !name && !profile_pic) return null;
+    return { username, name, profile_pic };
   }
 
   async getMessageDetail(channel: Channel, messageId: string): Promise<any> {

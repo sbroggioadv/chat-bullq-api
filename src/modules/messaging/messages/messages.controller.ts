@@ -15,6 +15,7 @@ import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery, ApiConsumes } from '@ne
 import { MessagesService } from './messages.service';
 import { TranscriptionService } from './transcription.service';
 import { UploadsService } from './uploads.service';
+import { MediaResolverService } from './media-resolver.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../../common/guards';
 import { CurrentUser, CurrentOrg } from '../../../common/decorators';
@@ -28,6 +29,7 @@ export class MessagesController {
     private readonly service: MessagesService,
     private readonly transcription: TranscriptionService,
     private readonly uploads: UploadsService,
+    private readonly mediaResolver: MediaResolverService,
   ) {}
 
   @Post()
@@ -58,6 +60,18 @@ export class MessagesController {
       mimetype: file.mimetype,
       originalname: file.originalname,
     });
+  }
+
+  @Get(':id/media')
+  @ApiOperation({
+    summary:
+      'Resolve a playable media URL for an inbound message. Cached after first call.',
+  })
+  async getMedia(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+  ) {
+    return this.mediaResolver.resolve(id, orgId);
   }
 
   @Post(':id/transcribe')

@@ -14,6 +14,8 @@ import { QuickRepliesModule } from './modules/quick-replies/quick-replies.module
 import { TagsModule } from './modules/tags/tags.module';
 import { ChatbotModule } from './modules/chatbot/chatbot.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { ApiKeysModule } from './modules/api-keys/api-keys.module';
+import { PublicApiModule } from './modules/public-api/public-api.module';
 import redisConfig from './config/redis.config';
 
 @Module({
@@ -41,6 +43,8 @@ import redisConfig from './config/redis.config';
     TagsModule,
     ChatbotModule,
     DashboardModule,
+    ApiKeysModule,
+    PublicApiModule,
   ],
 })
 export class AppModule {}

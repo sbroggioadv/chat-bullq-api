@@ -98,4 +98,13 @@ export class ConversationsController {
   ) {
     return this.service.reopen(id, orgId, userId);
   }
+
+  @Post(':id/sync')
+  @ApiOperation({
+    summary:
+      'Force-sync the latest messages for a conversation from the channel provider',
+  })
+  syncMessages(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
+    return this.service.syncMessages(id, orgId);
+  }
 }

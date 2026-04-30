@@ -5,6 +5,8 @@ import {
   NormalizedOutboundMessage,
   MessageContentType,
   StatusUpdate,
+  TemplateButton,
+  TemplateElement,
 } from '../../ports/types';
 
 @Injectable()
@@ -172,6 +174,7 @@ export class InstagramMessageMapper {
         share: MessageContentType.TEXT,
         story_mention: MessageContentType.TEXT,
         reel: MessageContentType.VIDEO,
+        template: MessageContentType.TEMPLATE,
       };
       return map[type] || MessageContentType.TEXT;
     }
@@ -201,11 +204,72 @@ export class InstagramMessageMapper {
           return { text: payload.url || '[Shared content]' };
         case 'story_mention':
           return { text: '[Story mention]', mediaUrl: payload.url };
+        case 'template':
+          return this.extractTemplateContent(payload);
         default:
           return { text: `[${att.type}]` };
       }
     }
 
     return { text: '[Unsupported message]' };
+  }
+
+  private extractTemplateContent(payload: Record<string, any>): NormalizedInboundMessage['content'] {
+    // Instagram nests data under a key named after the template type
+    // (e.g. payload.generic.elements, payload.button.buttons). Older shapes
+    // also expose template_type + sibling fields directly on payload.
+    const wrapperKey = Object.keys(payload).find(
+      (k) => payload[k] && typeof payload[k] === 'object' && !Array.isArray(payload[k]),
+    );
+    const inner =
+      wrapperKey && (payload[wrapperKey] as Record<string, any>) ? payload[wrapperKey] : payload;
+    const templateType =
+      (payload.template_type as string | undefined) || wrapperKey || undefined;
+
+    const mapBtn = (b: any): TemplateButton => ({
+      type: String(b?.type ?? 'web_url'),
+      title: String(b?.title ?? ''),
+      url: b?.url ? String(b.url) : undefined,
+      payload: b?.payload ? String(b.payload) : undefined,
+    });
+
+    const rawButtons = Array.isArray(inner.buttons)
+      ? inner.buttons
+      : Array.isArray(payload.buttons)
+        ? payload.buttons
+        : [];
+    const buttons: TemplateButton[] = rawButtons.map(mapBtn);
+
+    const rawElements = Array.isArray(inner.elements)
+      ? inner.elements
+      : Array.isArray(payload.elements)
+        ? payload.elements
+        : [];
+    const elements: TemplateElement[] = rawElements.map((el: any) => ({
+      title: el?.title ? String(el.title) : undefined,
+      subtitle: el?.subtitle ? String(el.subtitle) : undefined,
+      imageUrl: el?.image_url ? String(el.image_url) : undefined,
+      defaultActionUrl: el?.default_action?.url ? String(el.default_action.url) : undefined,
+      buttons: Array.isArray(el?.buttons) ? el.buttons.map(mapBtn) : undefined,
+    }));
+
+    const headerText =
+      (inner.text ? String(inner.text) : undefined) ||
+      (payload.text ? String(payload.text) : undefined);
+    const elementText = elements
+      .map((el) => [el.title, el.subtitle].filter(Boolean).join(' — '))
+      .filter(Boolean)
+      .join('\n');
+    const text = headerText || elementText || undefined;
+
+    return {
+      text,
+      template: {
+        templateType,
+        text: headerText,
+        buttons: buttons.length ? buttons : undefined,
+        elements: elements.length ? elements : undefined,
+      },
+    };
   }
 }

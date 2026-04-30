@@ -2,6 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../../database/prisma.service';
 import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
+import { MediaResolverService } from './media-resolver.service';
 import axios from 'axios';
 
 export interface TranscriptionResult {
@@ -33,6 +34,7 @@ export class TranscriptionService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly adapterRegistry: ChannelAdapterRegistry,
+    private readonly mediaResolver: MediaResolverService,
   ) {}
 
   async transcribe(
@@ -127,32 +129,40 @@ export class TranscriptionService {
 
   /**
    * Resolves the audio bytes for a message, regardless of channel.
-   * - Zappfy / Instagram: stored mediaUrl is fetched directly.
+   * - Zappfy (WhatsApp): webhook only carries an encrypted .enc URL; the
+   *   resolver hits /message/download to get a playable URL and caches it.
+   * - Instagram: webhook already carries a playable CDN URL.
    * - WA Official: mediaId is resolved to a URL via Graph API first.
    */
   private async downloadAudio(message: {
     id: string;
     content: any;
-    conversation: { channel: any };
+    conversation: { organizationId: string; channel: any };
   }): Promise<{ buffer: Buffer; mimeType?: string; filename: string }> {
     const channel = message.conversation.channel;
     const content = (message.content ?? {}) as Record<string, any>;
-    const mediaUrl: string | undefined = content.mediaUrl;
     const mediaId: string | undefined = content.mediaId;
-    const mimeType: string | undefined = content.mimeType;
+    let mediaUrl: string | undefined = content.mediaUrl;
+    let mimeType: string | undefined = content.mimeType;
 
     if (!mediaUrl && !mediaId) {
-      throw new BadRequestException('Message has no audio URL or media ID');
+      // Resolver will hit the provider (Uazapi's /message/download etc.),
+      // cache the URL on content.mediaUrl, and return it. Subsequent calls
+      // skip the provider roundtrip.
+      const resolved = await this.mediaResolver.resolve(
+        message.id,
+        message.conversation.organizationId,
+      );
+      mediaUrl = resolved.url;
+      mimeType = mimeType || resolved.mimeType;
     }
 
     const adapter = this.adapterRegistry.getOutbound(channel.type);
 
     let buffer: Buffer;
-    if (mediaId) {
+    if (mediaId && !mediaUrl) {
       buffer = await adapter.downloadMedia(channel, mediaId);
     } else {
-      // mediaUrl path: some adapters (WA Official) proxy through auth,
-      // others (Instagram/Zappfy) are plain CDN.
       try {
         buffer = await adapter.downloadMedia(channel, mediaUrl!);
       } catch {

@@ -1,16 +1,33 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common';
 import { Conversation, ConversationStatus } from '@prisma/client';
 import { ConversationsRepository, InboxFilters } from './conversations.repository';
 import { ConversationFsmService } from './conversation-fsm.service';
 import { UpdateConversationDto } from './dto/update-conversation.dto';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
+import { PrismaService } from '../../../database/prisma.service';
+import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
+import { HistoryImportService } from '../pipeline/history-import.service';
+
+const SYNC_MESSAGE_PAGE_SIZE = 50;
+const SYNC_MAX_PAGES = 4;
 
 @Injectable()
 export class ConversationsService {
+  private readonly logger = new Logger(ConversationsService.name);
+
   constructor(
     private readonly repository: ConversationsRepository,
     private readonly fsm: ConversationFsmService,
     private readonly realtimeGateway: RealtimeGateway,
+    private readonly prisma: PrismaService,
+    private readonly adapterRegistry: ChannelAdapterRegistry,
+    private readonly historyImporter: HistoryImportService,
   ) {}
 
   private broadcastUpdate(conversation: Conversation | null): void {
@@ -128,5 +145,122 @@ export class ConversationsService {
 
   async getStatusCounts(organizationId: string) {
     return this.repository.countByStatus(organizationId);
+  }
+
+  /**
+   * On-demand sync of a single conversation: pulls the latest messages from
+   * the channel provider (e.g. Zappfy) and merges them with what we already
+   * have locally. The webhook covers the steady state — this is the recovery
+   * path for when an event was missed (provider downtime, webhook hiccup,
+   * channel reconnected, etc.).
+   */
+  async syncMessages(id: string, organizationId: string) {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id },
+      include: {
+        channel: true,
+        contact: {
+          include: {
+            channels: true,
+          },
+        },
+      },
+    });
+
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    if (conversation.organizationId !== organizationId) {
+      throw new ForbiddenException();
+    }
+
+    const adapter = this.adapterRegistry.getHistorySync(conversation.channel.type);
+    if (!adapter) {
+      throw new BadRequestException(
+        `Channel type ${conversation.channel.type} does not support sync`,
+      );
+    }
+
+    const externalId = this.resolveExternalConversationId(conversation);
+    if (!externalId) {
+      throw new BadRequestException(
+        'Cannot sync: conversation has no external chat id',
+      );
+    }
+
+    let cursor: string | undefined;
+    let imported = 0;
+    let fetched = 0;
+    let pages = 0;
+
+    try {
+      do {
+        const result = await adapter.fetchMessages(
+          conversation.channel,
+          externalId,
+          {},
+          cursor,
+          SYNC_MESSAGE_PAGE_SIZE,
+        );
+        fetched += result.messages.length;
+        if (result.messages.length === 0) break;
+
+        const res = await this.historyImporter.importMessages(
+          conversation.channel,
+          conversation.id,
+          result.messages,
+        );
+        imported += res.imported;
+        cursor = result.nextCursor;
+        pages++;
+
+        // Stop early once we hit a page where everything was already known —
+        // the provider returns newest-first, so older pages can only be older
+        // than what we already imported.
+        if (res.imported === 0) break;
+      } while (cursor && pages < SYNC_MAX_PAGES);
+    } catch (err: any) {
+      this.logger.error(
+        `Failed to sync conversation ${id}: ${err.message}`,
+        err.stack,
+      );
+      throw new BadRequestException(
+        `Sync failed: ${err.response?.data?.message || err.message}`,
+      );
+    }
+
+    if (imported > 0) {
+      this.historyImporter.notifyConversationImported(
+        organizationId,
+        conversation.id,
+      );
+    }
+
+    this.logger.log(
+      `Conversation ${id} synced: ${imported} new, ${fetched - imported} already known`,
+    );
+
+    return {
+      imported,
+      fetched,
+      syncedAt: new Date().toISOString(),
+    };
+  }
+
+  private resolveExternalConversationId(conversation: {
+    channelId: string;
+    metadata: any;
+    contact: { channels: { channelId: string; externalId: string }[] };
+  }): string | null {
+    const fromMetadata =
+      conversation.metadata &&
+      typeof conversation.metadata === 'object' &&
+      'externalConversationId' in conversation.metadata
+        ? String((conversation.metadata as any).externalConversationId)
+        : null;
+    if (fromMetadata) return fromMetadata;
+
+    const contactChannel = conversation.contact.channels.find(
+      (c) => c.channelId === conversation.channelId,
+    );
+    return contactChannel?.externalId ?? null;
   }
 }

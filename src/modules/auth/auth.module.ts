@@ -6,6 +6,8 @@ import type { SignOptions } from 'jsonwebtoken';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { ApiKeyStrategy } from './api-key.strategy';
+import { ApiKeysModule } from '../api-keys/api-keys.module';
 
 @Module({
   imports: [
@@ -19,9 +21,10 @@ import { JwtStrategy } from './jwt.strategy';
         },
       }),
     }),
+    ApiKeysModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [AuthService, JwtStrategy, ApiKeyStrategy],
   exports: [AuthService],
 })
 export class AuthModule {}

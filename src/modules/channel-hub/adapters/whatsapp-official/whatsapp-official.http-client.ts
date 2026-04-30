@@ -79,4 +79,19 @@ export class WhatsAppOfficialHttpClient {
       throw error;
     }
   }
+
+  /**
+   * Subscribes our app to receive webhooks for this WABA. Idempotent on
+   * Meta's side — re-calling is safe. Requires `whatsapp_business_management`
+   * scope on the access token.
+   */
+  async subscribeApp(channel: Channel): Promise<any> {
+    const cfg = this.getConfig(channel);
+    if (!cfg.businessAccountId) {
+      throw new Error('businessAccountId required to subscribe app');
+    }
+    const client = this.createClient(channel);
+    const { data } = await client.post(`/${cfg.businessAccountId}/subscribed_apps`);
+    return data;
+  }
 }

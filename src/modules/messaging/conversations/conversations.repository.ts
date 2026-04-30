@@ -17,6 +17,12 @@ export class ConversationsRepository {
   async findInbox(filters: InboxFilters, skip: number, take: number) {
     const where: Prisma.ConversationWhereInput = {
       organizationId: filters.organizationId,
+      // Hide conversations from soft-deleted channels. ChannelsRepository.softDelete
+      // already flags both the channel and its conversations as deleted, but the
+      // inbox query never honoured that flag — so when a Zappfy instance was
+      // removed and re-added (same provider token, new DB row), the old channel's
+      // conversations kept showing up as phantom duplicates of the live ones.
+      deletedAt: null,
     };
 
     if (filters.status?.length) {
@@ -98,7 +104,7 @@ export class ConversationsRepository {
   async countByStatus(organizationId: string) {
     const counts = await this.prisma.conversation.groupBy({
       by: ['status'],
-      where: { organizationId },
+      where: { organizationId, deletedAt: null },
       _count: true,
     });
     return counts.reduce(
