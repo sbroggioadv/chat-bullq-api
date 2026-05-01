@@ -3,12 +3,14 @@
 FROM node:20-alpine AS deps
 RUN apk add --no-cache openssl
 WORKDIR /app
+ENV NODE_ENV=development
 COPY package.json yarn.lock ./
-RUN corepack enable && yarn install --frozen-lockfile
+RUN corepack enable && yarn install --frozen-lockfile --production=false
 
 FROM node:20-alpine AS builder
 RUN apk add --no-cache openssl
 WORKDIR /app
+ENV NODE_ENV=development
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
@@ -21,7 +23,7 @@ ENV NODE_ENV=production
 ENV PORT=3001
 
 COPY package.json yarn.lock ./
-RUN corepack enable && yarn install --frozen-lockfile --production && yarn cache clean
+RUN corepack enable && yarn install --frozen-lockfile --production=true && yarn cache clean
 
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
