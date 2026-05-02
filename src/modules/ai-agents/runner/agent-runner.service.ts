@@ -18,7 +18,15 @@ const MAX_RECENT_MESSAGES = 30;
 interface RunInput {
   conversation: Conversation;
   triggerMessage: Message;
+  /**
+   * Internal: how many auto-chained runs already happened in this turn.
+   * Bounded to avoid infinite recursion when an agent delegates back and
+   * forth. Set automatically on chained calls, callers shouldn't pass this.
+   */
+  chainDepth?: number;
 }
+
+const MAX_CHAIN_DEPTH = 3;
 
 @Injectable()
 export class AiAgentRunnerService {
@@ -31,7 +39,11 @@ export class AiAgentRunnerService {
     private readonly promptBuilder: PromptBuilderService,
   ) {}
 
-  async run({ conversation, triggerMessage }: RunInput): Promise<void> {
+  async run({
+    conversation,
+    triggerMessage,
+    chainDepth = 0,
+  }: RunInput): Promise<void> {
     const agent = await this.resolveAgent(conversation);
     if (!agent) {
       this.logger.debug(
@@ -221,6 +233,36 @@ export class AiAgentRunnerService {
           costUsd: aggregateUsage.costUsd,
         },
       });
+
+      // Auto-chain: if this run delegated to a worker, immediately fire the
+      // worker run so the customer gets the new agent's first message right
+      // away — no need to wait for them to send something. The worker reads
+      // the full history (including the orchestrator's "vou te passar pra X")
+      // and starts speaking. Bounded by MAX_CHAIN_DEPTH to avoid recursion.
+      if (
+        finalAction === AiFinalAction.DELEGATED &&
+        chainDepth < MAX_CHAIN_DEPTH
+      ) {
+        const refreshed = await this.prisma.conversation.findUnique({
+          where: { id: conversation.id },
+        });
+        if (refreshed && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) {
+          this.logger.log(
+            `Auto-chaining run for new active agent ${refreshed.activeAgentId} on conv ${conversation.id} (depth ${chainDepth + 1})`,
+          );
+          // Fire-and-forget — don't block the caller. The worker runs
+          // asynchronously and emits its messages via realtime as usual.
+          this.run({
+            conversation: refreshed,
+            triggerMessage,
+            chainDepth: chainDepth + 1,
+          }).catch((err) =>
+            this.logger.error(
+              `Auto-chain run failed for conv ${conversation.id}: ${err?.message ?? err}`,
+            ),
+          );
+        }
+      }
     } catch (err: any) {
       this.logger.error(
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
