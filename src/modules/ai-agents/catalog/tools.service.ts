@@ -4,38 +4,32 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
-import { UpsertCustomToolDto } from './dto/upsert-tool.dto';
+import { UpsertToolDto } from './dto/upsert-tool.dto';
 
 @Injectable()
 export class ToolsCatalogService {
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Lista built-in (org=null) + custom da org. */
   async list(organizationId: string) {
     return this.prisma.aiTool.findMany({
-      where: {
-        deletedAt: null,
-        OR: [{ organizationId: null }, { organizationId }],
-      },
+      where: { organizationId, deletedAt: null },
       orderBy: [{ source: 'asc' }, { name: 'asc' }],
+      include: { _count: { select: { skills: true } } },
     });
   }
 
   async findOne(organizationId: string, id: string) {
     const tool = await this.prisma.aiTool.findFirst({
-      where: {
-        id,
-        deletedAt: null,
-        OR: [{ organizationId: null }, { organizationId }],
-      },
+      where: { id, organizationId, deletedAt: null },
+      include: { skills: { select: { id: true, name: true } } },
     });
     if (!tool) throw new NotFoundException('Tool not found');
     return tool;
   }
 
-  async create(organizationId: string, dto: UpsertCustomToolDto) {
-    await this.assertNameAvailable(organizationId, dto.name);
+  async create(organizationId: string, dto: UpsertToolDto) {
     this.assertSourceFields(dto);
+    await this.assertNameAvailable(organizationId, dto.name);
 
     return this.prisma.aiTool.create({
       data: {
@@ -43,100 +37,57 @@ export class ToolsCatalogService {
         name: dto.name,
         description: dto.description,
         source: dto.source,
-        parameters: dto.parameters as object,
-        // HTTP
-        httpMethod: dto.httpMethod?.toUpperCase(),
-        httpUrl: dto.httpUrl,
+        httpBaseUrl: dto.httpBaseUrl,
         httpHeaders: (dto.httpHeaders as object) ?? {},
-        httpBodyTemplate: dto.httpBodyTemplate,
-        responseMap: (dto.responseMap as object) ?? null,
-        // SQL
         sqlConnectionRef: dto.sqlConnectionRef,
-        sqlQuery: dto.sqlQuery,
-        sqlParamMap: (dto.sqlParamMap as object) ?? null,
-        sqlReadOnly: dto.sqlReadOnly ?? true,
-        sqlMaxRows: dto.sqlMaxRows ?? 50,
-        timeoutMs: dto.timeoutMs ?? 15000,
         isActive: dto.isActive ?? true,
       },
     });
   }
 
-  async update(organizationId: string, id: string, dto: UpsertCustomToolDto) {
+  async update(organizationId: string, id: string, dto: UpsertToolDto) {
     const tool = await this.findOne(organizationId, id);
-    if (tool.source === 'BUILTIN') {
-      throw new BadRequestException('Built-in tools cannot be edited');
-    }
+    this.assertSourceFields(dto);
     if (tool.name !== dto.name) {
       await this.assertNameAvailable(organizationId, dto.name);
     }
-    this.assertSourceFields(dto);
     return this.prisma.aiTool.update({
       where: { id },
       data: {
         name: dto.name,
         description: dto.description,
         source: dto.source,
-        parameters: dto.parameters as object,
-        // HTTP
-        httpMethod: dto.httpMethod?.toUpperCase(),
-        httpUrl: dto.httpUrl,
+        httpBaseUrl: dto.httpBaseUrl,
         httpHeaders: (dto.httpHeaders as object) ?? {},
-        httpBodyTemplate: dto.httpBodyTemplate,
-        responseMap: (dto.responseMap as object) ?? null,
-        // SQL
         sqlConnectionRef: dto.sqlConnectionRef,
-        sqlQuery: dto.sqlQuery,
-        sqlParamMap: (dto.sqlParamMap as object) ?? null,
-        sqlReadOnly: dto.sqlReadOnly ?? true,
-        sqlMaxRows: dto.sqlMaxRows ?? 50,
-        timeoutMs: dto.timeoutMs ?? 15000,
         isActive: dto.isActive ?? true,
       },
     });
   }
 
-  private assertSourceFields(dto: UpsertCustomToolDto) {
-    if (dto.source === 'CUSTOM_HTTP') {
-      if (!dto.httpMethod || !dto.httpUrl) {
-        throw new BadRequestException(
-          'CUSTOM_HTTP requires httpMethod and httpUrl',
-        );
-      }
-    } else if (dto.source === 'CUSTOM_SQL') {
-      if (!dto.sqlConnectionRef || !dto.sqlQuery) {
-        throw new BadRequestException(
-          'CUSTOM_SQL requires sqlConnectionRef and sqlQuery',
-        );
-      }
-    }
-  }
-
   async softDelete(organizationId: string, id: string) {
-    const tool = await this.findOne(organizationId, id);
-    if (tool.source === 'BUILTIN') {
-      throw new BadRequestException('Built-in tools cannot be deleted');
-    }
+    await this.findOne(organizationId, id);
     await this.prisma.aiTool.update({
       where: { id },
       data: { deletedAt: new Date(), isActive: false },
     });
   }
 
+  private assertSourceFields(dto: UpsertToolDto) {
+    if (dto.source === 'CUSTOM_HTTP' && !dto.httpBaseUrl) {
+      throw new BadRequestException('CUSTOM_HTTP requires httpBaseUrl');
+    }
+    if (dto.source === 'CUSTOM_SQL' && !dto.sqlConnectionRef) {
+      throw new BadRequestException('CUSTOM_SQL requires sqlConnectionRef');
+    }
+  }
+
   private async assertNameAvailable(organizationId: string, name: string) {
-    // Custom tools share the namespace with built-ins (org=null) so the LLM
-    // doesn't see two functions with the same name.
     const clash = await this.prisma.aiTool.findFirst({
-      where: {
-        name,
-        deletedAt: null,
-        OR: [{ organizationId: null }, { organizationId }],
-      },
+      where: { organizationId, name, deletedAt: null },
     });
     if (clash) {
-      throw new BadRequestException(
-        `Tool name "${name}" já está em uso (built-in ou custom).`,
-      );
+      throw new BadRequestException(`Tool "${name}" já existe na organização.`);
     }
   }
 }

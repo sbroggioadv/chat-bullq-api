@@ -4,7 +4,8 @@ import {
   AiRunStatus,
   Conversation,
   Message,
-  AiTool as AiToolRow,
+  AiSkill,
+  AiTool,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
@@ -100,7 +101,7 @@ export class AiAgentRunnerService {
     //   3. tools attached directly to the agent (agent.extraTools).
     // Custom HTTP tools live in the DB; we keep their rows here so the
     // runner can hand them to HttpToolExecutor on tool-call time.
-    const { llmTools, customToolsByName, skillInstructions } =
+    const { llmTools, customSkillsByName, skillInstructions } =
       await this.resolveToolsAndSkills(agent.id, agent.kind);
 
     const startedAt = Date.now();
@@ -210,7 +211,7 @@ export class AiAgentRunnerService {
             runId: run.id,
             triggerMessageId: triggerMessage.id,
           },
-          customToolsByName,
+          customSkillsByName,
         );
 
         for (const result of toolResults) {
@@ -323,7 +324,7 @@ export class AiAgentRunnerService {
   private async executeToolCalls(
     calls: LlmToolCall[],
     ctx: ToolContext,
-    customToolsByName: Map<string, AiToolRow>,
+    customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -346,13 +347,22 @@ export class AiAgentRunnerService {
       let finalAction: string | undefined;
 
       try {
-        const customTool = customToolsByName.get(call.name);
-        if (customTool) {
-          // Custom tool — route by source.
+        const customSkill = customSkillsByName.get(call.name);
+        if (customSkill && customSkill.tool) {
           const result =
-            customTool.source === 'CUSTOM_SQL'
-              ? await this.sqlExecutor.execute(customTool, call.arguments, ctx)
-              : await this.httpExecutor.execute(customTool, call.arguments, ctx);
+            customSkill.source === 'SQL'
+              ? await this.sqlExecutor.execute(
+                  customSkill,
+                  customSkill.tool,
+                  call.arguments,
+                  ctx,
+                )
+              : await this.httpExecutor.execute(
+                  customSkill,
+                  customSkill.tool,
+                  call.arguments,
+                  ctx,
+                );
           output = result.output;
           finalAction = result.finalAction;
         } else if (this.registry.has(call.name)) {
@@ -410,46 +420,19 @@ export class AiAgentRunnerService {
     kind: 'ORCHESTRATOR' | 'WORKER',
   ): Promise<{
     llmTools: LlmToolDefinition[];
-    customToolsByName: Map<string, AiToolRow>;
+    customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>;
     skillInstructions: string[];
   }> {
-    const [skillLinks, agentToolLinks] = await Promise.all([
-      this.prisma.aiAgentSkill.findMany({
-        where: { agentId },
-        include: {
-          skill: {
-            include: {
-              tools: { include: { tool: true } },
-            },
-          },
-        },
-      }),
-      this.prisma.aiAgentTool.findMany({
-        where: { agentId },
-        include: { tool: true },
-      }),
-    ]);
+    const skillLinks = await this.prisma.aiAgentSkill.findMany({
+      where: { agentId },
+      include: { skill: { include: { tool: true } } },
+    });
 
     const skillInstructions: string[] = [];
-    const customToolsByName = new Map<string, AiToolRow>();
-    const builtInNames = new Set<string>();
-
-    const collect = (tool: AiToolRow) => {
-      if (!tool.isActive || tool.deletedAt) return;
-      if (tool.source === 'CUSTOM_HTTP' || tool.source === 'CUSTOM_SQL') {
-        customToolsByName.set(tool.name, tool);
-      } else if (tool.source === 'BUILTIN') {
-        // Validate that the registry actually has it AND it's allowed for
-        // this agent kind. This way an admin can't expose handBackToOrchestrator
-        // to an orchestrator just by attaching it via UI.
-        if (
-          this.registry.has(tool.name) &&
-          this.registry.isAllowedForKind(tool.name, kind)
-        ) {
-          builtInNames.add(tool.name);
-        }
-      }
-    };
+    const customSkillsByName = new Map<
+      string,
+      AiSkill & { tool: AiTool | null }
+    >();
 
     for (const link of skillLinks) {
       const skill = link.skill;
@@ -457,17 +440,24 @@ export class AiAgentRunnerService {
       if (skill.promptInstructions) {
         skillInstructions.push(skill.promptInstructions.trim());
       }
-      for (const t of skill.tools) collect(t.tool);
+      if (skill.source === 'BUILTIN') {
+        // Built-in skills are always available via registry — no need to
+        // expose again. We respect the attachment as user intent though
+        // (could be used later for auditing).
+        continue;
+      }
+      if (skill.tool) {
+        customSkillsByName.set(skill.name, skill);
+      } else {
+        this.logger.warn(
+          `Skill ${skill.name} (${skill.source}) has no bound tool — skipping`,
+        );
+      }
     }
-    for (const link of agentToolLinks) collect(link.tool);
 
-    // Always include the kind-scoped defaults (reply/transfer/tag/etc) so the
-    // agent has the bare minimum to act, even if the admin forgot to attach.
+    // Built-in defaults — always available based on agent kind.
     const defaultLlm = this.registry.getLlmDefinitionsForKind(kind);
 
-    // Build dedup'd LLM tool defs. Custom HTTP tool has priority on name
-    // collision (BUILTIN names like "replyToConversation" can't be shadowed
-    // because they're filtered earlier).
     const seen = new Set<string>();
     const llmTools: LlmToolDefinition[] = [];
     for (const t of defaultLlm) {
@@ -476,25 +466,18 @@ export class AiAgentRunnerService {
         llmTools.push(t);
       }
     }
-    for (const name of builtInNames) {
-      if (!seen.has(name)) {
-        seen.add(name);
-        const llmDef = this.registry.getLlmDefinitions([name])[0];
-        if (llmDef) llmTools.push(llmDef);
-      }
-    }
-    for (const [name, t] of customToolsByName) {
+    for (const [name, skill] of customSkillsByName) {
       if (!seen.has(name)) {
         seen.add(name);
         llmTools.push({
           name,
-          description: t.description,
-          parameters: t.parameters as Record<string, unknown>,
+          description: skill.description,
+          parameters: skill.parameters as Record<string, unknown>,
         });
       }
     }
 
-    return { llmTools, customToolsByName, skillInstructions };
+    return { llmTools, customSkillsByName, skillInstructions };
   }
 
   /**

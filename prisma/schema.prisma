@@ -766,7 +766,6 @@ model AiAgent {
   handoffsTo     AiAgentHandoff[]  @relation("HandoffTo")
   activeOn       Conversation[]    @relation("ActiveAgent")
   skills         AiAgentSkill[]
-  extraTools     AiAgentTool[]
 
   @@index([organizationId], name: "idx_ai_agent_org")
   @@index([organizationId, kind], name: "idx_ai_agent_org_kind")
@@ -776,64 +775,31 @@ model AiAgent {
 // ─── Tools (built-in registry + custom HTTP) ─────────────────
 
 enum AiToolSource {
-  BUILTIN
   CUSTOM_HTTP
   CUSTOM_SQL
 }
 
+enum AiSkillSource {
+  BUILTIN     // implementada em código (replyToConversation, transferToHuman, ...)
+  HTTP        // invoca um AiTool de HTTP em path/method específico
+  SQL         // invoca um AiTool de SQL com query específica
+}
+
+// ─── Tools (PROVIDERS de conexão — não são funções LLM-callable) ──
+
 model AiTool {
   id             String       @id @default(cuid())
-  organizationId String?      @map("organization_id")  // null = global built-in
-  name           String       // unique per org (or globally if org=null)
+  organizationId String       @map("organization_id")
+  name           String       // human-readable, ex: "Trivapp", "Hotwebinar"
   description    String       @db.Text
   source         AiToolSource
 
-  parameters     Json         // JSON Schema do input
+  // HTTP provider
+  httpBaseUrl    String?      @map("http_base_url")   // ex: https://api.trivapp.com.br/api/v1
+  httpHeaders    Json?        @map("http_headers")    // headers padrão (auth, content-type, etc) com {{env.X}}
 
-  // Apenas pra source=CUSTOM_HTTP. Templates Mustache simples
-  // ({{input.x}}, {{env.X}}, {{ctx.organizationId}}).
-  httpMethod     String?      @map("http_method")     // GET | POST | PUT | PATCH | DELETE
-  httpUrl        String?      @map("http_url")
-  httpHeaders    Json?        @map("http_headers")
-  httpBodyTemplate String?    @map("http_body_template") @db.Text
-  responseMap    Json?        @map("response_map")    // { ok: "$.success", message: "$.data.message" }
-
-  // Apenas pra source=CUSTOM_SQL
-  sqlConnectionRef String?    @map("sql_connection_ref") // nome da env var com a DATABASE_URL
-  sqlQuery       String?      @map("sql_query") @db.Text // query com $1, $2... ou nomes :foo
-  sqlParamMap    Json?        @map("sql_param_map")  // [{name:"email", source:"input.email"}]
-  sqlReadOnly    Boolean      @default(true) @map("sql_read_only")
-  sqlMaxRows     Int          @default(50) @map("sql_max_rows")
-
-  timeoutMs      Int          @default(15000) @map("timeout_ms")
-
-  isActive       Boolean      @default(true) @map("is_active")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
-  deletedAt      DateTime?    @map("deleted_at")
-
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-
-  skillTools     AiSkillTool[]
-  agentTools     AiAgentTool[]
-
-  @@unique([organizationId, name], name: "uq_tool_org_name")
-  @@index([organizationId], name: "idx_tool_org")
-  @@map("ai_tools")
-}
-
-// ─── Skills (bundles reutilizáveis) ───────────────────────────
-
-model AiSkill {
-  id             String       @id @default(cuid())
-  organizationId String       @map("organization_id")
-  name           String
-  description    String       @db.Text
-  category       String?
-
-  promptInstructions String?  @map("prompt_instructions") @db.Text
-
-  currentVersion Int          @default(1) @map("current_version")
+  // SQL provider
+  sqlConnectionRef String?    @map("sql_connection_ref") // nome da env var
 
   isActive       Boolean      @default(true) @map("is_active")
   createdAt      DateTime     @default(now()) @map("created_at")
@@ -842,51 +808,100 @@ model AiSkill {
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
-  tools          AiSkillTool[]
+  skills         AiSkill[]
+
+  @@unique([organizationId, name], name: "uq_tool_org_name")
+  @@index([organizationId], name: "idx_tool_org")
+  @@map("ai_tools")
+}
+
+// ─── Skills (FUNÇÕES LLM-callable) ────────────────────────────
+
+model AiSkill {
+  id             String        @id @default(cuid())
+  organizationId String        @map("organization_id")
+  name           String        // function name, ex: "resetPassword". Único por org.
+  description    String        @db.Text                   // visto pelo LLM
+  category       String?
+  promptInstructions String?   @map("prompt_instructions") @db.Text  // injetado no system prompt quando ativa
+
+  source         AiSkillSource @default(HTTP)
+  parameters     Json          @default("{}")             // JSON Schema do input
+
+  // Pra source=HTTP|SQL: aponta pro provider
+  toolId         String?       @map("tool_id")
+
+  // Invocação HTTP (quando source=HTTP). Templates {{input.x}} {{ctx.x}} {{env.X}}.
+  httpMethod        String?    @map("http_method")
+  httpPath          String?    @map("http_path")          // path relativo ao baseUrl da tool
+  httpHeadersExtra  Json?      @map("http_headers_extra") // headers EXTRAS além do que vem da tool
+  httpBodyTemplate  String?    @map("http_body_template") @db.Text
+  responseMap       Json?      @map("response_map")
+
+  // Invocação SQL (quando source=SQL).
+  sqlQuery       String?       @map("sql_query") @db.Text
+  sqlParamMap    Json?         @map("sql_param_map")
+  sqlReadOnly    Boolean       @default(true) @map("sql_read_only")
+  sqlMaxRows     Int           @default(50) @map("sql_max_rows")
+
+  timeoutMs      Int           @default(15000) @map("timeout_ms")
+
+  currentVersion Int           @default(1) @map("current_version")
+
+  isActive       Boolean       @default(true) @map("is_active")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  deletedAt      DateTime?     @map("deleted_at")
+
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  tool           AiTool?       @relation(fields: [toolId], references: [id], onDelete: SetNull)
+
   agents         AiAgentSkill[]
   versions       AiSkillVersion[]
 
   @@unique([organizationId, name], name: "uq_skill_org_name")
   @@index([organizationId], name: "idx_skill_org")
+  @@index([toolId], name: "idx_skill_tool")
   @@map("ai_skills")
 }
 
 // Snapshot de cada versão da skill — histórico de edição.
 model AiSkillVersion {
-  id             String   @id @default(cuid())
-  skillId        String   @map("skill_id")
-  version        Int
+  id                String   @id @default(cuid())
+  skillId           String   @map("skill_id")
+  version           Int
 
-  name           String
-  description    String   @db.Text
-  category       String?
+  // snapshot completo da skill nessa versão
+  name              String
+  description       String   @db.Text
+  category          String?
   promptInstructions String? @map("prompt_instructions") @db.Text
-  toolIds        String[] @default([]) @map("tool_ids")  // snapshot dos toolIds
+  source            AiSkillSource
+  parameters        Json     @default("{}")
+  toolId            String?  @map("tool_id")
+  httpMethod        String?  @map("http_method")
+  httpPath          String?  @map("http_path")
+  httpHeadersExtra  Json?    @map("http_headers_extra")
+  httpBodyTemplate  String?  @map("http_body_template") @db.Text
+  responseMap       Json?    @map("response_map")
+  sqlQuery          String?  @map("sql_query") @db.Text
+  sqlParamMap       Json?    @map("sql_param_map")
+  sqlReadOnly       Boolean  @default(true) @map("sql_read_only")
+  sqlMaxRows        Int      @default(50) @map("sql_max_rows")
+  timeoutMs         Int      @default(15000) @map("timeout_ms")
 
-  changedById    String?  @map("changed_by_id")  // userId
-  changeNote     String?  @map("change_note")
-  createdAt      DateTime @default(now()) @map("created_at")
+  changedById       String?  @map("changed_by_id")
+  changeNote        String?  @map("change_note")
+  createdAt         DateTime @default(now()) @map("created_at")
 
-  skill          AiSkill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  skill             AiSkill  @relation(fields: [skillId], references: [id], onDelete: Cascade)
 
   @@unique([skillId, version], name: "uq_skill_version")
   @@index([skillId], name: "idx_skill_version_skill")
   @@map("ai_skill_versions")
 }
 
-// N:N skill ↔ tool
-model AiSkillTool {
-  skillId String @map("skill_id")
-  toolId  String @map("tool_id")
-
-  skill   AiSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
-  tool    AiTool  @relation(fields: [toolId], references: [id], onDelete: Cascade)
-
-  @@id([skillId, toolId])
-  @@map("ai_skill_tools")
-}
-
-// N:N agent ↔ skill
+// N:N agent ↔ skill (única forma do agent ganhar capacidades)
 model AiAgentSkill {
   agentId String @map("agent_id")
   skillId String @map("skill_id")
@@ -896,18 +911,6 @@ model AiAgentSkill {
 
   @@id([agentId, skillId])
   @@map("ai_agent_skills")
-}
-
-// N:N agent ↔ tool extras (tools soltas, sem skill)
-model AiAgentTool {
-  agentId String @map("agent_id")
-  toolId  String @map("tool_id")
-
-  agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  tool    AiTool  @relation(fields: [toolId], references: [id], onDelete: Cascade)
-
-  @@id([agentId, toolId])
-  @@map("ai_agent_tools")
 }
 
 model AiAgentChannel {

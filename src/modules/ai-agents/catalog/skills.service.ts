@@ -15,7 +15,7 @@ export class SkillsCatalogService {
       where: { organizationId, deletedAt: null },
       orderBy: [{ category: 'asc' }, { name: 'asc' }],
       include: {
-        tools: { include: { tool: true } },
+        tool: { select: { id: true, name: true, source: true } },
         _count: { select: { agents: true, versions: true } },
       },
     });
@@ -25,7 +25,7 @@ export class SkillsCatalogService {
     const skill = await this.prisma.aiSkill.findFirst({
       where: { id, organizationId, deletedAt: null },
       include: {
-        tools: { include: { tool: true } },
+        tool: true,
         agents: { include: { agent: { select: { id: true, name: true } } } },
       },
     });
@@ -46,7 +46,9 @@ export class SkillsCatalogService {
     dto: UpsertSkillDto,
     actorId: string | null,
   ) {
-    await this.assertToolsExist(organizationId, dto.toolIds);
+    this.assertSourceFields(dto);
+    await this.assertToolExists(organizationId, dto.toolId, dto.source);
+    await this.assertNameAvailable(organizationId, dto.name);
 
     return this.prisma.$transaction(async (tx) => {
       const skill = await tx.aiSkill.create({
@@ -56,29 +58,26 @@ export class SkillsCatalogService {
           description: dto.description,
           category: dto.category,
           promptInstructions: dto.promptInstructions,
+          source: dto.source,
+          parameters: dto.parameters as object,
+          toolId: dto.toolId,
+          httpMethod: dto.httpMethod?.toUpperCase(),
+          httpPath: dto.httpPath,
+          httpHeadersExtra: (dto.httpHeadersExtra as object) ?? null,
+          httpBodyTemplate: dto.httpBodyTemplate,
+          responseMap: (dto.responseMap as object) ?? null,
+          sqlQuery: dto.sqlQuery,
+          sqlParamMap: (dto.sqlParamMap as object) ?? null,
+          sqlReadOnly: dto.sqlReadOnly ?? true,
+          sqlMaxRows: dto.sqlMaxRows ?? 50,
+          timeoutMs: dto.timeoutMs ?? 15000,
           isActive: dto.isActive ?? true,
           currentVersion: 1,
         },
       });
 
-      if (dto.toolIds.length > 0) {
-        await tx.aiSkillTool.createMany({
-          data: dto.toolIds.map((toolId) => ({ skillId: skill.id, toolId })),
-        });
-      }
-
       await tx.aiSkillVersion.create({
-        data: {
-          skillId: skill.id,
-          version: 1,
-          name: skill.name,
-          description: skill.description,
-          category: skill.category,
-          promptInstructions: skill.promptInstructions,
-          toolIds: dto.toolIds,
-          changedById: actorId,
-          changeNote: dto.changeNote ?? 'Skill criada',
-        },
+        data: this.buildVersionSnapshot(skill, 1, actorId, dto.changeNote ?? 'Skill criada'),
       });
 
       return skill;
@@ -92,7 +91,11 @@ export class SkillsCatalogService {
     actorId: string | null,
   ) {
     const existing = await this.findOne(organizationId, id);
-    await this.assertToolsExist(organizationId, dto.toolIds);
+    this.assertSourceFields(dto);
+    await this.assertToolExists(organizationId, dto.toolId, dto.source);
+    if (existing.name !== dto.name) {
+      await this.assertNameAvailable(organizationId, dto.name);
+    }
 
     const nextVersion = existing.currentVersion + 1;
 
@@ -104,31 +107,31 @@ export class SkillsCatalogService {
           description: dto.description,
           category: dto.category,
           promptInstructions: dto.promptInstructions,
+          source: dto.source,
+          parameters: dto.parameters as object,
+          toolId: dto.toolId,
+          httpMethod: dto.httpMethod?.toUpperCase(),
+          httpPath: dto.httpPath,
+          httpHeadersExtra: (dto.httpHeadersExtra as object) ?? null,
+          httpBodyTemplate: dto.httpBodyTemplate,
+          responseMap: (dto.responseMap as object) ?? null,
+          sqlQuery: dto.sqlQuery,
+          sqlParamMap: (dto.sqlParamMap as object) ?? null,
+          sqlReadOnly: dto.sqlReadOnly ?? true,
+          sqlMaxRows: dto.sqlMaxRows ?? 50,
+          timeoutMs: dto.timeoutMs ?? 15000,
           isActive: dto.isActive ?? true,
           currentVersion: nextVersion,
         },
       });
 
-      // Replace tools.
-      await tx.aiSkillTool.deleteMany({ where: { skillId: id } });
-      if (dto.toolIds.length > 0) {
-        await tx.aiSkillTool.createMany({
-          data: dto.toolIds.map((toolId) => ({ skillId: id, toolId })),
-        });
-      }
-
       await tx.aiSkillVersion.create({
-        data: {
-          skillId: id,
-          version: nextVersion,
-          name: updated.name,
-          description: updated.description,
-          category: updated.category,
-          promptInstructions: updated.promptInstructions,
-          toolIds: dto.toolIds,
-          changedById: actorId,
-          changeNote: dto.changeNote ?? 'Skill atualizada',
-        },
+        data: this.buildVersionSnapshot(
+          updated,
+          nextVersion,
+          actorId,
+          dto.changeNote ?? 'Skill atualizada',
+        ),
       });
 
       return updated;
@@ -143,7 +146,7 @@ export class SkillsCatalogService {
     });
   }
 
-  // ─── Agent ↔ skills/tools attachment ─────────────────────────────
+  // ─── Agent ↔ skills ─────────────────────────────────────────────
 
   async setAgentSkills(
     organizationId: string,
@@ -153,11 +156,7 @@ export class SkillsCatalogService {
     await this.assertAgent(organizationId, agentId);
     if (skillIds.length > 0) {
       const valid = await this.prisma.aiSkill.count({
-        where: {
-          id: { in: skillIds },
-          organizationId,
-          deletedAt: null,
-        },
+        where: { id: { in: skillIds }, organizationId, deletedAt: null },
       });
       if (valid !== skillIds.length) {
         throw new BadRequestException('Algum skillId não pertence à org.');
@@ -175,26 +174,51 @@ export class SkillsCatalogService {
     ]);
   }
 
-  async setAgentExtraTools(
-    organizationId: string,
-    agentId: string,
-    toolIds: string[],
-  ) {
-    await this.assertAgent(organizationId, agentId);
-    await this.assertToolsExist(organizationId, toolIds);
-    await this.prisma.$transaction([
-      this.prisma.aiAgentTool.deleteMany({ where: { agentId } }),
-      ...(toolIds.length > 0
-        ? [
-            this.prisma.aiAgentTool.createMany({
-              data: toolIds.map((toolId) => ({ agentId, toolId })),
-            }),
-          ]
-        : []),
-    ]);
+  // ─── helpers ────────────────────────────────────────────────────
+
+  private assertSourceFields(dto: UpsertSkillDto) {
+    if (dto.source === 'HTTP') {
+      if (!dto.httpMethod || !dto.httpPath) {
+        throw new BadRequestException(
+          'HTTP skill requires httpMethod and httpPath',
+        );
+      }
+    } else if (dto.source === 'SQL') {
+      if (!dto.sqlQuery) {
+        throw new BadRequestException('SQL skill requires sqlQuery');
+      }
+    }
   }
 
-  // ─── private helpers ─────────────────────────────────────────────
+  private async assertToolExists(
+    organizationId: string,
+    toolId: string,
+    source: 'HTTP' | 'SQL',
+  ) {
+    const tool = await this.prisma.aiTool.findFirst({
+      where: { id: toolId, organizationId, deletedAt: null, isActive: true },
+    });
+    if (!tool) {
+      throw new BadRequestException(
+        'Tool não encontrada ou não pertence à organização',
+      );
+    }
+    const expected = source === 'HTTP' ? 'CUSTOM_HTTP' : 'CUSTOM_SQL';
+    if (tool.source !== expected) {
+      throw new BadRequestException(
+        `Tool "${tool.name}" é ${tool.source}, mas a skill é ${source}`,
+      );
+    }
+  }
+
+  private async assertNameAvailable(organizationId: string, name: string) {
+    const clash = await this.prisma.aiSkill.findFirst({
+      where: { organizationId, name, deletedAt: null },
+    });
+    if (clash) {
+      throw new BadRequestException(`Skill "${name}" já existe.`);
+    }
+  }
 
   private async assertAgent(organizationId: string, agentId: string) {
     const agent = await this.prisma.aiAgent.findFirst({
@@ -203,19 +227,35 @@ export class SkillsCatalogService {
     if (!agent) throw new NotFoundException('Agent not found');
   }
 
-  private async assertToolsExist(organizationId: string, toolIds: string[]) {
-    if (toolIds.length === 0) return;
-    const valid = await this.prisma.aiTool.count({
-      where: {
-        id: { in: toolIds },
-        deletedAt: null,
-        OR: [{ organizationId: null }, { organizationId }],
-      },
-    });
-    if (valid !== toolIds.length) {
-      throw new BadRequestException(
-        'Algum toolId não existe ou não pertence à organização.',
-      );
-    }
+  /** Builds a full snapshot of the skill for the version table. */
+  private buildVersionSnapshot(
+    skill: any,
+    version: number,
+    actorId: string | null,
+    note: string,
+  ) {
+    return {
+      skillId: skill.id,
+      version,
+      name: skill.name,
+      description: skill.description,
+      category: skill.category,
+      promptInstructions: skill.promptInstructions,
+      source: skill.source,
+      parameters: skill.parameters,
+      toolId: skill.toolId,
+      httpMethod: skill.httpMethod,
+      httpPath: skill.httpPath,
+      httpHeadersExtra: skill.httpHeadersExtra,
+      httpBodyTemplate: skill.httpBodyTemplate,
+      responseMap: skill.responseMap,
+      sqlQuery: skill.sqlQuery,
+      sqlParamMap: skill.sqlParamMap,
+      sqlReadOnly: skill.sqlReadOnly,
+      sqlMaxRows: skill.sqlMaxRows,
+      timeoutMs: skill.timeoutMs,
+      changedById: actorId,
+      changeNote: note,
+    };
   }
 }

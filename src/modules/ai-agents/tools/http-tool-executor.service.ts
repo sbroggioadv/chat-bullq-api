@@ -1,20 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { AiTool } from '@prisma/client';
+import type { AiSkill, AiTool } from '@prisma/client';
 import { ToolContext, ToolResult } from './tool.types';
 
 /**
- * Executes user-defined HTTP tools. The user describes the call via templates;
- * this service substitutes runtime values, fires the request, then maps the
- * response back into a result the LLM can use.
- *
- * Templates use a tiny Mustache-ish dialect with three scopes:
- *   {{input.field}}   — value from the LLM's tool-call arguments
- *   {{ctx.field}}     — runtime context (organizationId, conversationId, etc)
- *   {{env.NAME}}      — process env, e.g. {{env.MEMBERS_API_KEY}}
- *
- * Response mapping uses naive JSONPath ($.foo.bar). Empty mapping returns the
- * raw response body so the LLM sees everything.
+ * Executes HTTP-backed Skills. The connection (base url + auth headers)
+ * comes from the AiTool the skill is bound to; the per-call invocation
+ * (path, method, body, response mapping) comes from the AiSkill itself.
  */
 @Injectable()
 export class HttpToolExecutorService {
@@ -23,26 +15,42 @@ export class HttpToolExecutorService {
   constructor(private readonly config: ConfigService) {}
 
   async execute(
+    skill: AiSkill,
     tool: AiTool,
     input: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResult> {
-    if (tool.source !== 'CUSTOM_HTTP') {
-      throw new Error(`Tool ${tool.name} is not an HTTP tool`);
+    if (skill.source !== 'HTTP') {
+      throw new Error(`Skill ${skill.name} is not an HTTP skill`);
     }
-    if (!tool.httpUrl || !tool.httpMethod) {
+    if (tool.source !== 'CUSTOM_HTTP') {
+      throw new Error(
+        `Skill ${skill.name} is HTTP but bound tool ${tool.name} isn't`,
+      );
+    }
+    if (!tool.httpBaseUrl || !skill.httpMethod || !skill.httpPath) {
       return {
-        output: { ok: false, error: 'Tool not fully configured (httpUrl/httpMethod missing)' },
+        output: {
+          ok: false,
+          error: 'Skill not fully configured (httpBaseUrl/httpMethod/httpPath missing)',
+        },
       };
     }
 
-    const url = this.renderTemplate(tool.httpUrl, { input, ctx });
-    const method = tool.httpMethod.toUpperCase();
-    const headers = this.renderHeaders(tool.httpHeaders, { input, ctx });
+    const url =
+      this.renderTemplate(tool.httpBaseUrl, { input, ctx }).replace(/\/+$/, '') +
+      '/' +
+      this.renderTemplate(skill.httpPath, { input, ctx }).replace(/^\/+/, '');
+
+    const method = skill.httpMethod.toUpperCase();
+    const headers = {
+      ...this.renderHeaders(tool.httpHeaders, { input, ctx }),
+      ...this.renderHeaders(skill.httpHeadersExtra, { input, ctx }),
+    };
 
     let body: string | undefined;
-    if (tool.httpBodyTemplate && method !== 'GET' && method !== 'DELETE') {
-      body = this.renderTemplate(tool.httpBodyTemplate, { input, ctx });
+    if (skill.httpBodyTemplate && method !== 'GET' && method !== 'DELETE') {
+      body = this.renderTemplate(skill.httpBodyTemplate, { input, ctx });
       if (!headers['content-type'] && !headers['Content-Type']) {
         headers['Content-Type'] = 'application/json';
       }
@@ -50,11 +58,14 @@ export class HttpToolExecutorService {
 
     const startedAt = Date.now();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), tool.timeoutMs ?? 15000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      skill.timeoutMs ?? 15000,
+    );
 
     try {
       this.logger.log(
-        `[${tool.name}] ${method} ${url} (timeout=${tool.timeoutMs}ms)`,
+        `[skill:${skill.name}] ${method} ${url} (timeout=${skill.timeoutMs}ms)`,
       );
       const response = await fetch(url, {
         method,
@@ -67,24 +78,20 @@ export class HttpToolExecutorService {
       let parsed: unknown = text;
       try {
         parsed = JSON.parse(text);
-      } catch {
-        // not JSON, keep as string
-      }
+      } catch {}
 
-      const durationMs = Date.now() - startedAt;
       const ok = response.ok;
-
-      const mapped = this.mapResponse(tool.responseMap, {
+      const mapped = this.mapResponse(skill.responseMap, {
         body: parsed,
         status: response.status,
         ok,
       });
+      const durationMs = Date.now() - startedAt;
 
       this.logger.log(
-        `[${tool.name}] ${response.status} in ${durationMs}ms ok=${ok}`,
+        `[skill:${skill.name}] ${response.status} in ${durationMs}ms ok=${ok}`,
       );
 
-      // If user provided a responseMap we use it, else expose status + body.
       const output =
         mapped !== undefined
           ? mapped
@@ -94,9 +101,9 @@ export class HttpToolExecutorService {
     } catch (err: any) {
       const isTimeout = err?.name === 'AbortError';
       const message = isTimeout
-        ? `Tool ${tool.name} timed out after ${tool.timeoutMs}ms`
+        ? `Skill ${skill.name} timed out after ${skill.timeoutMs}ms`
         : err?.message ?? String(err);
-      this.logger.error(`[${tool.name}] failed: ${message}`);
+      this.logger.error(`[skill:${skill.name}] failed: ${message}`);
       return {
         output: { ok: false, error: message, timeout: isTimeout },
       };
@@ -105,7 +112,7 @@ export class HttpToolExecutorService {
     }
   }
 
-  // ── private helpers ─────────────────────────────────────────────
+  // ─── helpers ───────────────────────────────────────────────────
 
   private renderHeaders(
     raw: unknown,
@@ -119,10 +126,6 @@ export class HttpToolExecutorService {
     return out;
   }
 
-  /**
-   * Substitutes {{input.x}}, {{ctx.x}} and {{env.X}} occurrences. Unknown
-   * variables become empty string — log a warning so the user can fix.
-   */
   private renderTemplate(
     template: string,
     scopes: { input: Record<string, unknown>; ctx: ToolContext },
@@ -154,10 +157,6 @@ export class HttpToolExecutorService {
     });
   }
 
-  /**
-   * Applies a JSONPath-lite mapping: { ok: "$.success", message: "$.data.message" }.
-   * Returns undefined when no mapping is provided (caller falls back to raw).
-   */
   private mapResponse(
     map: unknown,
     scope: { body: unknown; status: number; ok: boolean },
@@ -177,8 +176,7 @@ export class HttpToolExecutorService {
   ): unknown {
     if (expr === '$.status') return scope.status;
     if (expr === '$.ok') return scope.ok;
-    if (!expr.startsWith('$')) return expr; // literal
-    // $.foo.bar → walk the body
+    if (!expr.startsWith('$')) return expr;
     const path = expr.replace(/^\$\.?/, '');
     if (!path) return scope.body;
     return this.lookup(scope.body as Record<string, unknown>, path);

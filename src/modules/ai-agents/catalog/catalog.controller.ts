@@ -13,7 +13,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
 import { ToolsCatalogService } from './tools.service';
 import { SkillsCatalogService } from './skills.service';
-import { UpsertCustomToolDto } from './dto/upsert-tool.dto';
+import { UpsertToolDto } from './dto/upsert-tool.dto';
 import { UpsertSkillDto } from './dto/upsert-skill.dto';
 import { CurrentOrg, CurrentUser, Roles } from '../../../common/decorators';
 import {
@@ -50,7 +50,7 @@ export class AiCatalogController {
   @ApiOperation({ summary: 'Cria tool customizada (HTTP)' })
   createTool(
     @CurrentOrg('id') orgId: string,
-    @Body() dto: UpsertCustomToolDto,
+    @Body() dto: UpsertToolDto,
   ) {
     return this.tools.create(orgId, dto);
   }
@@ -60,7 +60,7 @@ export class AiCatalogController {
   updateTool(
     @CurrentOrg('id') orgId: string,
     @Param('id') id: string,
-    @Body() dto: UpsertCustomToolDto,
+    @Body() dto: UpsertToolDto,
   ) {
     return this.tools.update(orgId, id, dto);
   }
@@ -133,17 +133,4 @@ export class AiCatalogController {
     return this.skills.setAgentSkills(orgId, agentId, body.skillIds ?? []);
   }
 
-  @Put('agents/:agentId/extra-tools')
-  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
-  @ApiOperation({
-    summary:
-      'Substitui o conjunto de tools soltas (sem skill) atribuídas ao agent',
-  })
-  setAgentExtraTools(
-    @CurrentOrg('id') orgId: string,
-    @Param('agentId') agentId: string,
-    @Body() body: { toolIds: string[] },
-  ) {
-    return this.skills.setAgentExtraTools(orgId, agentId, body.toolIds ?? []);
-  }
 }
