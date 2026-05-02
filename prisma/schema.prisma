@@ -111,6 +111,7 @@ model User {
   apiKeys               ApiKey[]
   inboxViews            InboxView[]
   conversationReads     ConversationRead[]
+  assignedCards         Card[]             @relation("CardAssignee")
 
   @@map("users")
 }
@@ -149,6 +150,8 @@ model Organization {
   aiTools       AiTool[]
   aiSkills      AiSkill[]
   inboxViews    InboxView[]
+  pipelines     Pipeline[]
+  cards         Card[]
 
   @@map("organizations")
 }
@@ -329,6 +332,7 @@ model Contact {
   conversations Conversation[]
   tags          ContactTag[]
   aiMemories    AiAgentMemory[]
+  cards         Card[]           @relation("CardContact")
 
   @@index([organizationId, phone], name: "idx_contact_org_phone")
   @@index([organizationId, email], name: "idx_contact_org_email")
@@ -398,6 +402,7 @@ model Conversation {
   aiRuns        AiAgentRun[]
   aiHandoffs    AiAgentHandoff[]
   reads         ConversationRead[]
+  cards         Card[]            @relation("CardConversation")
 
   @@index([organizationId, status], name: "idx_conv_org_status")
   @@index([organizationId, assignedToId], name: "idx_conv_org_agent")
@@ -1077,4 +1082,97 @@ model ConversationRead {
   @@index([userId])
   @@index([conversationId])
   @@map("conversation_reads")
+}
+
+// ─── CRM Pipelines (Kanban) ──────────────────────
+//
+// Org-level pipelines (vendas, suporte, onboarding, etc). Each pipeline
+// has ordered stages (columns) and cards live on a single stage at a
+// time. Cards can be linked to a contact/conversation but exist
+// independently — the kanban is a CRM layer, not a conversation view.
+
+enum PipelineStageType {
+  NORMAL
+  WON
+  LOST
+}
+
+enum CardStatus {
+  OPEN     // ainda em movimento entre stages
+  WON      // fechou ganho
+  LOST     // fechou perdido
+}
+
+model Pipeline {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  icon           String?       // lucide-react icon name
+  color          String?       // tailwind color hint
+  isDefault      Boolean  @default(false) @map("is_default")
+  archived       Boolean  @default(false)
+  order          Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  stages       PipelineStage[]
+  cards        Card[]
+
+  @@index([organizationId, archived])
+  @@map("pipelines")
+}
+
+model PipelineStage {
+  id         String            @id @default(cuid())
+  pipelineId String            @map("pipeline_id")
+  name       String
+  color      String?
+  type       PipelineStageType @default(NORMAL)
+  order      Int               @default(0)
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  cards    Card[]
+
+  @@index([pipelineId, order])
+  @@map("pipeline_stages")
+}
+
+model Card {
+  id             String     @id @default(cuid())
+  organizationId String     @map("organization_id")
+  pipelineId     String     @map("pipeline_id")
+  stageId        String     @map("stage_id")
+  title          String
+  description    String?
+  value          Decimal?   @db.Decimal(14, 2)
+  currency       String     @default("BRL")
+  status         CardStatus @default(OPEN)
+  order          Int        @default(0)
+
+  contactId      String?    @map("contact_id")
+  conversationId String?    @map("conversation_id")
+  assignedToId   String?    @map("assigned_to_id")
+
+  metadata       Json       @default("{}")
+  closedAt       DateTime?  @map("closed_at")
+  closedReason   String?    @map("closed_reason")
+
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  pipeline     Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  stage        PipelineStage @relation(fields: [stageId], references: [id])
+  contact      Contact?      @relation("CardContact", fields: [contactId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation("CardConversation", fields: [conversationId], references: [id], onDelete: SetNull)
+  assignedTo   User?         @relation("CardAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([pipelineId, stageId, order])
+  @@index([organizationId, status])
+  @@index([contactId])
+  @@index([conversationId])
+  @@map("cards")
 }

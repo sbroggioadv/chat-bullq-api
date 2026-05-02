@@ -20,6 +20,7 @@ import { PublicApiModule } from './modules/public-api/public-api.module';
 import { ChannelAccessModule } from './modules/iam/channel-access/channel-access.module';
 import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
+import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import redisConfig from './config/redis.config';
 
 @Module({
@@ -54,6 +55,7 @@ import redisConfig from './config/redis.config';
     PublicApiModule,
     AiAgentsModule,
     InboxViewsModule,
+    PipelinesModule,
   ],
 })
 export class AppModule {}
