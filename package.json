@@ -43,6 +43,7 @@
     "passport": "^0.7.0",
     "passport-custom": "^1.1.1",
     "passport-jwt": "^4.0.1",
+    "pg": "^8.20.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0",
     "web-push": "^3.6.0"
@@ -54,6 +55,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
     "@types/passport-jwt": "^4.0.1",
+    "@types/pg": "^8.20.0",
     "@types/web-push": "^3.6.0",
     "prisma": "^6.0.0",
     "ts-node": "^10.9.0",

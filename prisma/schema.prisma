@@ -778,6 +778,7 @@ model AiAgent {
 enum AiToolSource {
   BUILTIN
   CUSTOM_HTTP
+  CUSTOM_SQL
 }
 
 model AiTool {
@@ -796,6 +797,14 @@ model AiTool {
   httpHeaders    Json?        @map("http_headers")
   httpBodyTemplate String?    @map("http_body_template") @db.Text
   responseMap    Json?        @map("response_map")    // { ok: "$.success", message: "$.data.message" }
+
+  // Apenas pra source=CUSTOM_SQL
+  sqlConnectionRef String?    @map("sql_connection_ref") // nome da env var com a DATABASE_URL
+  sqlQuery       String?      @map("sql_query") @db.Text // query com $1, $2... ou nomes :foo
+  sqlParamMap    Json?        @map("sql_param_map")  // [{name:"email", source:"input.email"}]
+  sqlReadOnly    Boolean      @default(true) @map("sql_read_only")
+  sqlMaxRows     Int          @default(50) @map("sql_max_rows")
+
   timeoutMs      Int          @default(15000) @map("timeout_ms")
 
   isActive       Boolean      @default(true) @map("is_active")

@@ -35,19 +35,27 @@ export class ToolsCatalogService {
 
   async create(organizationId: string, dto: UpsertCustomToolDto) {
     await this.assertNameAvailable(organizationId, dto.name);
+    this.assertSourceFields(dto);
 
     return this.prisma.aiTool.create({
       data: {
         organizationId,
         name: dto.name,
         description: dto.description,
-        source: 'CUSTOM_HTTP',
+        source: dto.source,
         parameters: dto.parameters as object,
-        httpMethod: dto.httpMethod.toUpperCase(),
+        // HTTP
+        httpMethod: dto.httpMethod?.toUpperCase(),
         httpUrl: dto.httpUrl,
         httpHeaders: (dto.httpHeaders as object) ?? {},
         httpBodyTemplate: dto.httpBodyTemplate,
         responseMap: (dto.responseMap as object) ?? null,
+        // SQL
+        sqlConnectionRef: dto.sqlConnectionRef,
+        sqlQuery: dto.sqlQuery,
+        sqlParamMap: (dto.sqlParamMap as object) ?? null,
+        sqlReadOnly: dto.sqlReadOnly ?? true,
+        sqlMaxRows: dto.sqlMaxRows ?? 50,
         timeoutMs: dto.timeoutMs ?? 15000,
         isActive: dto.isActive ?? true,
       },
@@ -62,21 +70,46 @@ export class ToolsCatalogService {
     if (tool.name !== dto.name) {
       await this.assertNameAvailable(organizationId, dto.name);
     }
+    this.assertSourceFields(dto);
     return this.prisma.aiTool.update({
       where: { id },
       data: {
         name: dto.name,
         description: dto.description,
+        source: dto.source,
         parameters: dto.parameters as object,
-        httpMethod: dto.httpMethod.toUpperCase(),
+        // HTTP
+        httpMethod: dto.httpMethod?.toUpperCase(),
         httpUrl: dto.httpUrl,
         httpHeaders: (dto.httpHeaders as object) ?? {},
         httpBodyTemplate: dto.httpBodyTemplate,
         responseMap: (dto.responseMap as object) ?? null,
+        // SQL
+        sqlConnectionRef: dto.sqlConnectionRef,
+        sqlQuery: dto.sqlQuery,
+        sqlParamMap: (dto.sqlParamMap as object) ?? null,
+        sqlReadOnly: dto.sqlReadOnly ?? true,
+        sqlMaxRows: dto.sqlMaxRows ?? 50,
         timeoutMs: dto.timeoutMs ?? 15000,
         isActive: dto.isActive ?? true,
       },
     });
+  }
+
+  private assertSourceFields(dto: UpsertCustomToolDto) {
+    if (dto.source === 'CUSTOM_HTTP') {
+      if (!dto.httpMethod || !dto.httpUrl) {
+        throw new BadRequestException(
+          'CUSTOM_HTTP requires httpMethod and httpUrl',
+        );
+      }
+    } else if (dto.source === 'CUSTOM_SQL') {
+      if (!dto.sqlConnectionRef || !dto.sqlQuery) {
+        throw new BadRequestException(
+          'CUSTOM_SQL requires sqlConnectionRef and sqlQuery',
+        );
+      }
+    }
   }
 
   async softDelete(organizationId: string, id: string) {

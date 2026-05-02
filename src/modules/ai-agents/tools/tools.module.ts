@@ -10,6 +10,7 @@ import { DelegateToAgentTool } from './builtin/delegate-to-agent.tool';
 import { HandBackToOrchestratorTool } from './builtin/hand-back-to-orchestrator.tool';
 import { ToolRegistry } from './tool-registry.service';
 import { HttpToolExecutorService } from './http-tool-executor.service';
+import { SqlToolExecutorService } from './sql-tool-executor.service';
 import { ConfigModule } from '@nestjs/config';
 
 @Module({
@@ -28,7 +29,8 @@ import { ConfigModule } from '@nestjs/config';
     HandBackToOrchestratorTool,
     ToolRegistry,
     HttpToolExecutorService,
+    SqlToolExecutorService,
   ],
-  exports: [ToolRegistry, HttpToolExecutorService],
+  exports: [ToolRegistry, HttpToolExecutorService, SqlToolExecutorService],
 })
 export class ToolsModule {}

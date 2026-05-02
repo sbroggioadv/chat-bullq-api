@@ -12,6 +12,7 @@ import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import { ToolContext } from '../tools/tool.types';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
+import { SqlToolExecutorService } from '../tools/sql-tool-executor.service';
 import { PromptBuilderService } from './prompt-builder.service';
 
 const MAX_TOOL_ITERATIONS = 8;
@@ -40,6 +41,7 @@ export class AiAgentRunnerService {
     private readonly registry: ToolRegistry,
     private readonly promptBuilder: PromptBuilderService,
     private readonly httpExecutor: HttpToolExecutorService,
+    private readonly sqlExecutor: SqlToolExecutorService,
   ) {}
 
   async run({
@@ -346,12 +348,11 @@ export class AiAgentRunnerService {
       try {
         const customTool = customToolsByName.get(call.name);
         if (customTool) {
-          // Custom HTTP tool — executor handles fetch + response mapping.
-          const result = await this.httpExecutor.execute(
-            customTool,
-            call.arguments,
-            ctx,
-          );
+          // Custom tool — route by source.
+          const result =
+            customTool.source === 'CUSTOM_SQL'
+              ? await this.sqlExecutor.execute(customTool, call.arguments, ctx)
+              : await this.httpExecutor.execute(customTool, call.arguments, ctx);
           output = result.output;
           finalAction = result.finalAction;
         } else if (this.registry.has(call.name)) {
@@ -435,7 +436,7 @@ export class AiAgentRunnerService {
 
     const collect = (tool: AiToolRow) => {
       if (!tool.isActive || tool.deletedAt) return;
-      if (tool.source === 'CUSTOM_HTTP') {
+      if (tool.source === 'CUSTOM_HTTP' || tool.source === 'CUSTOM_SQL') {
         customToolsByName.set(tool.name, tool);
       } else if (tool.source === 'BUILTIN') {
         // Validate that the registry actually has it AND it's allowed for

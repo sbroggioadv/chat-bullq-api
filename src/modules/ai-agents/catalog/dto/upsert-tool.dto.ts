@@ -1,5 +1,7 @@
 import {
+  IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsObject,
   IsOptional,
@@ -35,14 +37,26 @@ export class UpsertCustomToolDto {
   @IsObject()
   parameters!: Record<string, unknown>;
 
-  @ApiProperty({ example: 'POST' })
+  @ApiProperty({
+    enum: ['CUSTOM_HTTP', 'CUSTOM_SQL'],
+    default: 'CUSTOM_HTTP',
+    description: 'Tipo da tool. CUSTOM_HTTP = chamada HTTP. CUSTOM_SQL = query Postgres.',
+  })
+  @IsIn(['CUSTOM_HTTP', 'CUSTOM_SQL'])
+  source!: 'CUSTOM_HTTP' | 'CUSTOM_SQL';
+
+  // ── HTTP fields (obrigatórios quando source=CUSTOM_HTTP) ──────
+
+  @ApiPropertyOptional({ example: 'POST' })
+  @IsOptional()
   @IsString()
   @Matches(/^(GET|POST|PUT|PATCH|DELETE)$/i)
-  httpMethod!: string;
+  httpMethod?: string;
 
-  @ApiProperty({ example: 'https://members.bravy.com.br/api/admin/access' })
+  @ApiPropertyOptional({ example: 'https://members.bravy.com.br/api/admin/access' })
+  @IsOptional()
   @IsString()
-  httpUrl!: string;
+  httpUrl?: string;
 
   @ApiPropertyOptional({
     description: 'Headers como objeto. Templates suportados: {{env.X}}, {{input.x}}, {{ctx.x}}.',
@@ -66,6 +80,47 @@ export class UpsertCustomToolDto {
   @IsOptional()
   @IsObject()
   responseMap?: Record<string, string>;
+
+  // ── SQL fields (obrigatórios quando source=CUSTOM_SQL) ────────
+
+  @ApiPropertyOptional({
+    description:
+      'Nome da env var no servidor (ex: HOTWEBINAR_DB_URL) que contém a connection string Postgres. NÃO cole a string direto aqui — use env por segurança.',
+  })
+  @IsOptional()
+  @IsString()
+  sqlConnectionRef?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Query SQL parametrizada usando $1, $2, ... Ex: SELECT * FROM users WHERE email = $1 LIMIT 1',
+  })
+  @IsOptional()
+  @IsString()
+  sqlQuery?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Lista ordenada de mapeamento de parâmetros — cada entry corresponde a $1, $2, ... source: "input.x" | "ctx.x" | "literal:foo"',
+    example: [{ name: 'email', source: 'input.email' }],
+  })
+  @IsOptional()
+  @IsArray()
+  sqlParamMap?: Array<{ name?: string; source: string }>;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  sqlReadOnly?: boolean;
+
+  @ApiPropertyOptional({ default: 50 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(500)
+  sqlMaxRows?: number;
+
+  // ── Common ────────────────────────────────────────────────────
 
   @ApiPropertyOptional({ default: 15000 })
   @IsOptional()
