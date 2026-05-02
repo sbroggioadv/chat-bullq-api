@@ -101,4 +101,48 @@ export class AgentsController {
       limit ? Math.min(parseInt(limit, 10) || 50, 200) : 50,
     );
   }
+
+  @Get('runs/feed')
+  @ApiOperation({
+    summary:
+      'Org-wide run feed for the Jarvis dashboard. Filterable by agent.',
+  })
+  feed(
+    @CurrentOrg('id') orgId: string,
+    @Query('agentId') agentId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.listOrgRuns(orgId, {
+      agentId,
+      limit: limit ? Math.min(parseInt(limit, 10) || 50, 200) : 50,
+    });
+  }
+
+  @Get('stats/overview')
+  @ApiOperation({
+    summary: 'Aggregated org stats over a window: cost, tokens, runs, tools.',
+  })
+  orgStats(
+    @CurrentOrg('id') orgId: string,
+    @Query('period') period?: string,
+  ) {
+    const p = this.parsePeriod(period);
+    return this.service.getOrgStats(orgId, p);
+  }
+
+  @Get(':id/stats')
+  @ApiOperation({ summary: 'Aggregated stats for a single agent.' })
+  agentStats(
+    @CurrentOrg('id') orgId: string,
+    @Param('id') id: string,
+    @Query('period') period?: string,
+  ) {
+    const p = this.parsePeriod(period);
+    return this.service.getAgentStats(orgId, id, p);
+  }
+
+  private parsePeriod(p?: string): '24h' | '7d' | '30d' {
+    if (p === '24h' || p === '7d' || p === '30d') return p;
+    return '7d';
+  }
 }
