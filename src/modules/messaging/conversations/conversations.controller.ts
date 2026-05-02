@@ -95,6 +95,21 @@ export class ConversationsController {
     return this.service.assignToMe(id, orgId, userId, access);
   }
 
+  @Patch(':id/ai')
+  @ApiOperation({
+    summary:
+      'Pause or resume the AI on this conversation. When paused, no agent will respond until a human reactivates.',
+  })
+  toggleAi(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() body: { enabled: boolean },
+  ) {
+    return this.service.toggleAi(id, orgId, !!body?.enabled, userId, access);
+  }
+
   @Post(':id/close')
   @ApiOperation({ summary: 'Close a conversation' })
   close(

@@ -65,10 +65,43 @@ export class MessagesService {
       senderId,
     });
 
+    // Auto-pause the AI on this conversation when a human replies. Behavior
+    // is org-configurable (aiAutoDisableOnHuman, default true). The human
+    // is now driving — don't let the agent compete with them mid-thread.
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { aiAutoDisableOnHuman: true },
+    });
+    const shouldDisableAi =
+      conversation.aiEnabled && (org?.aiAutoDisableOnHuman ?? true);
+
     await this.prisma.conversation.update({
       where: { id: conversation.id },
-      data: { lastMessageAt: new Date() },
+      data: {
+        lastMessageAt: new Date(),
+        ...(shouldDisableAi
+          ? {
+              aiEnabled: false,
+              aiDisabledBy: senderId,
+              aiDisabledAt: new Date(),
+              activeAgentId: null,
+            }
+          : {}),
+      },
     });
+
+    if (shouldDisableAi) {
+      this.realtimeGateway.emitToConversation(
+        conversation.id,
+        'conversation:ai-toggle',
+        {
+          conversationId: conversation.id,
+          aiEnabled: false,
+          actorId: senderId,
+          reason: 'human-replied',
+        },
+      );
+    }
 
     // Optimistic realtime: everyone in the channel/conversation sees the
     // outbound QUEUED row instantly, independent of the outbound worker

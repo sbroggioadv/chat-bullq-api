@@ -26,7 +26,13 @@ export class OrganizationsService {
 
   async updateOrganization(orgId: string, dto: UpdateOrganizationDto) {
     await this.getOrganization(orgId);
-    return this.repository.update(orgId, dto);
+    const { aiBusinessHours, ...rest } = dto;
+    return this.repository.update(orgId, {
+      ...rest,
+      ...(aiBusinessHours !== undefined
+        ? { aiBusinessHours: aiBusinessHours as object }
+        : {}),
+    });
   }
 
   async getMembers(orgId: string) {

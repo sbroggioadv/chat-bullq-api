@@ -9,6 +9,8 @@ import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { NormalizedInboundMessage, StatusUpdate } from '../../channel-hub/ports/types';
 import { InstagramContactEnricherService } from '../../channel-hub/adapters/instagram/instagram-contact-enricher.service';
 import { WebhookEventsService } from '../../channel-hub/webhook-events.service';
+import { AgentRouterService } from '../../ai-agents/router/agent-router.service';
+import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import {
   ChannelType,
   MessageDirection,
@@ -43,6 +45,8 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly realtimeGateway: RealtimeGateway,
     private readonly instagramEnricher: InstagramContactEnricherService,
     private readonly webhookEvents: WebhookEventsService,
+    private readonly agentRouter: AgentRouterService,
+    private readonly agentRunner: AiAgentRunnerService,
     @InjectQueue('chatbot-processor') private readonly chatbotQueue: Queue,
   ) {
     super();
@@ -165,6 +169,17 @@ export class InboundMessageProcessor extends WorkerHost {
       );
       if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
 
+      // Fire-and-forget AI dispatch. Failures here MUST NOT take down the
+      // inbound pipeline — they're logged and the conversation continues
+      // working (the human always wins).
+      if (!isEcho) {
+        this.tryAiAgent(conversationId, savedMessage.id).catch((err) =>
+          this.logger.error(
+            `AI dispatch failed for conv ${conversationId}: ${err?.message ?? err}`,
+          ),
+        );
+      }
+
       return {
         messageId: savedMessage.id,
         conversationId,
@@ -273,6 +288,36 @@ export class InboundMessageProcessor extends WorkerHost {
       },
     });
     return !!link;
+  }
+
+  /**
+   * Run the AI agent against this conversation if it should handle it.
+   * Loaded conversation needs to be re-fetched here because the rule-based
+   * chatbot above may have updated `status` / fields meanwhile.
+   */
+  private async tryAiAgent(
+    conversationId: string,
+    triggerMessageId: string,
+  ): Promise<void> {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+    if (!conversation) return;
+
+    const decision = await this.agentRouter.shouldHandle(conversation);
+    if (!decision.handle) {
+      this.logger.debug(
+        `AI skipped for conv ${conversationId}: ${decision.reason}`,
+      );
+      return;
+    }
+
+    const triggerMessage = await this.prisma.message.findUnique({
+      where: { id: triggerMessageId },
+    });
+    if (!triggerMessage) return;
+
+    await this.agentRunner.run({ conversation, triggerMessage });
   }
 
   private async processStatus(data: StatusJobData): Promise<any> {

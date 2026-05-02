@@ -125,6 +125,45 @@ export class ConversationsService {
     return updated;
   }
 
+  async toggleAi(
+    id: string,
+    organizationId: string,
+    enabled: boolean,
+    actorId: string,
+    access: ChannelAccess = 'ALL',
+  ) {
+    await this.findOne(id, organizationId, access);
+    const updated = await this.prisma.conversation.update({
+      where: { id },
+      data: enabled
+        ? {
+            aiEnabled: true,
+            aiDisabledBy: null,
+            aiDisabledAt: null,
+          }
+        : {
+            aiEnabled: false,
+            aiDisabledBy: actorId,
+            aiDisabledAt: new Date(),
+            activeAgentId: null,
+          },
+    });
+    await this.prisma.conversationAuditLog.create({
+      data: {
+        conversationId: id,
+        actorId,
+        action: enabled ? 'AI_RESUMED' : 'AI_PAUSED',
+        metadata: {},
+      },
+    });
+    this.realtimeGateway.emitToConversation(id, 'conversation:ai-toggle', {
+      conversationId: id,
+      aiEnabled: enabled,
+      actorId,
+    });
+    return updated;
+  }
+
   async close(
     id: string,
     organizationId: string,

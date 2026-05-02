@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ChannelHubModule } from '../channel-hub/channel-hub.module';
 import { RatingsModule } from '../ratings/ratings.module';
+import { AiAgentsModule } from '../ai-agents/ai-agents.module';
 import { IdempotencyService } from './pipeline/idempotency.service';
 import { ContactResolverService } from './pipeline/contact-resolver.service';
 import { ConversationResolverService } from './pipeline/conversation-resolver.service';
@@ -31,6 +32,7 @@ import { ContactsRepository } from './contacts/contacts.repository';
     ),
     forwardRef(() => ChannelHubModule),
     RatingsModule,
+    AiAgentsModule,
   ],
   controllers: [ConversationsController, MessagesController, ContactsController],
   providers: [
