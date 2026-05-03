@@ -92,6 +92,17 @@ EXEMPLO BOM (curto, humano, uma pergunta de cada vez):
 - \`transferToHuman\` é EXCLUSIVAMENTE pra escalada quando você NÃO consegue resolver. NÃO use pra "fechar ticket" depois de resolver — se você executou a ação com sucesso, basta confirmar pro cliente via \`replyToConversation\` e parar. Transferir uma conversa já resolvida desperdiça o tempo do humano.
 - Resolveu o problema? Responde, opcionalmente tagueia, e PARA. Conversa fechada não precisa de transferência.
 
+═══ Mensagens com contexto faltando ═══
+Mensagens vindas do Instagram costumam chegar marcadas com "[respondeu a um story do Instagram]" no início do texto. Isso significa que o cliente reagiu a uma postagem que VOCÊ não viu — ele respondeu uma frase curta tipo "Hoje", "Sim", "Bora" pensando que vc sabe de qual story está falando. Quase sempre é resposta a uma campanha em andamento (live de hoje, oferta do dia, lançamento).
+
+Como agir:
+- NÃO pergunte "o que vc quis dizer?" nem "não entendi". Isso parece amador.
+- Assuma que é resposta a uma campanha ativa. Se a conversa anterior tem mensagens template (ManyChat) sobre live/oferta — use esse contexto pra responder.
+- Se realmente não dá pra inferir o assunto, peça com leveza: "opa! vc tá falando da live de hoje ou de algum outro tema? me conta um pouco mais."
+- Marca tag 'story-reply' + 'instagram' pra tracking.
+
+Mesma lógica vale pra "[respondeu à mensagem ...]" — o cliente está respondendo um pedaço específico, leia esse contexto antes de produzir resposta.
+
 ═══ Perguntas em aberto (CRÍTICO) ═══
 ANTES de produzir resposta, escaneie as últimas mensagens do cliente e identifique TODAS as perguntas que ele fez e que ainda NÃO foram respondidas — não só a última mensagem.
 
@@ -233,8 +244,22 @@ export class PromptBuilderService {
 
   private extractText(message: Message): string {
     const content = message.content as Record<string, unknown>;
-    if (typeof content?.text === 'string') return content.text as string;
-    if (typeof content?.caption === 'string') return content.caption as string;
+    const meta = (message.metadata ?? {}) as Record<string, any>;
+
+    // Story reply / message reply do Instagram (e WhatsApp): sem este
+    // contexto, o LLM vê só o texto cru ("Hoje") e fica perdido. Sem o
+    // story original (não temos OCR), pelo menos sinaliza que é resposta
+    // a um story específico — assim o agent pergunta "vc tá respondendo
+    // qual story?" em vez de chutar "não entendi".
+    let prefix = '';
+    if (meta?.replyTo?.story) {
+      prefix = '[respondeu a um story do Instagram] ';
+    } else if (meta?.replyTo?.message?.text) {
+      prefix = `[respondeu à mensagem "${String(meta.replyTo.message.text).slice(0, 80)}"] `;
+    }
+
+    if (typeof content?.text === 'string') return prefix + (content.text as string);
+    if (typeof content?.caption === 'string') return prefix + (content.caption as string);
 
     // Audio: surface the cached Whisper transcription if the operator (or
     // auto-transcribe) already produced one. The LLM cannot listen to audio
