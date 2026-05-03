@@ -56,6 +56,63 @@ export class MessagesService {
       throw new NotFoundException('Contact channel not found');
     }
 
+    // Resolve replyTo: dois caminhos possíveis dependendo de onde a chamada
+    // veio. UI manda `replyToMessageId` (id interno) e a gente busca o
+    // externalId + preview no banco. Server-to-server pode mandar `replyTo`
+    // pronto. Garantimos que adapter/UI tenham os campos que precisam
+    // (externalMessageId pra adapter, preview/senderName pra Instagram
+    // fallback, e ambos pra metadata da nossa message renderizar quote).
+    let replyTo:
+      | {
+          externalMessageId: string;
+          previewText?: string;
+          senderName?: string;
+          /** Internal id, not sent to provider — só pra metadata. */
+          messageId?: string;
+        }
+      | undefined;
+    if (dto.replyToMessageId) {
+      const original = await this.prisma.message.findFirst({
+        where: { id: dto.replyToMessageId, conversationId: conversation.id },
+        select: {
+          id: true,
+          externalId: true,
+          content: true,
+          type: true,
+          senderName: true,
+          direction: true,
+          sender: { select: { name: true } },
+        },
+      });
+      if (!original) {
+        throw new NotFoundException('Reply target message not found');
+      }
+      if (!original.externalId) {
+        // Sem externalId não dá pra mandar reply nativo (provider não
+        // conhece nossa msg interna). Joga erro claro em vez de mandar
+        // mensagem sem reply silenciosamente.
+        throw new ForbiddenException(
+          'Mensagem citada ainda não foi sincronizada com o provider — tente novamente em alguns segundos.',
+        );
+      }
+      const c = (original.content ?? {}) as Record<string, any>;
+      const previewText: string | undefined =
+        (typeof c.text === 'string' && c.text) ||
+        (typeof c.caption === 'string' && c.caption) ||
+        `[${original.type.toLowerCase()}]`;
+      replyTo = {
+        externalMessageId: original.externalId,
+        previewText,
+        senderName:
+          original.direction === 'INBOUND'
+            ? (original.senderName ?? conversation.contact.name ?? undefined)
+            : (original.sender?.name ?? original.senderName ?? undefined),
+        messageId: original.id,
+      };
+    } else if (dto.replyTo?.externalMessageId) {
+      replyTo = { externalMessageId: dto.replyTo.externalMessageId };
+    }
+
     const message = await this.repository.create({
       conversationId: conversation.id,
       direction: MessageDirection.OUTBOUND,
@@ -63,6 +120,19 @@ export class MessagesService {
       content: dto.content,
       status: MessageStatus.QUEUED,
       senderId,
+      // metadata.replyTo é consumido pela UI pra renderizar a quote box
+      // em cima da bolha — sem isso o quote só apareceria no app do
+      // cliente (WhatsApp/IG), nunca no nosso inbox.
+      metadata: replyTo
+        ? {
+            replyTo: {
+              messageId: replyTo.messageId,
+              externalMessageId: replyTo.externalMessageId,
+              previewText: replyTo.previewText,
+              senderName: replyTo.senderName,
+            },
+          }
+        : undefined,
     });
 
     // Auto-pause the AI on this conversation when a human replies. Behavior
@@ -202,7 +272,17 @@ export class MessagesService {
         message: {
           type: dto.type,
           content: outboundContent,
-          replyTo: dto.replyTo,
+          // Manda só o que o provider precisa: externalMessageId é
+          // obrigatório (Zappfy/Cloud API), preview+sender são pro
+          // fallback do Instagram. messageId interno fica fora do
+          // payload pro adapter — só queria persistir na metadata.
+          replyTo: replyTo
+            ? {
+                externalMessageId: replyTo.externalMessageId,
+                previewText: replyTo.previewText,
+                senderName: replyTo.senderName,
+              }
+            : undefined,
         },
       },
       {

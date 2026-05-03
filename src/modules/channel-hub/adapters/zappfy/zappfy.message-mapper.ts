@@ -137,84 +137,93 @@ export class ZappfyMessageMapper {
     contactExternalId: string,
   ): { endpoint: string; payload: Record<string, any> } {
     const number = contactExternalId.replace(/@s\.whatsapp\.net|@g\.us/g, '');
+    // Uazapi/Zappfy aceita `replyid` (id da mensagem citada) em
+    // /send/text e /send/media. Quando o cliente recebe, o WhatsApp
+    // renderiza a "bolha de resposta" nativa em cima da nossa mensagem.
+    // Sem isso, o reply seria apenas textual e perderia o link visual.
+    const replyId = message.replyTo?.externalMessageId;
+    const withReply = <T extends Record<string, any>>(p: T): T =>
+      replyId ? ({ ...p, replyid: replyId } as T) : p;
 
     switch (message.type) {
       case MessageContentType.TEXT:
         return {
           endpoint: '/send/text',
-          payload: { number, text: message.content.text, delay: 1000 },
+          payload: withReply({ number, text: message.content.text, delay: 1000 }),
         };
 
       case MessageContentType.IMAGE:
         return {
           endpoint: '/send/media',
-          payload: {
+          payload: withReply({
             number,
             file: message.content.mediaUrl,
             type: 'image',
             caption: message.content.caption || '',
-          },
+          }),
         };
 
       case MessageContentType.AUDIO:
         return {
           endpoint: '/send/media',
-          payload: {
+          payload: withReply({
             number,
             file: message.content.mediaUrl,
             // "ptt" renders as a native voice note on WhatsApp. "audio" would
             // render as a forwarded audio file, which is wrong UX for a
             // message the user just recorded in the app.
             type: 'ptt',
-          },
+          }),
         };
 
       case MessageContentType.VIDEO:
         return {
           endpoint: '/send/media',
-          payload: {
+          payload: withReply({
             number,
             file: message.content.mediaUrl,
             type: 'video',
             caption: message.content.caption || '',
-          },
+          }),
         };
 
       case MessageContentType.DOCUMENT:
         return {
           endpoint: '/send/media',
-          payload: {
+          payload: withReply({
             number,
             file: message.content.mediaUrl,
             type: 'document',
             filename: message.content.fileName || '',
             caption: message.content.caption || '',
-          },
+          }),
         };
 
       case MessageContentType.STICKER:
         return {
           endpoint: '/send/media',
-          payload: {
+          payload: withReply({
             number,
             file: message.content.mediaUrl,
             type: 'sticker',
-          },
+          }),
         };
 
       case MessageContentType.LOCATION:
         return {
           endpoint: '/send/location',
-          payload: {
+          payload: withReply({
             number,
             latitude: String(message.content.latitude),
             longitude: String(message.content.longitude),
             name: message.content.text || '',
             address: '',
-          },
+          }),
         };
 
       case MessageContentType.REACTION:
+        // Reaction já É um reply intrínseco a uma msg específica via
+        // targetMessageId — replyid não se aplica aqui.
         return {
           endpoint: '/message/react',
           payload: {
@@ -227,7 +236,7 @@ export class ZappfyMessageMapper {
       default:
         return {
           endpoint: '/send/text',
-          payload: { number, text: message.content.text || '' },
+          payload: withReply({ number, text: message.content.text || '' }),
         };
     }
   }

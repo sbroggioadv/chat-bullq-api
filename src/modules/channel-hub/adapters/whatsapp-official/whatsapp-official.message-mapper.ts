@@ -60,11 +60,18 @@ export class WhatsAppOfficialMessageMapper {
     message: NormalizedOutboundMessage,
     contactExternalId: string,
   ): Record<string, any> {
-    const base = {
+    const base: Record<string, any> = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: contactExternalId,
     };
+    // Meta Cloud API: replyTo vira `context.message_id` no payload top-level.
+    // O WhatsApp do cliente renderiza nossa msg com a "bolha-resposta" sobre
+    // a mensagem original, exatamente como uma reply nativa.
+    // Nota: 'reaction' e 'template' não aceitam context — evitamos abaixo.
+    if (message.replyTo?.externalMessageId) {
+      base.context = { message_id: message.replyTo.externalMessageId };
+    }
 
     switch (message.type) {
       case MessageContentType.TEXT:
@@ -125,22 +132,30 @@ export class WhatsAppOfficialMessageMapper {
           },
         };
 
-      case MessageContentType.REACTION:
+      case MessageContentType.REACTION: {
+        // Cloud API reaction NÃO aceita context — strip antes de enviar.
+        const { context, ...withoutCtx } = base;
+        void context;
         return {
-          ...base,
+          ...withoutCtx,
           type: 'reaction',
           reaction: {
             message_id: message.content.reaction?.targetMessageId,
             emoji: message.content.reaction?.emoji,
           },
         };
+      }
 
-      case MessageContentType.TEMPLATE:
+      case MessageContentType.TEMPLATE: {
+        // Templates HSM também não aceitam context.
+        const { context, ...withoutCtx } = base;
+        void context;
         return {
-          ...base,
+          ...withoutCtx,
           type: 'template',
           template: message.content as any,
         };
+      }
 
       default:
         return { ...base, type: 'text', text: { body: message.content.text || '' } };

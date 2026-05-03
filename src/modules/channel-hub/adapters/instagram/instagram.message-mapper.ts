@@ -109,11 +109,29 @@ export class InstagramMessageMapper {
   ): Record<string, any> {
     const base = { recipient: { id: contactExternalId } };
 
+    // Instagram Messenger Platform NÃO permite reply nativo em DM
+    // (api só aceita reply em comentários/stories de outro fluxo).
+    // Fallback: prefixa a mensagem com um quote textual mostrando o
+    // sender + trecho da msg citada. Cliente vê uma "citação" inline
+    // ao invés da bolha-resposta nativa, mas a referência fica clara.
+    const quotePrefix = buildIgQuotePrefix(message.replyTo);
+    const applyQuoteToText = (text: string): string =>
+      quotePrefix ? `${quotePrefix}${text}` : text;
+
     switch (message.type) {
       case MessageContentType.TEXT:
-        return { ...base, message: { text: message.content.text } };
+        return {
+          ...base,
+          message: { text: applyQuoteToText(message.content.text || '') },
+        };
 
-      case MessageContentType.IMAGE:
+      case MessageContentType.IMAGE: {
+        // Mídia não tem campo "caption" no payload da MP — se houver
+        // quote pra anexar, manda o quote como mensagem separada antes.
+        // Aqui só retorna a mídia; o adapter não suporta envio composto,
+        // então degradamos: quote vira texto antes da mídia via 2 sends
+        // já existentes (typing indicator), mas pra simplicidade hoje
+        // apenas ignoramos quote em mídia. UI sinaliza o usuário.
         return {
           ...base,
           message: {
@@ -123,6 +141,7 @@ export class InstagramMessageMapper {
             },
           },
         };
+      }
 
       case MessageContentType.AUDIO:
         return {
@@ -158,7 +177,10 @@ export class InstagramMessageMapper {
         };
 
       default:
-        return { ...base, message: { text: message.content.text || '' } };
+        return {
+          ...base,
+          message: { text: applyQuoteToText(message.content.text || '') },
+        };
     }
   }
 
@@ -272,4 +294,31 @@ export class InstagramMessageMapper {
       },
     };
   }
+}
+
+/**
+ * Monta o prefixo de quote pro fallback de reply no Instagram DM.
+ *
+ *   > [Nome] disse:
+ *   > trecho da mensagem citada
+ *
+ *   resposta original
+ *
+ * Limita o trecho a 120 chars pra não inflar mensagens curtas. Retorna
+ * string vazia quando não há replyTo ou quando previewText/senderName
+ * vêm sem conteúdo útil — nesse caso melhor não citar nada do que
+ * mostrar "> undefined" pro cliente.
+ */
+function buildIgQuotePrefix(
+  replyTo: NormalizedOutboundMessage['replyTo'],
+): string {
+  if (!replyTo) return '';
+  const sender = replyTo.senderName?.trim();
+  let preview = replyTo.previewText?.trim() ?? '';
+  if (!sender && !preview) return '';
+  if (preview.length > 120) preview = preview.slice(0, 117) + '…';
+  // Newline-formatado pra renderizar como bloco "citado" no IG.
+  const senderLine = sender ? `> ${sender} disse:\n` : '';
+  const previewLine = preview ? `> ${preview}\n\n` : '\n';
+  return `${senderLine}${previewLine}`;
 }

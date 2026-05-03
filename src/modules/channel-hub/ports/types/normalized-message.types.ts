@@ -83,7 +83,23 @@ export interface NormalizedInboundMessage {
 export interface NormalizedOutboundMessage {
   type: MessageContentType;
   content: NormalizedMessageContent;
-  replyTo?: { externalMessageId: string };
+  /**
+   * Quando preenchido, sinaliza ao adapter que a msg deve ser enviada
+   * como reply à mensagem `externalMessageId`.
+   *
+   * - Zappfy/Uazapi: vira `replyid` no payload
+   * - WhatsApp Official: vira `context.message_id`
+   * - Instagram: a Messenger Platform NÃO suporta reply nativo em DMs.
+   *   O adapter usa o `previewText`+`senderName` pra prefixar a msg
+   *   com um quote textual ("> trecho\n\ntexto") como degradação.
+   */
+  replyTo?: {
+    externalMessageId: string;
+    /** Texto curto da msg citada — usado pelo Instagram como fallback. */
+    previewText?: string;
+    /** Nome de quem enviou a msg citada — Instagram fallback. */
+    senderName?: string;
+  };
 }
 
 export interface StatusUpdate {
