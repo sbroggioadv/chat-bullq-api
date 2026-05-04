@@ -23,6 +23,20 @@ import { isToolCallFailure } from '../agents/agents.service';
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
 
+/**
+ * Tools that signal "agent is preparing to sell": pulled product info,
+ * checked the customer's purchase status, etc. If any of these ran but
+ * replyToConversation never did, we know the agent gathered intent and
+ * then went silent — exactly the failure mode where the customer gets
+ * nothing after saying "sim, me manda o link". One synthetic nudge
+ * forces a final iteration so the link actually goes out.
+ */
+const SALES_PREP_TOOLS = new Set([
+  'lookupOffering',
+  'getProductPitch',
+  'checkPurchase',
+]);
+
 interface RunInput {
   conversation: Conversation;
   triggerMessage: Message;
@@ -142,6 +156,8 @@ export class AiAgentRunnerService {
 
     let finalAction: AiFinalAction = AiFinalAction.NO_ACTION;
     let iterationCount = 0;
+    const toolsCalled = new Set<string>();
+    let salesNudgeUsed = false;
 
     try {
       // Mark this agent as the active one on the conversation.
@@ -217,6 +233,34 @@ export class AiAgentRunnerService {
               `Run ${run.id}: skipping fallback — sanitized text was empty or too short ("${rawText.slice(0, 80)}")`,
             );
           }
+
+          // Sales-prep nudge: agent gathered offer info + purchase status
+          // but never sent a reply — classic "thought-but-didn't-speak"
+          // failure that leaves the customer hanging. Inject one synthetic
+          // user reminder and re-iterate. Bounded by salesNudgeUsed to
+          // avoid loops if the model still refuses.
+          const calledSalesPrep = [...SALES_PREP_TOOLS].some((t) =>
+            toolsCalled.has(t),
+          );
+          const neverReplied = !toolsCalled.has('replyToConversation');
+          const stillNoAction = finalAction === AiFinalAction.NO_ACTION;
+          if (
+            calledSalesPrep &&
+            neverReplied &&
+            stillNoAction &&
+            !salesNudgeUsed
+          ) {
+            salesNudgeUsed = true;
+            this.logger.warn(
+              `Run ${run.id}: sales-prep tools ran but no replyToConversation — nudging model for one more turn`,
+            );
+            messages.push({
+              role: 'user',
+              content:
+                'Você rodou as tools de preparação (lookupOffering / checkPurchase) mas não chamou replyToConversation. O cliente está esperando. Responda agora com replyToConversation: 1 frase de pitch ligada à dor + preço + link do checkout (vindos do lookupOffering). Não termine este turn sem chamar replyToConversation.',
+            });
+            continue;
+          }
           break;
         }
 
@@ -239,6 +283,7 @@ export class AiAgentRunnerService {
         );
 
         for (const result of toolResults) {
+          toolsCalled.add(result.toolName);
           messages.push({
             role: 'tool',
             toolCallId: result.toolCallId,
