@@ -32,6 +32,12 @@ export class InboxViewsService {
     filters: Record<string, any>;
   }> = [
     {
+      name: 'Não lidas',
+      icon: 'MailOpen',
+      color: '#ef4444',
+      filters: { unreadOnly: true },
+    },
+    {
       name: 'Archived',
       icon: 'Archive',
       color: '#6b7280',
