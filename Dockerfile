@@ -36,7 +36,7 @@ RUN mkdir -p /app/uploads
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
-  CMD curl -sf http://localhost:3001/docs || exit 1
+  CMD curl -sf http://localhost:3001/api/v1/health || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]

@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
 import { ApiKeyStrategy } from './api-key.strategy';
 import { ApiKeysModule } from '../api-keys/api-keys.module';
+import { AuthThrottleGuard } from './auth-throttle.guard';
 
 @Module({
   imports: [
@@ -24,7 +25,7 @@ import { ApiKeysModule } from '../api-keys/api-keys.module';
     ApiKeysModule,
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, ApiKeyStrategy],
-  exports: [AuthService],
+  providers: [AuthService, JwtStrategy, ApiKeyStrategy, AuthThrottleGuard],
+  exports: [AuthService, AuthThrottleGuard],
 })
 export class AuthModule {}

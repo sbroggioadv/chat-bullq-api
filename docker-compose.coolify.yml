@@ -1,0 +1,119 @@
+# bullq2 — Coolify stack (Sprint S16)
+#
+# Deploy independente do V1 (~/Dev/bullq) que segue rodando em
+# bullq-api.187.127.30.142.sslip.io.
+#
+# Diferenças do V1:
+#   - container_name's prefixados com `bullq2-` (não conflita com V1)
+#   - bind volumes próprios (`bullq2_pgdata`, `bullq2_redisdata`)
+#   - portas internas mantidas (5432/6379) — Coolify roteia via service name
+#   - HEALTHCHECK usa `/api/v1/health` (S16 — endpoint formal criado)
+#
+# Uso no Coolify:
+#   1. New Resource → Docker Compose
+#   2. Source: sbroggioadv/chat-bullq-api (branch main)
+#   3. Compose file: docker-compose.coolify.yml
+#   4. Definir env vars na UI (ver `.env.coolify.example` neste mesmo dir)
+#   5. Domínios:
+#      - service `api` (porta 3001) → bullq2-api.187.127.30.142.sslip.io
+#      - service `web` (porta 3000) → bullq2-web.187.127.30.142.sslip.io
+#         (web é build-only via repo separado — cuidado: pode ser preferível
+#         deployar `chat-bullq-web` como resource separado no Coolify)
+#
+# IMPORTANTE: este compose só sobe API+DB+Redis. O Web vive no fork
+# `sbroggioadv/chat-bullq-web` e tem Dockerfile próprio. Subir como resource
+# Coolify separado (recomendado pra build/deploy independentes).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bravy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in Coolify env}
+      POSTGRES_DB: ${POSTGRES_DB:-chat_bullq}
+    volumes:
+      - bullq2_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --save 60 1 --loglevel warning
+    volumes:
+      - bullq2_redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-bravy}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - bullq2_miniodata:/data
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bravy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chat_bullq}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (different from V1!)}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-7d}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY (64 hex chars)}
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN (web URL list, comma-separated)}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-bravy}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET:-chat-bullq}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@bravy.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      AI_AGENT_ENABLED: ${AI_AGENT_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      RAG_CHUNK_SIZE: ${RAG_CHUNK_SIZE:-1000}
+      RAG_CHUNK_OVERLAP: ${RAG_CHUNK_OVERLAP:-200}
+      SEED_ENABLED: ${SEED_ENABLED:-false}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    expose:
+      - '3001'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:3001/api/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  bullq2_pgdata:
+  bullq2_redisdata:
+  bullq2_miniodata:
