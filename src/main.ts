@@ -36,8 +36,17 @@ async function bootstrap() {
       index: false,
     }),
   );
+  // CORS_ORIGIN aceita lista separada por virgula (ex: "https://web.com,http://localhost:3000").
+  // Sem o split, NestJS envia a string toda como Access-Control-Allow-Origin, e o browser
+  // rejeita ("multiple values, but only one is allowed"). Array faz o NestJS escolher
+  // dinamicamente o origin que bate com o request.
+  const corsOrigins = config
+    .get<string>('CORS_ORIGIN', 'http://localhost:3000')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: config.get<string>('CORS_ORIGIN', 'http://localhost:3000'),
+    origin: corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins,
     credentials: true,
   });
   app.useGlobalPipes(
