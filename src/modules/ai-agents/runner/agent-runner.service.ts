@@ -31,6 +31,8 @@ import {
 } from '../prompts/layers/security.layer';
 import type { SecurityRules } from '../prompts/types';
 import { RetrievalService } from '../rag/retrieval.service';
+import { RealtimeGateway } from '../../realtime/realtime.gateway';
+import { sanitizeAssistantText } from './text-guards';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -78,6 +80,7 @@ export class AiAgentRunnerService {
     private readonly agentRouter: AgentRouterService,
     private readonly securityLayer: SecurityLayerService,
     private readonly retrieval: RetrievalService,
+    private readonly realtime: RealtimeGateway,
     @InjectQueue('memory-extractor')
     private readonly memoryExtractorQueue: Queue,
     @InjectQueue('rag-indexer')
@@ -156,6 +159,22 @@ export class AiAgentRunnerService {
         classifierConfidence: selection?.classifierConfidence ?? null,
         skippedOrchestrator: selection?.skippedOrchestrator ?? false,
       },
+    });
+
+    // Realtime: powers the per-conversation agent-runs sidebar. Operators
+    // see the run appear the instant we boot it, even before the first
+    // tool call lands. Frontend joins `conv:<id>` while the chat is open.
+    this.realtime.emitToConversation(conversation.id, 'ai:run:start', {
+      conversationId: conversation.id,
+      runId: run.id,
+      agent: { id: agent.id, name: agent.name, kind: agent.kind },
+      modelId: agent.modelId,
+      startedAt: run.startedAt,
+      classifiedIntent: selection?.classifiedIntent ?? null,
+      classifierConfidence: selection?.classifierConfidence
+        ? Number(selection.classifierConfidence)
+        : null,
+      triggerMessageId: triggerMessage.id,
     });
 
     // Resolve every tool the agent can call:
@@ -373,19 +392,35 @@ export class AiAgentRunnerService {
         }
       }
 
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
       await this.prisma.aiAgentRun.update({
         where: { id: run.id },
         data: {
           status: AiRunStatus.COMPLETED,
           finalAction,
-          finishedAt: new Date(),
-          durationMs: Date.now() - startedAt,
+          finishedAt,
+          durationMs,
           inputTokens: aggregateUsage.inputTokens,
           outputTokens: aggregateUsage.outputTokens,
           cacheReadTokens: aggregateUsage.cacheReadTokens,
           cacheWriteTokens: aggregateUsage.cacheWriteTokens,
           costUsd: aggregateUsage.costUsd,
         },
+      });
+      this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
+        conversationId: conversation.id,
+        runId: run.id,
+        status: AiRunStatus.COMPLETED,
+        finalAction,
+        errorMessage: null,
+        finishedAt,
+        durationMs,
+        inputTokens: aggregateUsage.inputTokens,
+        outputTokens: aggregateUsage.outputTokens,
+        cacheReadTokens: aggregateUsage.cacheReadTokens,
+        cacheWriteTokens: aggregateUsage.cacheWriteTokens,
+        costUsd: aggregateUsage.costUsd,
       });
 
       // Fase 2: enfileirar jobs assíncronos de memória + RAG
@@ -436,13 +471,16 @@ export class AiAgentRunnerService {
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
         err?.stack,
       );
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = err?.message ?? String(err);
       await this.prisma.aiAgentRun.update({
         where: { id: run.id },
         data: {
           status: AiRunStatus.FAILED,
-          errorMessage: err?.message ?? String(err),
-          finishedAt: new Date(),
-          durationMs: Date.now() - startedAt,
+          errorMessage,
+          finishedAt,
+          durationMs,
           inputTokens: aggregateUsage.inputTokens,
           outputTokens: aggregateUsage.outputTokens,
           cacheReadTokens: aggregateUsage.cacheReadTokens,
@@ -450,7 +488,51 @@ export class AiAgentRunnerService {
           costUsd: aggregateUsage.costUsd,
         },
       });
+      this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
+        conversationId: conversation.id,
+        runId: run.id,
+        status: AiRunStatus.FAILED,
+        finalAction: null,
+        errorMessage,
+        finishedAt,
+        durationMs,
+        inputTokens: aggregateUsage.inputTokens,
+        outputTokens: aggregateUsage.outputTokens,
+        cacheReadTokens: aggregateUsage.cacheReadTokens,
+        cacheWriteTokens: aggregateUsage.cacheWriteTokens,
+        costUsd: aggregateUsage.costUsd,
+      });
     }
+  }
+
+  /** Helper used by both code paths in executeToolCalls to keep the realtime
+   *  shape in one place. Frontend appends to the matching run's toolCalls[]. */
+  private emitToolCall(
+    conversationId: string,
+    runId: string,
+    row: {
+      id: string;
+      toolName: string;
+      input: unknown;
+      output: unknown;
+      error: string | null;
+      durationMs: number | null;
+      createdAt: Date;
+    },
+  ) {
+    this.realtime.emitToConversation(conversationId, 'ai:run:tool-call', {
+      conversationId,
+      runId,
+      toolCall: {
+        id: row.id,
+        toolName: row.toolName,
+        input: row.input,
+        output: row.output,
+        error: row.error,
+        durationMs: row.durationMs,
+        createdAt: row.createdAt,
+      },
+    });
   }
 
   private async resolveAgent(conversation: Conversation) {
@@ -541,7 +623,7 @@ export class AiAgentRunnerService {
           toolName: call.name,
           output: blockedOutput,
         });
-        await this.prisma.aiToolCall.create({
+        const blockedRow = await this.prisma.aiToolCall.create({
           data: {
             runId: ctx.runId,
             toolName: call.name,
@@ -551,6 +633,7 @@ export class AiAgentRunnerService {
             durationMs: 0,
           },
         });
+        this.emitToolCall(ctx.conversationId, ctx.runId, blockedRow);
         continue;
       }
 
@@ -612,7 +695,7 @@ export class AiAgentRunnerService {
         await new Promise((r) => setTimeout(r, 500));
       }
 
-      await this.prisma.aiToolCall.create({
+      const toolCallRow = await this.prisma.aiToolCall.create({
         data: {
           runId: ctx.runId,
           toolName: call.name,
@@ -622,6 +705,7 @@ export class AiAgentRunnerService {
           durationMs: Date.now() - startedAt,
         },
       });
+      this.emitToolCall(ctx.conversationId, ctx.runId, toolCallRow);
 
       // Surface silent failures: notify the org's humans whenever a tool
       // call returns ok:false / status>=400 OR an exception was thrown.
@@ -932,54 +1016,9 @@ interface LlmMessageWithToolCalls extends LlmMessage {
   toolCalls?: LlmToolCall[];
 }
 
-/**
- * Removes hallucinated turn markers and "narrator mode" metacomments from
- * LLM text output. Models occasionally emit transcripts ("Human: oi") or
- * worse, square-bracketed monologues ("[A mensagem é apenas X. Não devo
- * responder...]") that should NEVER reach the customer.
- *
- * Strategy:
- *   1. Strip leading turn markers (Human:, Lead:, etc) — cascading
- *   2. Truncate at any mid-text "Role:" line
- *   3. If the WHOLE message is wrapped in [...] or ([...]) — narrator
- *      meta-thought — return empty so the caller sends nothing
- */
-function sanitizeAssistantText(input: string): string {
-  if (!input) return '';
-  let text = input.trim();
-  const markerLine =
-    /^\s*(human|user|assistant|ai|claude|model|lead|cliente|cliente:?|agent|você|voce|bot)\s*:\s*/i;
-
-  while (markerLine.test(text)) {
-    text = text.replace(markerLine, '').trim();
-  }
-
-  const splitIdx = text.search(/\n\s*(human|user|assistant|ai|claude|lead|cliente)\s*:\s*/i);
-  if (splitIdx >= 0) text = text.slice(0, splitIdx).trim();
-
-  // Narrator-mode detection: the LLM occasionally produces a self-aware
-  // monologue wrapped entirely in brackets — "[A mensagem do cliente é
-  // apenas X. Não devo responder]". That's the model thinking out loud
-  // and the fallback was sending it as a chat reply. If the WHOLE text
-  // is wrapped in [...] (with optional surrounding parens or "(thinking)"
-  // labels), drop it. Real product replies that mention "[link]" or
-  // similar inline brackets aren't affected because they don't span the
-  // full message.
-  const narratorWrap = /^\(?\s*\[[\s\S]+\]\s*\)?$/;
-  if (narratorWrap.test(text)) return '';
-
-  // Also catch unwrapped narrator phrases that always start with the same
-  // self-referential constructions in pt-BR.
-  const narratorPrefixes = [
-    /^\s*\(?\s*o cliente (?:apenas|só|somente)\s/i,
-    /^\s*\(?\s*a mensagem (?:do cliente|dele|dela) (?:é|foi)\s/i,
-    /^\s*\(?\s*não (?:devo|preciso) responder\b/i,
-    /^\s*\(?\s*nada a (?:fazer|responder)\b/i,
-  ];
-  if (narratorPrefixes.some((re) => re.test(text))) return '';
-
-  return text;
-}
+// sanitizeAssistantText vive em ./text-guards (importado no topo) pra
+// ser reutilizado pelo replyToConversation tool — segunda linha de defesa
+// que intercepta texto antes de chegar no provider.
 
 /**
  * Tells whether a tool failure is worth retrying. Transient = upstream
