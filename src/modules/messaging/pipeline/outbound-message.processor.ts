@@ -132,6 +132,14 @@ export class OutboundMessageProcessor extends WorkerHost {
         message: updated,
         conversationId: updated.conversationId,
       });
+      // Paridade com messages.service.send() (linhas 243-249): emitir também
+      // para o conv room garante que agents fora do channel room (edge case
+      // de AGENT sem grant ou que perdeu o channel join) recebam o update
+      // SENT como message:new, não só via message:status.
+      this.realtimeGateway.emitToConversation(updated.conversationId, 'message:new', {
+        message: updated,
+        conversationId: updated.conversationId,
+      });
       this.logger.log(
         `Outbound sent: msg=${updated.id} externalId=${result.externalId}`,
       );
