@@ -47,7 +47,12 @@ export class InstagramInboundAdapter implements InboundChannelPort {
     channel?: Channel,
   ): boolean {
     const appSecret = (channel?.config as Record<string, any> | undefined)?.appSecret;
-    if (!appSecret) return true;
+    if (!appSecret) {
+      this.logger.warn(
+        `IG channel ${channel?.id ?? 'unknown'} sem appSecret — validação de assinatura desabilitada`,
+      );
+      return true;
+    }
 
     const signature = headers['x-hub-signature-256'];
     if (!signature) return false;
