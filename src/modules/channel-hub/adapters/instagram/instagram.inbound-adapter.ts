@@ -128,12 +128,19 @@ export class InstagramInboundAdapter implements InboundChannelPort {
   handleVerification(
     query: Record<string, string>,
     webhookSecret?: string,
+    channel?: Channel,
   ): VerificationResponse {
     const mode = query['hub.mode'];
     const token = query['hub.verify_token'];
     const challenge = query['hub.challenge'];
+    // Aceitar verify token via channel.config.verifyToken OU channel.webhookSecret
+    // (paridade com whatsapp-official.inbound-adapter.ts — remove necessidade do
+    // workaround "duplicar token nos dois lugares" no setup B1 do Sprint S17).
+    const verifyToken =
+      (channel?.config as Record<string, any> | undefined)?.verifyToken ||
+      webhookSecret;
 
-    if (mode === 'subscribe' && token === webhookSecret) {
+    if (mode === 'subscribe' && verifyToken && token === verifyToken) {
       this.logger.log('Instagram webhook verification successful');
       return { statusCode: 200, body: challenge };
     }
