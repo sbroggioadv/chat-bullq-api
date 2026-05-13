@@ -6,7 +6,7 @@ import {
   BadRequestException,
   Logger,
 } from '@nestjs/common';
-import { OrgRole } from '@prisma/client';
+import { OrgRole, Prisma } from '@prisma/client';
 import { OrganizationsRepository } from './organizations.repository';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
@@ -26,11 +26,31 @@ export class OrganizationsService {
 
   async updateOrganization(orgId: string, dto: UpdateOrganizationDto) {
     await this.getOrganization(orgId);
-    const { aiBusinessHours, ...rest } = dto;
+    const {
+      aiBusinessHours,
+      watchdogBusinessHours,
+      watchdogConfig,
+      allowedUrlDomains,
+      ...rest
+    } = dto;
     return this.repository.update(orgId, {
       ...rest,
       ...(aiBusinessHours !== undefined
         ? { aiBusinessHours: aiBusinessHours as object }
+        : {}),
+      ...(watchdogBusinessHours !== undefined
+        ? { watchdogBusinessHours: watchdogBusinessHours as object }
+        : {}),
+      ...(watchdogConfig !== undefined
+        ? { watchdogConfig: watchdogConfig as object }
+        : {}),
+      ...(allowedUrlDomains !== undefined
+        ? {
+            allowedUrlDomains:
+              allowedUrlDomains === null
+                ? Prisma.JsonNull
+                : (allowedUrlDomains as Prisma.InputJsonValue),
+          }
         : {}),
     });
   }

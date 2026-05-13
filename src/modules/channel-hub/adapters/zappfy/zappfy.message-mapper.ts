@@ -18,10 +18,23 @@ export class ZappfyMessageMapper {
     const phone = chatid.replace(/@s\.whatsapp\.net|@g\.us/g, '');
     const isEcho = msg.fromMe === true;
 
+    // contactName resolution:
+    //  - Group: chat name (the group's name).
+    //  - 1-on-1 inbound: senderName = the contact who sent it = correct.
+    //  - 1-on-1 echo (fromMe=true): senderName is OURSELVES (the connected
+    //    WhatsApp), NOT the contact. Using it here used to overwrite the
+    //    contact's profileName with the operator's own name every time they
+    //    replied from their phone. Fall back to chat name only.
+    const resolvedContactName = isGroup
+      ? event?.chat?.name || msg.chatName
+      : isEcho
+        ? event?.chat?.name
+        : msg.senderName || event?.chat?.name;
+
     const result: NormalizedInboundMessage = {
       externalMessageId: msg.messageid || msg.id || '',
       externalContactId: chatid,
-      contactName: isGroup ? (event?.chat?.name || msg.chatName) : (msg.senderName || event?.chat?.name),
+      contactName: resolvedContactName,
       contactPhone: isGroup ? undefined : phone,
       channelType: ChannelType.WHATSAPP_ZAPPFY,
       timestamp: new Date(msg.messageTimestamp || Date.now()),

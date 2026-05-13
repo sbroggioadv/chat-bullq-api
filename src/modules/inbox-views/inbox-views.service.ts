@@ -32,6 +32,12 @@ export class InboxViewsService {
     filters: Record<string, any>;
   }> = [
     {
+      name: 'Não lidas',
+      icon: 'MailOpen',
+      color: '#ef4444',
+      filters: { unreadOnly: true },
+    },
+    {
       name: 'Archived',
       icon: 'Archive',
       color: '#6b7280',
@@ -178,6 +184,11 @@ export class InboxViewsService {
    * Apply a view's filters and return a paginated conversation list. Reuses
    * the existing ConversationsService.findInbox for parity with the default
    * inbox query.
+   *
+   * `overrides` = filtros locais do user passados pela toolbar (ex: ligar
+   * "Não lidas" dentro de uma view de canal específico, ou filtrar por tag
+   * em cima de uma view de "Pendentes"). Regra: parâmetro presente vence
+   * o filtro salvo da view. View é baseline, query string é override.
    */
   async findConversations(
     id: string,
@@ -187,6 +198,15 @@ export class InboxViewsService {
     page: number,
     limit: number,
     extraSearch?: string,
+    overrides?: {
+      unread?: string;
+      archived?: string;
+      groups?: string;
+      channelId?: string;
+      tagIds?: string;
+      assignedToId?: string;
+      stuck?: string;
+    },
   ) {
     const view = await this.findOne(id, organizationId, userId);
     const filters = (view.filters ?? {}) as InboxViewFiltersDto;
@@ -202,18 +222,59 @@ export class InboxViewsService {
       ? filters.statuses.join(',')
       : undefined;
 
+    // ─── Merge overrides ─────────────────────────────────────────
+    // Cada override só sobrepõe quando o user mandou algo explícito.
+    // String vazia em archived/groups conta como "não passou".
+    const ov = overrides ?? {};
+
+    const finalUnread =
+      ov.unread !== undefined
+        ? ov.unread === 'true' || ov.unread === '1'
+        : (filters.unreadOnly ?? false);
+
+    const finalArchived: 'exclude' | 'only' | 'any' | undefined =
+      ov.archived === 'only' || ov.archived === 'any' || ov.archived === 'exclude'
+        ? (ov.archived as 'exclude' | 'only' | 'any')
+        : filters.archived;
+
+    let finalKind = filters.kind;
+    if (ov.groups === 'exclude') finalKind = 'INDIVIDUAL';
+    else if (ov.groups === 'only') finalKind = 'GROUP';
+    // groups='include' deixa undefined (mostra ambos)
+    else if (ov.groups === 'include') finalKind = undefined;
+
+    const finalChannelIds = ov.channelId
+      ? [ov.channelId]
+      : filters.channelIds;
+
+    // Tags: query param SUBSTITUI tags da view (não merge — mais previsível
+    // pro user clicar e ver o filtro mudar). Se quiser combinar, salva uma
+    // view custom com as tags certas.
+    const overrideTagIds = ov.tagIds
+      ?.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const finalTagIds =
+      overrideTagIds && overrideTagIds.length > 0
+        ? overrideTagIds
+        : filters.tagIds;
+
+    const finalAssignedToId = ov.assignedToId ?? assignedToId;
+    const finalStuck = ov.stuck === 'true' || ov.stuck === '1';
+
     return this.conversationsService.findInbox(
       organizationId,
       {
         status,
-        channelIds: filters.channelIds,
+        channelIds: finalChannelIds,
         conversationIds: filters.conversationIds,
-        kind: filters.kind,
-        tagIds: filters.tagIds,
-        assignedToId,
+        kind: finalKind,
+        tagIds: finalTagIds,
+        assignedToId: finalAssignedToId,
         search: extraSearch,
-        archived: filters.archived,
-        unreadOnly: filters.unreadOnly,
+        archived: finalArchived,
+        unreadOnly: finalUnread,
+        stuckOnly: finalStuck || undefined,
       },
       page,
       limit,

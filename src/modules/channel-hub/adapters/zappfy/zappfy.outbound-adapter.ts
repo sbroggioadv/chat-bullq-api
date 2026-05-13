@@ -79,6 +79,13 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
     return this.httpClient.resolveInboundMediaUrl(channel, hint.externalMessageId);
   }
 
+  async deleteMessage(
+    channel: Channel,
+    externalMessageId: string,
+  ): Promise<void> {
+    await this.httpClient.deleteMessage(channel, externalMessageId);
+  }
+
   getRateLimits(): RateLimitConfig {
     return {
       maxPerSecond: 1,

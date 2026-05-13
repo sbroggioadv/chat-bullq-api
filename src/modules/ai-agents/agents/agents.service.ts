@@ -490,6 +490,7 @@ export class AgentsService {
     organizationId: string,
     options: {
       agentId?: string;
+      conversationId?: string;
       period?: '24h' | '7d' | '30d' | 'all';
       hasErrors?: boolean;
       status?: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'SKIPPED';
@@ -507,6 +508,9 @@ export class AgentsService {
       where: {
         organizationId,
         ...(options.agentId ? { agentId: options.agentId } : {}),
+        ...(options.conversationId
+          ? { conversationId: options.conversationId }
+          : {}),
         ...(since ? { startedAt: { gte: since } } : {}),
         ...(options.status ? { status: options.status } : {}),
         ...(options.finalAction
@@ -570,6 +574,183 @@ export class AgentsService {
       _sum: { inputTokens: true, outputTokens: true },
     });
     return (agg._sum.inputTokens ?? 0) + (agg._sum.outputTokens ?? 0);
+  }
+
+  // ─── Watchdog stats (monitoramento de conversas presas) ──────────
+
+  /**
+   * Snapshot completo do watchdog pra a UI Jarvis → Watchdog. Retorna:
+   *   - config atual (enabled, thresholds)
+   *   - KPIs (timers ativos, checks 24h, reativações, presas)
+   *   - lista das conversas com stuck_attempts > 0 (em alerta)
+   *   - últimas conversas que entraram em isStuck=true (precisam atenção)
+   */
+  async watchdogStats(organizationId: string) {
+    const org = await this.prisma.organization.findUniqueOrThrow({
+      where: { id: organizationId },
+      select: {
+        watchdogEnabled: true,
+        watchdogConfig: true,
+        watchdogBusinessHours: true,
+        aiTimezone: true,
+      },
+    });
+
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [
+      activeTimers,
+      checks24h,
+      reactivations,
+      stuck,
+      topAlert,
+      recentStuck,
+    ] = await Promise.all([
+      this.prisma.conversation.count({
+        where: {
+          organizationId,
+          deletedAt: null,
+          watchdogJobId: { not: null },
+        },
+      }),
+      this.prisma.conversation.count({
+        where: {
+          organizationId,
+          deletedAt: null,
+          lastWatchdogCheckAt: { gte: since24h },
+        },
+      }),
+      this.prisma.conversation.aggregate({
+        where: {
+          organizationId,
+          deletedAt: null,
+          lastWatchdogCheckAt: { gte: since24h },
+          stuckAttempts: { gt: 0 },
+        },
+        _sum: { stuckAttempts: true },
+      }),
+      this.prisma.conversation.count({
+        where: { organizationId, deletedAt: null, isStuck: true },
+      }),
+      this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          deletedAt: null,
+          stuckAttempts: { gt: 0 },
+          isStuck: false,
+        },
+        orderBy: [{ stuckAttempts: 'desc' }, { lastWatchdogCheckAt: 'desc' }],
+        take: 15,
+        select: {
+          id: true,
+          status: true,
+          stuckAttempts: true,
+          lastWatchdogCheckAt: true,
+          watchdogJobId: true,
+          updatedAt: true,
+          contact: { select: { id: true, name: true, phone: true } },
+          channel: { select: { id: true, name: true, type: true } },
+        },
+      }),
+      this.prisma.conversation.findMany({
+        where: { organizationId, deletedAt: null, isStuck: true },
+        orderBy: { lastWatchdogCheckAt: 'desc' },
+        take: 10,
+        select: {
+          id: true,
+          status: true,
+          stuckAttempts: true,
+          lastWatchdogCheckAt: true,
+          updatedAt: true,
+          contact: { select: { id: true, name: true, phone: true } },
+          channel: { select: { id: true, name: true, type: true } },
+        },
+      }),
+    ]);
+
+    return {
+      enabled: org.watchdogEnabled,
+      config: {
+        delayBotMin: 15,
+        delayPendingMin: 15,
+        delayHumanIdleMin: 60,
+        maxAttempts: 3,
+        ...((org.watchdogConfig as Record<string, number> | null) ?? {}),
+      },
+      businessHours: org.watchdogBusinessHours,
+      timezone: org.aiTimezone,
+      stats: {
+        activeTimers,
+        checks24h,
+        reactivations24h: reactivations._sum.stuckAttempts ?? 0,
+        stuck,
+      },
+      topAlert,
+      recentStuck,
+    };
+  }
+
+  // ─── Skills do agent + gating de aprovação ───────────────────────
+
+  /**
+   * Lista as skills atribuídas a um agent + flag `requiresApproval` da
+   * junction. UI usa pra renderizar a lista com toggle.
+   */
+  async listSkills(organizationId: string, agentId: string) {
+    await this.assertOwnership(organizationId, agentId);
+    const rows = await this.prisma.aiAgentSkill.findMany({
+      where: { agentId },
+      include: {
+        skill: {
+          select: {
+            id: true,
+            name: true,
+            description: true,
+            source: true,
+            category: true,
+            isActive: true,
+          },
+        },
+      },
+      orderBy: { skill: { name: 'asc' } },
+    });
+    return rows.map((r) => ({
+      skillId: r.skillId,
+      requiresApproval: r.requiresApproval,
+      skill: r.skill,
+    }));
+  }
+
+  /**
+   * Liga/desliga o gating de aprovação humana pra essa skill nesse agent.
+   */
+  async setSkillApproval(
+    organizationId: string,
+    agentId: string,
+    skillId: string,
+    requiresApproval: boolean,
+  ) {
+    await this.assertOwnership(organizationId, agentId);
+    const existing = await this.prisma.aiAgentSkill.findUnique({
+      where: { agentId_skillId: { agentId, skillId } },
+    });
+    if (!existing) {
+      throw new NotFoundException(
+        `Skill ${skillId} não está atribuída ao agent ${agentId}`,
+      );
+    }
+    return this.prisma.aiAgentSkill.update({
+      where: { agentId_skillId: { agentId, skillId } },
+      data: { requiresApproval },
+    });
+  }
+
+  private async assertOwnership(organizationId: string, agentId: string) {
+    const agent = await this.prisma.aiAgent.findFirst({
+      where: { id: agentId, organizationId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!agent) throw new NotFoundException(`Agent ${agentId} não encontrado`);
   }
 }
 

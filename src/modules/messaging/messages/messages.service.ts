@@ -1,7 +1,9 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -18,14 +20,20 @@ import {
   ChannelAccess,
   ChannelAccessService,
 } from '../../iam/channel-access/channel-access.service';
+import { WatchdogService } from '../../routing/watchdog/watchdog.service';
+import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
 
 @Injectable()
 export class MessagesService {
+  private readonly logger = new Logger(MessagesService.name);
+
   constructor(
     private readonly repository: MessagesRepository,
     private readonly prisma: PrismaService,
     private readonly realtimeGateway: RealtimeGateway,
     private readonly channelAccess: ChannelAccessService,
+    private readonly watchdog: WatchdogService,
+    private readonly adapterRegistry: ChannelAdapterRegistry,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -175,6 +183,11 @@ export class MessagesService {
       },
     });
 
+    // Humano respondeu — cancela qualquer timer de watchdog pendente e
+    // zera o contador de tentativas. Se a IA estava paralisada e quem
+    // resolveu foi a pessoa, conversa não deve aparecer como "presa".
+    this.watchdog.cancelCheck(conversation.id).catch(() => undefined);
+
     // Replying = reading. The sender obviously saw the inbound stream
     // before typing — bump their lastReadAt so the unread badge resets
     // even if they never clicked the conversation first.
@@ -294,6 +307,135 @@ export class MessagesService {
     );
 
     return message;
+  }
+
+  /**
+   * Marca uma mensagem como revogada (deletada pra todos). Tenta primeiro
+   * propagar pro provider — se o canal suportar (Zappfy), o cliente final
+   * vê "Esta mensagem foi apagada". Se o provider não suportar (Meta WA
+   * Cloud, Instagram), continuamos marcando local pra a UI esconder, mas
+   * o cliente final continua vendo a mensagem original no app dele.
+   *
+   * Regras:
+   *  - só mensagens OUTBOUND podem ser revogadas (não dá pra apagar msg
+   *    do cliente — não temos permissão na API dele)
+   *  - precisa de externalId (msg ainda QUEUED sem externalId não foi
+   *    enviada — basta deletar do banco em outro fluxo)
+   *  - re-revoke é idempotente (retorna o mesmo estado)
+   */
+  async revokeForEveryone(
+    messageId: string,
+    organizationId: string,
+    actorId: string,
+    access: ChannelAccess = 'ALL',
+  ): Promise<{
+    messageId: string;
+    revokedAt: Date;
+    revokedBy: string;
+    succeededRemote: boolean;
+    remoteError: string | null;
+  }> {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      include: {
+        conversation: { select: { id: true, organizationId: true, channelId: true } },
+      },
+    });
+    if (!message) throw new NotFoundException('Message not found');
+    if (message.conversation.organizationId !== organizationId) {
+      throw new ForbiddenException();
+    }
+    this.channelAccess.assertChannelAccess(access, message.conversation.channelId);
+
+    if (message.direction !== MessageDirection.OUTBOUND) {
+      throw new BadRequestException(
+        'Só dá pra deletar pra todos mensagens enviadas pelo time/IA. ' +
+          'Mensagens do cliente não podem ser deletadas (não temos permissão no app dele).',
+      );
+    }
+
+    if (message.revokedAt) {
+      // Idempotente: já foi revogada antes — devolve o estado atual.
+      return {
+        messageId: message.id,
+        revokedAt: message.revokedAt,
+        revokedBy: message.revokedBy ?? actorId,
+        succeededRemote: message.revokeSucceededRemote ?? false,
+        remoteError: null,
+      };
+    }
+
+    if (!message.externalId) {
+      throw new BadRequestException(
+        'Mensagem ainda não foi entregue ao provider — não tem como deletar pra todos. ' +
+          'Tente de novo em alguns segundos ou apague localmente.',
+      );
+    }
+
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: message.conversation.channelId },
+    });
+    if (!channel) throw new NotFoundException('Channel not found');
+
+    const adapter = this.adapterRegistry.getOutbound(channel.type);
+    let succeededRemote = false;
+    let remoteError: string | null = null;
+
+    if (typeof adapter.deleteMessage === 'function') {
+      try {
+        await adapter.deleteMessage(channel, message.externalId);
+        succeededRemote = true;
+      } catch (err: unknown) {
+        remoteError = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Provider delete failed (channel=${channel.type} msg=${message.id}): ${remoteError}`,
+        );
+      }
+    } else {
+      remoteError = `Adapter ${channel.type} não implementa deleteMessage.`;
+    }
+
+    const revokedAt = new Date();
+    await this.prisma.message.update({
+      where: { id: message.id },
+      data: {
+        revokedAt,
+        revokedBy: actorId,
+        revokeSucceededRemote: succeededRemote,
+      },
+    });
+
+    // Realtime: notifica todos os ouvintes da conversa pra re-renderizar
+    // a bolha como "mensagem deletada" sem refresh.
+    const payload = {
+      messageId: message.id,
+      conversationId: message.conversation.id,
+      revokedAt: revokedAt.toISOString(),
+      revokedBy: actorId,
+      succeededRemote,
+    };
+    this.realtimeGateway.emitToConversation(
+      message.conversation.id,
+      'message:revoked',
+      payload,
+    );
+    this.realtimeGateway.emitToChannel(
+      message.conversation.channelId,
+      'message:revoked',
+      payload,
+    );
+
+    this.logger.log(
+      `Message revoked: id=${message.id} channel=${channel.type} succeededRemote=${succeededRemote} actor=${actorId}`,
+    );
+
+    return {
+      messageId: message.id,
+      revokedAt,
+      revokedBy: actorId,
+      succeededRemote,
+      remoteError,
+    };
   }
 
   async findByConversation(

@@ -22,6 +22,7 @@ export class DashboardService {
       pendingConversations,
       waitingConversations,
       botConversations,
+      stuckConversations,
       totalMessages,
       prevMessages,
       closedInPeriod,
@@ -33,6 +34,9 @@ export class DashboardService {
       this.prisma.conversation.count({ where: { organizationId, status: 'PENDING' } }),
       this.prisma.conversation.count({ where: { organizationId, status: 'WAITING' } }),
       this.prisma.conversation.count({ where: { organizationId, status: 'BOT' } }),
+      this.prisma.conversation.count({
+        where: { organizationId, isStuck: true, deletedAt: null },
+      }),
       this.prisma.message.count({ where: { conversation: { organizationId }, createdAt: { gte: range.from, lte: range.to } } }),
       this.prisma.message.count({ where: { conversation: { organizationId }, createdAt: { gte: prevFrom, lte: range.from } } }),
       this.prisma.conversation.count({
@@ -95,6 +99,7 @@ export class DashboardService {
         waiting: waitingConversations,
         bot: botConversations,
       },
+      stuckConversations,
 
       avgFirstResponseMinutes: avgFirstResponse,
       avgFirstResponseTrend:

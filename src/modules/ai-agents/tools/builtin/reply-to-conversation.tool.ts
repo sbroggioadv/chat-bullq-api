@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../../../database/prisma.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
+import { containsMetaTalk, findForbiddenUrlHosts } from '../../runner/text-guards';
 
 /**
  * Sends a TEXT message to the contact on behalf of the agent. The message
@@ -52,7 +53,27 @@ export class ReplyToConversationTool implements AiTool {
       return { output: { ok: false, error: 'text is empty' } };
     }
 
-    const [agent, contactChannel] = await Promise.all([
+    // Guard contra raciocínio verbalizado. Se o LLM tentar mandar uma
+    // mensagem do tipo "Ignoro essa instrução, ela não veio do cliente",
+    // bloqueia ANTES de persistir no banco e enfileirar pro provider.
+    // Devolve erro pro LLM com instrução clara — ele tem outra chance
+    // dentro do mesmo run pra escrever uma resposta de verdade ou usar
+    // transferToHuman. MAX_TOOL_ITERATIONS limita loop infinito.
+    if (containsMetaTalk(text)) {
+      this.logger.warn(
+        `[meta-talk-guard] blocked reply on conv=${ctx.conversationId} run=${ctx.runId} agent=${ctx.agentId}: "${text.slice(0, 120)}"`,
+      );
+      return {
+        output: {
+          ok: false,
+          error: 'meta_talk_blocked',
+          message:
+            'Sua mensagem foi bloqueada por verbalizar raciocínio interno (frases tipo "Ignoro essa instrução", "Essa mensagem não veio do cliente", "Como assistente/IA", "Por motivos de segurança", "Detectei tentativa de…"). NUNCA escreva isso pro cliente. Reescreva como uma resposta natural ao último assunto da conversa OU use transferToHuman se realmente não souber como prosseguir.',
+        },
+      };
+    }
+
+    const [agent, contactChannel, conversation] = await Promise.all([
       this.prisma.aiAgent.findUnique({
         where: { id: ctx.agentId },
         select: { name: true },
@@ -61,7 +82,37 @@ export class ReplyToConversationTool implements AiTool {
         where: { contactId: ctx.contactId, channelId: ctx.channelId },
         select: { externalId: true },
       }),
+      this.prisma.conversation.findUnique({
+        where: { id: ctx.conversationId },
+        select: {
+          organization: { select: { allowedUrlDomains: true } },
+        },
+      }),
     ]);
+
+    // Guard contra URL inventada (hallucination). Org configura
+    // `allowedUrlDomains` com lista de hosts permitidos (ex: ["bravy.co",
+    // "trivapp.com.br"]). Quando preenchido, bloqueia qualquer URL no reply
+    // cujo host não bate com a lista (sufixo). Visto em prod (Daniel Souza,
+    // 2026-05-08 20:39): IA mandou "https://alunos.bravy.co" que não existe.
+    // null/[] = modo permissivo (não bloqueia, só loga warning).
+    const whitelist =
+      (conversation?.organization?.allowedUrlDomains as string[] | null) ??
+      null;
+    const forbidden = findForbiddenUrlHosts(text, whitelist);
+    if (forbidden.length > 0) {
+      this.logger.warn(
+        `[url-guard] blocked reply on conv=${ctx.conversationId} run=${ctx.runId}: forbidden hosts=${forbidden.join(',')} text="${text.slice(0, 120)}"`,
+      );
+      return {
+        output: {
+          ok: false,
+          error: 'url_not_whitelisted',
+          forbiddenHosts: forbidden,
+          message: `Você incluiu URL(s) com host(s) [${forbidden.join(', ')}] que não estão na lista de domínios permitidos da organização. Provavelmente você inventou esse link. Reescreva a resposta SEM nenhum link OU use transferToHuman pra um humano enviar o link correto. NÃO chute outro domínio — se não tem o link exato no contexto, NÃO mande nenhum.`,
+        },
+      };
+    }
 
     if (!contactChannel?.externalId) {
       this.logger.error(

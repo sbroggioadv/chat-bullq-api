@@ -71,6 +71,7 @@ export class ConversationsController {
     @Query('limit') limit?: string,
     @Query('archived') archived?: string,
     @Query('unread') unread?: string,
+    @Query('stuck') stuck?: string,
     @Query('groups') groups?: string,
     @Query('tagIds') tagIds?: string,
   ) {
@@ -95,6 +96,7 @@ export class ConversationsController {
         search,
         archived: archivedScope,
         unreadOnly: unread === 'true' || unread === '1',
+        stuckOnly: stuck === 'true' || stuck === '1',
         kind,
         tagIds: parsedTagIds?.length ? parsedTagIds : undefined,
       },
@@ -143,6 +145,17 @@ export class ConversationsController {
       access,
       body?.lastReadMessageId,
     );
+  }
+
+  @Post(':id/unread')
+  @ApiOperation({ summary: 'Mark conversation as unread for current user' })
+  markAsUnread(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.markAsUnread(id, orgId, userId, access);
   }
 
   @Get('counts')

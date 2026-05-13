@@ -34,6 +34,12 @@ export interface InboxFilters {
    * returned. Requires `currentUserId` — without it, the flag is a no-op.
    */
   unreadOnly?: boolean;
+  /**
+   * When true, only conversations marked `isStuck=true` pelo watchdog
+   * (excederam `maxAttempts` sem resposta) são retornadas. Útil pro
+   * filtro/widget do dashboard.
+   */
+  stuckOnly?: boolean;
 }
 
 @Injectable()
@@ -120,6 +126,7 @@ export class ConversationsRepository {
       ];
     }
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
+    if (filters.stuckOnly) where.isStuck = true;
     if (filters.search) {
       where.OR = [
         { contact: { name: { contains: filters.search, mode: 'insensitive' } } },
@@ -128,13 +135,43 @@ export class ConversationsRepository {
       ];
     }
 
-    // Cheap pre-filter for "unread only": drop conversations that have no
-    // inbound messages at all. The accurate per-user unread check (against
-    // ConversationRead.lastReadAt) happens post-query in attachUnreadCounts;
-    // we filter `unreadCount > 0` after enrichment so the row count returned
-    // here is an upper bound. Good enough — the typical unread set is small.
+    // "Unread only" filter — materialize the exact set of conversation ids
+    // that have at least one INBOUND message newer than this user's
+    // ConversationRead.lastReadAt (or no read row at all). Doing this in SQL
+    // lets the main paginated query filter by `id IN (...)` so skip/take and
+    // the count() are honest. Previously this ran post-paging in JS, which
+    // truncated each page to the unread subset of those 30 rows and made
+    // pagination terminate early — unread conversations sitting past row 30
+    // never surfaced.
     if (filters.unreadOnly && currentUserId) {
-      where.messages = { some: { direction: 'INBOUND' } };
+      const rows = await this.prisma.$queryRaw<{ conversation_id: string }[]>`
+        SELECT DISTINCT m.conversation_id
+        FROM messages m
+        JOIN conversations c ON c.id = m.conversation_id
+        LEFT JOIN conversation_reads cr
+          ON cr.conversation_id = m.conversation_id
+          AND cr.user_id = ${currentUserId}
+        WHERE c.organization_id = ${filters.organizationId}
+          AND c.deleted_at IS NULL
+          AND m.direction = 'INBOUND'
+          AND (cr.last_read_at IS NULL OR m.created_at > cr.last_read_at)
+      `;
+      const unreadIds = rows.map((r) => r.conversation_id);
+      if (unreadIds.length === 0) return { conversations: [], total: 0 };
+      // Intersect with any pre-existing id constraint (from conversationIds).
+      if (
+        where.id &&
+        typeof where.id === 'object' &&
+        'in' in where.id &&
+        Array.isArray((where.id as { in: string[] }).in)
+      ) {
+        const existing = (where.id as { in: string[] }).in;
+        const intersect = existing.filter((id) => unreadIds.includes(id));
+        if (intersect.length === 0) return { conversations: [], total: 0 };
+        where.id = { in: intersect };
+      } else {
+        where.id = { in: unreadIds };
+      }
     }
 
     const [conversations, total] = await this.prisma.$transaction([
@@ -184,13 +221,6 @@ export class ConversationsRepository {
     const enriched = currentUserId
       ? await this.attachUnreadCounts(conversations, currentUserId)
       : conversations.map((c) => ({ ...c, unreadCount: 0 }));
-
-    // Final unread filter — happens after enrichment because the cursor
-    // comparison can't be expressed cleanly in Prisma's WHERE.
-    if (filters.unreadOnly && currentUserId) {
-      const filtered = enriched.filter((c) => c.unreadCount > 0);
-      return { conversations: filtered, total: filtered.length };
-    }
 
     return { conversations: enriched, total };
   }
@@ -246,6 +276,51 @@ export class ConversationsRepository {
         lastReadAt: new Date(),
       },
     });
+  }
+
+  /**
+   * Marks a conversation as unread for a user. Slack/Gmail-style semantics:
+   * we don't reset the entire history — we push `lastReadAt` to right before
+   * the most recent INBOUND message so the badge shows ≥ 1 unread.
+   * If there's no inbound message yet, drop the read row entirely.
+   */
+  async markAsUnread(userId: string, conversationId: string) {
+    const lastInbound = await this.prisma.message.findFirst({
+      where: { conversationId, direction: 'INBOUND' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, createdAt: true },
+    });
+
+    if (!lastInbound) {
+      await this.prisma.conversationRead.deleteMany({
+        where: { userId, conversationId },
+      });
+      return { lastReadAt: null as Date | null, unreadCount: 0 };
+    }
+
+    // 1ms before the last inbound — the count query uses `gt`, so this
+    // makes that single message (and any later ones) count as unread.
+    const newLastReadAt = new Date(lastInbound.createdAt.getTime() - 1);
+    await this.prisma.conversationRead.upsert({
+      where: { userId_conversationId: { userId, conversationId } },
+      create: {
+        userId,
+        conversationId,
+        lastReadMessageId: null,
+        lastReadAt: newLastReadAt,
+      },
+      update: { lastReadMessageId: null, lastReadAt: newLastReadAt },
+    });
+
+    const unreadCount = await this.prisma.message.count({
+      where: {
+        conversationId,
+        direction: 'INBOUND',
+        createdAt: { gt: newLastReadAt },
+      },
+    });
+
+    return { lastReadAt: newLastReadAt, unreadCount };
   }
 
   async findById(id: string) {

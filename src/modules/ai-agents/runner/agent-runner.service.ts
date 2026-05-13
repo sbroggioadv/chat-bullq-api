@@ -8,6 +8,8 @@ import {
   AiTool,
   NotificationType,
 } from '@prisma/client';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
 import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
@@ -19,6 +21,19 @@ import { PromptBuilderService } from './prompt-builder.service';
 import { CatalogSyncService } from './catalog-sync.service';
 import { NotificationsService } from '../../notifications/notifications.service';
 import { isToolCallFailure } from '../agents/agents.service';
+import {
+  AgentRouterService,
+  type AgentSelection,
+} from '../router/agent-router.service';
+import {
+  SecurityLayerService,
+  resolveSecurityRules,
+} from '../prompts/layers/security.layer';
+import type { SecurityRules } from '../prompts/types';
+import { RetrievalService } from '../rag/retrieval.service';
+import { RealtimeGateway } from '../../realtime/realtime.gateway';
+import { sanitizeAssistantText } from './text-guards';
+import { MediaUrlResolverService } from './media-url-resolver.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -63,6 +78,15 @@ export class AiAgentRunnerService {
     private readonly sqlExecutor: SqlToolExecutorService,
     private readonly catalogSync: CatalogSyncService,
     private readonly notifications: NotificationsService,
+    private readonly agentRouter: AgentRouterService,
+    private readonly securityLayer: SecurityLayerService,
+    private readonly retrieval: RetrievalService,
+    private readonly realtime: RealtimeGateway,
+    private readonly mediaUrlResolver: MediaUrlResolverService,
+    @InjectQueue('memory-extractor')
+    private readonly memoryExtractorQueue: Queue,
+    @InjectQueue('rag-indexer')
+    private readonly ragIndexerQueue: Queue,
   ) {}
 
   async run({
@@ -70,7 +94,24 @@ export class AiAgentRunnerService {
     triggerMessage,
     chainDepth = 0,
   }: RunInput): Promise<void> {
-    const agent = await this.resolveAgent(conversation);
+    // Fase 2: usa o agentRouter (com IntentClassifier) pra escolher o agent.
+    // Auto-chains (chainDepth > 0) NÃO classificam de novo — já tem activeAgentId.
+    let selection: AgentSelection | null = null;
+    if (chainDepth === 0) {
+      const triggerText = this.extractText(
+        (triggerMessage.content as unknown) ?? '',
+      );
+      selection = await this.agentRouter.selectAgent(
+        conversation,
+        triggerText,
+        [],
+      );
+    }
+    const agent = selection
+      ? await this.prisma.aiAgent.findFirst({
+          where: { id: selection.agentId, isActive: true, deletedAt: null },
+        })
+      : await this.resolveAgent(conversation);
     if (!agent) {
       this.logger.debug(
         `No agent resolved for conv ${conversation.id} — skipping run`,
@@ -116,7 +157,26 @@ export class AiAgentRunnerService {
         triggerMessageId: triggerMessage.id,
         modelId: agent.modelId,
         status: AiRunStatus.RUNNING,
+        classifiedIntent: selection?.classifiedIntent ?? null,
+        classifierConfidence: selection?.classifierConfidence ?? null,
+        skippedOrchestrator: selection?.skippedOrchestrator ?? false,
       },
+    });
+
+    // Realtime: powers the per-conversation agent-runs sidebar. Operators
+    // see the run appear the instant we boot it, even before the first
+    // tool call lands. Frontend joins `conv:<id>` while the chat is open.
+    this.realtime.emitToConversation(conversation.id, 'ai:run:start', {
+      conversationId: conversation.id,
+      runId: run.id,
+      agent: { id: agent.id, name: agent.name, kind: agent.kind },
+      modelId: agent.modelId,
+      startedAt: run.startedAt,
+      classifiedIntent: selection?.classifiedIntent ?? null,
+      classifierConfidence: selection?.classifierConfidence
+        ? Number(selection.classifierConfidence)
+        : null,
+      triggerMessageId: triggerMessage.id,
     });
 
     // Resolve every tool the agent can call:
@@ -129,20 +189,51 @@ export class AiAgentRunnerService {
       await this.resolveToolsAndSkills(agent.id, agent.kind);
 
     const startedAt = Date.now();
+
+    // Resolve URLs playable de mídia (imagens etc) ANTES de construir
+    // o prompt — a Anthropic SDK precisa de URLs públicas pra image
+    // blocks. Cache vive em Message.content.mediaUrl, então runs
+    // subsequentes na mesma conversa não pagam de novo.
+    const chronological = recentMessages.reverse();
+    const channelTypeByConv = new Map<string, string>([
+      [conversation.id, channel.type],
+    ]);
+    const mediaUrls = await this.mediaUrlResolver
+      .resolveMany(chronological, channelTypeByConv)
+      .catch((err) => {
+        this.logger.warn(
+          `media-url-resolver failed (run=${run.id}): ${err?.message ?? err}`,
+        );
+        return new Map<string, { url: string; mimeType?: string }>();
+      });
+
     const messages = this.promptBuilder.buildMessages({
       organization,
       agent,
       channel,
       contact,
       conversation,
-      // Reverse to chronological order for the LLM.
-      recentMessages: recentMessages.reverse(),
+      recentMessages: chronological,
+      mediaUrls,
       memorySummary: memory?.summary ?? null,
       memoryFacts: (memory?.facts as Record<string, unknown>) ?? null,
       triggerMessage,
       skillInstructions,
       catalog,
     });
+
+    // Fase 2.5: augmenta o system message com Security Layer (prepend)
+    // e RAG retrieval (append). Mantém o builder como source-of-truth da
+    // estrutura principal do prompt — só decora com regras imutáveis e
+    // contexto vetorial relevante do histórico longo do cliente.
+    await this.augmentSystemPromptWithLayers(
+      messages,
+      organization,
+      agent.id,
+      conversation.contactId,
+      conversation.id,
+      this.extractText(triggerMessage.content as unknown),
+    );
 
     const tools = llmTools;
 
@@ -321,13 +412,15 @@ export class AiAgentRunnerService {
         }
       }
 
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
       await this.prisma.aiAgentRun.update({
         where: { id: run.id },
         data: {
           status: AiRunStatus.COMPLETED,
           finalAction,
-          finishedAt: new Date(),
-          durationMs: Date.now() - startedAt,
+          finishedAt,
+          durationMs,
           inputTokens: aggregateUsage.inputTokens,
           outputTokens: aggregateUsage.outputTokens,
           cacheReadTokens: aggregateUsage.cacheReadTokens,
@@ -335,6 +428,34 @@ export class AiAgentRunnerService {
           costUsd: aggregateUsage.costUsd,
         },
       });
+      this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
+        conversationId: conversation.id,
+        runId: run.id,
+        status: AiRunStatus.COMPLETED,
+        finalAction,
+        errorMessage: null,
+        finishedAt,
+        durationMs,
+        inputTokens: aggregateUsage.inputTokens,
+        outputTokens: aggregateUsage.outputTokens,
+        cacheReadTokens: aggregateUsage.cacheReadTokens,
+        cacheWriteTokens: aggregateUsage.cacheWriteTokens,
+        costUsd: aggregateUsage.costUsd,
+      });
+
+      // Fase 2: enfileirar jobs assíncronos de memória + RAG
+      // (fire-and-forget — falha não pode quebrar o run)
+      this.scheduleAfterRunJobs(
+        agent.id,
+        conversation.id,
+        conversation.contactId,
+        triggerMessage,
+        finalAction,
+      ).catch((err) =>
+        this.logger.warn(
+          `Failed to schedule after-run jobs for run ${run.id}: ${err?.message ?? err}`,
+        ),
+      );
 
       // Auto-chain: if this run delegated to a worker, immediately fire the
       // worker run so the customer gets the new agent's first message right
@@ -370,13 +491,16 @@ export class AiAgentRunnerService {
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
         err?.stack,
       );
+      const finishedAt = new Date();
+      const durationMs = Date.now() - startedAt;
+      const errorMessage = err?.message ?? String(err);
       await this.prisma.aiAgentRun.update({
         where: { id: run.id },
         data: {
           status: AiRunStatus.FAILED,
-          errorMessage: err?.message ?? String(err),
-          finishedAt: new Date(),
-          durationMs: Date.now() - startedAt,
+          errorMessage,
+          finishedAt,
+          durationMs,
           inputTokens: aggregateUsage.inputTokens,
           outputTokens: aggregateUsage.outputTokens,
           cacheReadTokens: aggregateUsage.cacheReadTokens,
@@ -384,7 +508,51 @@ export class AiAgentRunnerService {
           costUsd: aggregateUsage.costUsd,
         },
       });
+      this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
+        conversationId: conversation.id,
+        runId: run.id,
+        status: AiRunStatus.FAILED,
+        finalAction: null,
+        errorMessage,
+        finishedAt,
+        durationMs,
+        inputTokens: aggregateUsage.inputTokens,
+        outputTokens: aggregateUsage.outputTokens,
+        cacheReadTokens: aggregateUsage.cacheReadTokens,
+        cacheWriteTokens: aggregateUsage.cacheWriteTokens,
+        costUsd: aggregateUsage.costUsd,
+      });
     }
+  }
+
+  /** Helper used by both code paths in executeToolCalls to keep the realtime
+   *  shape in one place. Frontend appends to the matching run's toolCalls[]. */
+  private emitToolCall(
+    conversationId: string,
+    runId: string,
+    row: {
+      id: string;
+      toolName: string;
+      input: unknown;
+      output: unknown;
+      error: string | null;
+      durationMs: number | null;
+      createdAt: Date;
+    },
+  ) {
+    this.realtime.emitToConversation(conversationId, 'ai:run:tool-call', {
+      conversationId,
+      runId,
+      toolCall: {
+        id: row.id,
+        toolName: row.toolName,
+        input: row.input,
+        output: row.output,
+        error: row.error,
+        durationMs: row.durationMs,
+        createdAt: row.createdAt,
+      },
+    });
   }
 
   private async resolveAgent(conversation: Conversation) {
@@ -475,7 +643,7 @@ export class AiAgentRunnerService {
           toolName: call.name,
           output: blockedOutput,
         });
-        await this.prisma.aiToolCall.create({
+        const blockedRow = await this.prisma.aiToolCall.create({
           data: {
             runId: ctx.runId,
             toolName: call.name,
@@ -485,6 +653,7 @@ export class AiAgentRunnerService {
             durationMs: 0,
           },
         });
+        this.emitToolCall(ctx.conversationId, ctx.runId, blockedRow);
         continue;
       }
 
@@ -546,7 +715,7 @@ export class AiAgentRunnerService {
         await new Promise((r) => setTimeout(r, 500));
       }
 
-      await this.prisma.aiToolCall.create({
+      const toolCallRow = await this.prisma.aiToolCall.create({
         data: {
           runId: ctx.runId,
           toolName: call.name,
@@ -556,6 +725,7 @@ export class AiAgentRunnerService {
           durationMs: Date.now() - startedAt,
         },
       });
+      this.emitToolCall(ctx.conversationId, ctx.runId, toolCallRow);
 
       // Surface silent failures: notify the org's humans whenever a tool
       // call returns ok:false / status>=400 OR an exception was thrown.
@@ -722,6 +892,134 @@ export class AiAgentRunnerService {
    * Extract plain text from an LlmMessage content. Handles both string
    * content and content blocks (the cache_control format).
    */
+  /**
+   * Fase 2.5: augmenta o system message do prompt com:
+   *   - Layer 1 SECURITY (prepend, cacheable): regras imutáveis da org
+   *   - RAG retrieval (append, NÃO cacheable): top-K trechos relevantes do
+   *     histórico longo do cliente, recuperados via similarity search
+   *
+   * Side-effect: muta `messages[0].content` in-place. Falhas no RAG são
+   * silenciosas — agente continua respondendo só com contexto recente.
+   */
+  private async augmentSystemPromptWithLayers(
+    messages: LlmMessage[],
+    organization: { aiSecurityRules: unknown },
+    agentId: string,
+    contactId: string,
+    conversationId: string,
+    triggerText: string,
+  ): Promise<void> {
+    const firstMsg = messages[0];
+    if (!firstMsg || firstMsg.role !== 'system' || !Array.isArray(firstMsg.content)) {
+      return;
+    }
+
+    // 1) Security Layer (cacheable — estável por org)
+    const rules: SecurityRules = resolveSecurityRules(
+      (organization.aiSecurityRules as Partial<SecurityRules> | null) ?? undefined,
+    );
+    const securityPart = {
+      type: 'text' as const,
+      text: this.securityLayer.build(rules).content,
+      cache: true,
+    };
+
+    // 2) RAG retrieval (não cacheable — varia por turno)
+    let ragPart: { type: 'text'; text: string; cache: false } | null = null;
+    if (triggerText && triggerText.length >= 10) {
+      try {
+        const results = await this.retrieval.retrieve({
+          query: triggerText,
+          scope: {
+            agentId,
+            contactId,
+            conversationId,
+            ownerType: 'any',
+          },
+          k: 5,
+          minScore: 0.7,
+        });
+        if (results.length > 0) {
+          const lines = results
+            .map(
+              (r, i) =>
+                `${i + 1}. [${r.entry.ownerType}, score=${r.score.toFixed(2)}] ${r.entry.content.slice(0, 240)}`,
+            )
+            .join('\n');
+          ragPart = {
+            type: 'text',
+            text: `═══ Trechos relevantes do histórico (RAG) ═══\n${lines}\n\nUse esses trechos como memória de longo prazo. NÃO os cite literalmente — apenas demonstre que lembra do contexto.`,
+            cache: false,
+          };
+        }
+      } catch (err: any) {
+        this.logger.warn(`RAG retrieval failed: ${err?.message ?? err}`);
+      }
+    }
+
+    firstMsg.content = [
+      securityPart,
+      ...firstMsg.content,
+      ...(ragPart ? [ragPart] : []),
+    ];
+  }
+
+  /**
+   * Fase 2: enfileira jobs assíncronos pós-run.
+   *  - memory-extractor: Haiku extrai facts/summary atualizado e grava em AiAgentMemory
+   *  - rag-indexer: gera embedding da mensagem do cliente e indexa em ai_vector_entries
+   *
+   * Ambos são fire-and-forget — falha aqui não pode interromper o agent run.
+   */
+  private async scheduleAfterRunJobs(
+    agentId: string,
+    conversationId: string,
+    contactId: string,
+    triggerMessage: Message,
+    finalAction: AiFinalAction,
+  ): Promise<void> {
+    // Só extrai memória quando o agent realmente respondeu / agiu —
+    // runs que falharam ou foram ignorados não têm sinal útil pra extrair.
+    const shouldExtract =
+      finalAction === AiFinalAction.REPLIED ||
+      finalAction === AiFinalAction.DELEGATED ||
+      finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN;
+    if (shouldExtract) {
+      try {
+        await this.memoryExtractorQueue.add(
+          'extract_memory',
+          { agentId, contactId, conversationId },
+          { removeOnComplete: 100, removeOnFail: 50 },
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          `memory-extractor enqueue failed: ${err?.message ?? err}`,
+        );
+      }
+    }
+
+    // RAG: indexa mensagem do cliente (não as do agent — economiza)
+    const messageText = this.extractText(triggerMessage.content as unknown);
+    if (messageText && messageText.length >= 10) {
+      try {
+        await this.ragIndexerQueue.add(
+          'index_message',
+          {
+            type: 'index_message',
+            messageId: triggerMessage.id,
+            content: messageText,
+            scope: { conversationId, agentId, contactId },
+          },
+          { removeOnComplete: 200, removeOnFail: 50 },
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          `rag-indexer enqueue failed: ${err?.message ?? err}`,
+        );
+      }
+    }
+  }
+
   private extractText(content: unknown): string {
     if (typeof content === 'string') return content.trim();
     if (Array.isArray(content)) {
@@ -738,54 +1036,9 @@ interface LlmMessageWithToolCalls extends LlmMessage {
   toolCalls?: LlmToolCall[];
 }
 
-/**
- * Removes hallucinated turn markers and "narrator mode" metacomments from
- * LLM text output. Models occasionally emit transcripts ("Human: oi") or
- * worse, square-bracketed monologues ("[A mensagem é apenas X. Não devo
- * responder...]") that should NEVER reach the customer.
- *
- * Strategy:
- *   1. Strip leading turn markers (Human:, Lead:, etc) — cascading
- *   2. Truncate at any mid-text "Role:" line
- *   3. If the WHOLE message is wrapped in [...] or ([...]) — narrator
- *      meta-thought — return empty so the caller sends nothing
- */
-function sanitizeAssistantText(input: string): string {
-  if (!input) return '';
-  let text = input.trim();
-  const markerLine =
-    /^\s*(human|user|assistant|ai|claude|model|lead|cliente|cliente:?|agent|você|voce|bot)\s*:\s*/i;
-
-  while (markerLine.test(text)) {
-    text = text.replace(markerLine, '').trim();
-  }
-
-  const splitIdx = text.search(/\n\s*(human|user|assistant|ai|claude|lead|cliente)\s*:\s*/i);
-  if (splitIdx >= 0) text = text.slice(0, splitIdx).trim();
-
-  // Narrator-mode detection: the LLM occasionally produces a self-aware
-  // monologue wrapped entirely in brackets — "[A mensagem do cliente é
-  // apenas X. Não devo responder]". That's the model thinking out loud
-  // and the fallback was sending it as a chat reply. If the WHOLE text
-  // is wrapped in [...] (with optional surrounding parens or "(thinking)"
-  // labels), drop it. Real product replies that mention "[link]" or
-  // similar inline brackets aren't affected because they don't span the
-  // full message.
-  const narratorWrap = /^\(?\s*\[[\s\S]+\]\s*\)?$/;
-  if (narratorWrap.test(text)) return '';
-
-  // Also catch unwrapped narrator phrases that always start with the same
-  // self-referential constructions in pt-BR.
-  const narratorPrefixes = [
-    /^\s*\(?\s*o cliente (?:apenas|só|somente)\s/i,
-    /^\s*\(?\s*a mensagem (?:do cliente|dele|dela) (?:é|foi)\s/i,
-    /^\s*\(?\s*não (?:devo|preciso) responder\b/i,
-    /^\s*\(?\s*nada a (?:fazer|responder)\b/i,
-  ];
-  if (narratorPrefixes.some((re) => re.test(text))) return '';
-
-  return text;
-}
+// sanitizeAssistantText vive em ./text-guards (importado no topo) pra
+// ser reutilizado pelo replyToConversation tool — segunda linha de defesa
+// que intercepta texto antes de chegar no provider.
 
 /**
  * Tells whether a tool failure is worth retrying. Transient = upstream

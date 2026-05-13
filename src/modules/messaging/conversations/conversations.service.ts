@@ -66,6 +66,7 @@ export class ConversationsService {
       search?: string;
       archived?: 'exclude' | 'only' | 'any';
       unreadOnly?: boolean;
+      stuckOnly?: boolean;
     },
     page: number,
     limit: number,
@@ -91,6 +92,7 @@ export class ConversationsService {
       accessibleChannelIds: access === 'ALL' ? undefined : [...access],
       archived: filters.archived,
       unreadOnly: filters.unreadOnly,
+      stuckOnly: filters.stuckOnly,
     };
 
     const skip = (page - 1) * limit;
@@ -500,6 +502,29 @@ export class ConversationsService {
     });
 
     return { ok: true, lastReadAt: read.lastReadAt };
+  }
+
+  /**
+   * Per-user "mark as unread". Pushes lastReadAt before the latest inbound so
+   * the conversation re-surfaces as unread for THIS user only. Other users'
+   * read state is untouched.
+   */
+  async markAsUnread(
+    conversationId: string,
+    organizationId: string,
+    userId: string,
+    access: ChannelAccess = 'ALL',
+  ) {
+    await this.findOne(conversationId, organizationId, access);
+    const result = await this.repository.markAsUnread(userId, conversationId);
+
+    this.realtimeGateway.emitToUser(userId, 'conversation:unread', {
+      conversationId,
+      userId,
+      unreadCount: result.unreadCount,
+    });
+
+    return { ok: true, unreadCount: result.unreadCount };
   }
 
   /**

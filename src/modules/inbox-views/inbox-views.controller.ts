@@ -82,7 +82,10 @@ export class InboxViewsController {
   }
 
   @Get(':id/conversations')
-  @ApiOperation({ summary: 'List conversations matching this view filters' })
+  @ApiOperation({
+    summary:
+      'List conversations matching this view filters. Query params layer ON TOP — view = baseline, params = override (mesma semântica do inbox geral).',
+  })
   conversations(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
@@ -91,6 +94,13 @@ export class InboxViewsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('search') search?: string,
+    @Query('unread') unread?: string,
+    @Query('archived') archived?: string,
+    @Query('groups') groups?: string,
+    @Query('channelId') channelId?: string,
+    @Query('tagIds') tagIds?: string,
+    @Query('assignedToId') assignedToId?: string,
+    @Query('stuck') stuck?: string,
   ) {
     return this.service.findConversations(
       id,
@@ -100,6 +110,15 @@ export class InboxViewsController {
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),
       search,
+      {
+        unread,
+        archived,
+        groups,
+        channelId,
+        tagIds,
+        assignedToId,
+        stuck,
+      },
     );
   }
 }

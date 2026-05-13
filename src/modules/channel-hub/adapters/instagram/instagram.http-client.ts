@@ -197,6 +197,25 @@ export class InstagramHttpClient {
     return Buffer.from(response.data);
   }
 
+  /**
+   * Tenta deletar/unsend uma DM no Instagram via Graph API.
+   * Meta NÃO documenta esse endpoint pra Direct Messages e, na prática,
+   * a maioria das apps recebe `(#10) Application does not have permission`
+   * ou similar. Mantemos a tentativa pra cobrir o raro caso de tokens
+   * com permissões especiais; o adapter captura o erro pra fazer fallback.
+   */
+  async deleteMessage(
+    channel: Channel,
+    messageId: string,
+  ): Promise<void> {
+    const client = this.createClient(channel);
+    try {
+      await client.delete(`/${messageId}`);
+    } catch (err: any) {
+      throw this.wrapGraphError(err, 'deleteMessage');
+    }
+  }
+
   private wrapGraphError(err: any, context: string): Error {
     const metaError = err?.response?.data?.error;
     if (metaError) {

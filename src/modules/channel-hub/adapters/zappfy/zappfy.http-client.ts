@@ -114,4 +114,20 @@ export class ZappfyHttpClient {
     }
     return { fileUrl, mimeType: response?.mimetype };
   }
+
+  /**
+   * Apaga a mensagem pra todos no WhatsApp via Uazapi.
+   * Endpoint: `POST /message/delete` com `{ id: <externalMessageId> }`.
+   * Uazapi devolve 200 mesmo quando a janela do WhatsApp já passou (o
+   * cliente final só vê "Esta mensagem foi apagada" se for recente —
+   * limitação do próprio WhatsApp, não nossa).
+   */
+  async deleteMessage(
+    channel: Channel,
+    externalMessageId: string,
+  ): Promise<void> {
+    await this.sendRequest(channel, '/message/delete', {
+      id: externalMessageId,
+    });
+  }
 }

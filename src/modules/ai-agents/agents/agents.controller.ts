@@ -12,7 +12,6 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
 import { AgentsService } from './agents.service';
-import { LlmService } from '../llm/llm.service';
 import { CreateAgentDto } from './dto/create-agent.dto';
 import { UpdateAgentDto } from './dto/update-agent.dto';
 import { AssignAgentChannelDto } from './dto/assign-channel.dto';
@@ -28,29 +27,7 @@ import {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(
-    private readonly service: AgentsService,
-    private readonly llm: LlmService,
-  ) {}
-
-  @Get('credits')
-  @ApiOperation({
-    summary:
-      'Saldo OpenRouter (créditos recarregados, gastos e restantes em USD).',
-  })
-  async credits() {
-    try {
-      return await this.llm.getCredits();
-    } catch (err: any) {
-      return {
-        ok: false,
-        error: err?.message ?? 'Falha ao consultar OpenRouter',
-        totalCreditsUsd: 0,
-        totalUsageUsd: 0,
-        remainingUsd: 0,
-      };
-    }
-  }
+  constructor(private readonly service: AgentsService) {}
 
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
@@ -111,6 +88,46 @@ export class AgentsController {
     return this.service.unassignChannel(orgId, id, channelId);
   }
 
+  @Get('watchdog/stats')
+  @ApiOperation({
+    summary:
+      'Snapshot do watchdog: KPIs (timers ativos, checks 24h, reativações, presas) + listas de conversas em alerta',
+  })
+  watchdogStats(@CurrentOrg('id') orgId: string) {
+    return this.service.watchdogStats(orgId);
+  }
+
+  @Get(':id/skills')
+  @ApiOperation({
+    summary: 'List skills attached to this agent (with requiresApproval flag)',
+  })
+  listSkills(
+    @CurrentOrg('id') orgId: string,
+    @Param('id') id: string,
+  ) {
+    return this.service.listSkills(orgId, id);
+  }
+
+  @Patch(':id/skills/:skillId/approval')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Toggle requiresApproval pra essa skill nesse agent. Body: { requiresApproval: boolean }',
+  })
+  setSkillApproval(
+    @CurrentOrg('id') orgId: string,
+    @Param('id') id: string,
+    @Param('skillId') skillId: string,
+    @Body() body: { requiresApproval: boolean },
+  ) {
+    return this.service.setSkillApproval(
+      orgId,
+      id,
+      skillId,
+      Boolean(body?.requiresApproval),
+    );
+  }
+
   @Get(':id/runs')
   @ApiOperation({ summary: 'List recent runs of this agent (with tool calls)' })
   runs(
@@ -133,6 +150,7 @@ export class AgentsController {
   feed(
     @CurrentOrg('id') orgId: string,
     @Query('agentId') agentId?: string,
+    @Query('conversationId') conversationId?: string,
     @Query('period') period?: string,
     @Query('status') status?: string,
     @Query('finalAction') finalAction?: string,
@@ -142,6 +160,7 @@ export class AgentsController {
   ) {
     return this.service.listOrgRuns(orgId, {
       agentId,
+      conversationId,
       period: this.parsePeriodAll(period),
       status: this.parseRunStatus(status),
       finalAction,

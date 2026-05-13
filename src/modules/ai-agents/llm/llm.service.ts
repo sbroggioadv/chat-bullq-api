@@ -1,244 +1,298 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import OpenAI from 'openai';
-import type { ChatCompletionMessageParam, ChatCompletionTool } from 'openai/resources/chat/completions';
+import Anthropic from '@anthropic-ai/sdk';
+
 import {
   LlmCompletionRequest,
   LlmCompletionResponse,
   LlmMessage,
+  LlmToolCall,
   LlmToolDefinition,
   LlmUsage,
 } from './llm.types';
 
 /**
- * Talks to any LLM via OpenRouter's OpenAI-compatible API. Adds Anthropic
- * prompt-caching markers when the target model is `anthropic/*`.
+ * Cliente da Anthropic API (Claude).
  *
- * One service for every provider — the codebase only depends on this.
+ * - Mantém a interface pública (`complete()`, `LlmMessage`, etc).
+ * - Aceita modelId já no formato Anthropic (`claude-sonnet-4-6`) ou com
+ *   prefix `anthropic/` por retrocompat — o prefix é despido antes da
+ *   chamada.
+ * - Prompt caching ephemeral nativo: `system` em blocks com cache_control,
+ *   tools com cache no último elemento.
+ * - Custo calculado client-side (Anthropic não retorna `cost` no response).
  */
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
-  private readonly client: OpenAI;
-  private readonly apiKey: string;
+  private readonly client: Anthropic;
+  private readonly hasApiKey: boolean;
 
   constructor(config: ConfigService) {
-    const apiKey = config.get<string>('OPENROUTER_API_KEY');
+    const apiKey = config.get<string>('ANTHROPIC_API_KEY');
+    this.hasApiKey = !!apiKey;
     if (!apiKey) {
       this.logger.warn(
-        'OPENROUTER_API_KEY not set — AI agents will fail at runtime',
+        'ANTHROPIC_API_KEY not set — AI agents will fail at runtime',
       );
     }
-    this.apiKey = apiKey ?? '';
-    this.client = new OpenAI({
-      apiKey: apiKey ?? 'missing',
-      baseURL: 'https://openrouter.ai/api/v1',
-      defaultHeaders: {
-        // OpenRouter uses these for analytics + leaderboard attribution.
-        'HTTP-Referer': config.get<string>('APP_URL') ?? 'https://chat-bullq.dev',
-        'X-Title': 'Chat BullQ',
-      },
-    });
-  }
-
-  /**
-   * Saldo da conta OpenRouter — usado pelo card "Crédito" da overview do
-   * Jarvis. Retorna o que o /credits da OpenRouter expõe (`total_credits`
-   * = quanto já foi recarregado, `total_usage` = quanto já foi gasto).
-   * Saldo restante é a diferença.
-   */
-  async getCredits(): Promise<{
-    totalCreditsUsd: number;
-    totalUsageUsd: number;
-    remainingUsd: number;
-  }> {
-    const apiKey = this.apiKey;
-    if (!apiKey) {
-      throw new Error('OPENROUTER_API_KEY not configured');
-    }
-    const resp = await fetch('https://openrouter.ai/api/v1/credits', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      throw new Error(
-        `OpenRouter credits ${resp.status}: ${body.slice(0, 300)}`,
-      );
-    }
-    const json: any = await resp.json();
-    const totalCreditsUsd =
-      typeof json?.data?.total_credits === 'number'
-        ? json.data.total_credits
-        : 0;
-    const totalUsageUsd =
-      typeof json?.data?.total_usage === 'number' ? json.data.total_usage : 0;
-    return {
-      totalCreditsUsd,
-      totalUsageUsd,
-      remainingUsd: Math.max(0, totalCreditsUsd - totalUsageUsd),
-    };
+    this.client = new Anthropic({ apiKey: apiKey ?? 'missing' });
   }
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
-    const isAnthropic = req.modelId.startsWith('anthropic/');
-    const messages = this.toOpenAiMessages(req.messages, isAnthropic);
+    const modelId = this.normalizeModelId(req.modelId);
+    const { system, messages } = this.toAnthropicMessages(req.messages);
     const tools = req.tools
-      ? this.toOpenAiTools(this.sanitizeTools(req.tools), isAnthropic)
+      ? this.toAnthropicTools(this.sanitizeTools(req.tools))
       : undefined;
 
-    let response: any;
+    // Opus 4.7 removeu sampling parameters — passa temperature/top_p/top_k
+    // e a API retorna 400. Omitir quando o modelo for Opus 4.7+.
+    const supportsTemperature = !this.isOpus47(modelId);
+
+    let response: Anthropic.Message;
     try {
-      response = await this.client.chat.completions.create({
-        model: req.modelId,
-        messages,
-        tools,
-        temperature: req.temperature ?? 0.7,
+      response = await this.client.messages.create({
+        model: modelId,
         max_tokens: req.maxTokens ?? 2048,
-        stream: false,
-        ...(req.modelParams ?? {}),
-        // OpenRouter returns cost when this is set.
-        usage: { include: true },
-      } as any);
-    } catch (err: any) {
-      const status = err?.status ?? err?.response?.status;
-      const detail = extractProviderErrorDetail(err);
-      const toolNames = tools?.map((t: any) => t.function?.name).join(',');
-      this.logger.error(
-        `LLM call failed [${req.modelId}] status=${status ?? '?'}: ${detail} | tools=[${toolNames ?? ''}]`,
-      );
-      // Verbose dump on 400: the `detail` string usually says nothing
-      // ("Provider returned error") because OpenRouter wraps the upstream
-      // body. Walk every nested error/body shape we've seen so the next
-      // failure leaves a clear trail in the logs.
-      if (status === 400) {
-        const errorShape = {
-          name: err?.name,
-          message: err?.message,
-          status: err?.status,
-          headers: err?.headers,
-          error: err?.error,
-          responseData: err?.response?.data,
-          body: err?.body,
-          cause: err?.cause,
-        };
-        this.logger.error(
-          `LLM 400 raw err: ${safeStringify(errorShape).slice(0, 4000)}`,
-        );
-        if (tools) {
-          this.logger.debug(
-            `Tools dump: ${safeStringify(tools).slice(0, 4000)}`,
-          );
-        }
-        // Sample of the system message (first 600 chars) — useful when 400
-        // is caused by something specific in the prompt.
-        const sysMsg = messages.find((m: any) => m.role === 'system');
-        if (sysMsg) {
-          const sysContent =
-            typeof sysMsg.content === 'string'
-              ? sysMsg.content
-              : Array.isArray(sysMsg.content)
-                ? (sysMsg.content as any[])
-                    .map((p) => p?.text ?? '')
-                    .join('')
-                : '';
-          this.logger.debug(
-            `System sample: ${sysContent.slice(0, 600)}...`,
-          );
-        }
-      }
+        ...(supportsTemperature
+          ? { temperature: req.temperature ?? 0.7 }
+          : {}),
+        ...(system ? { system } : {}),
+        messages,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(this.sanitizeModelParams(req.modelParams, modelId) as object),
+      });
+    } catch (err: unknown) {
+      this.handleAnthropicError(err, modelId, tools, messages, system);
       throw new InternalServerErrorException(
-        `LLM provider error (${status ?? 'no-status'}): ${detail}`,
+        `LLM provider error: ${this.errorMessage(err)}`,
       );
     }
 
-    const choice = response.choices?.[0];
-    if (!choice) {
-      throw new InternalServerErrorException('LLM returned no choices');
-    }
-
-    const message = this.fromOpenAiMessage(choice.message);
-    const stopReason = this.normalizeStopReason(choice.finish_reason);
-    const usage = this.extractUsage(response);
+    const message = this.fromAnthropicMessage(response);
+    const stopReason = this.normalizeStopReason(response.stop_reason);
+    const usage = this.extractUsage(response.usage, modelId);
 
     return {
       message,
       stopReason,
       usage,
-      rawModelId: response.model ?? req.modelId,
+      rawModelId: response.model ?? modelId,
     };
   }
 
-  // ─── conversion: our types → OpenAI SDK ──────────────────────────
+  // ─── conversão: nossos tipos → Anthropic SDK ─────────────────────
 
-  private toOpenAiMessages(
-    messages: LlmMessage[],
-    enableCache: boolean,
-  ): ChatCompletionMessageParam[] {
-    return messages.map((m): ChatCompletionMessageParam => {
-      if (m.role === 'tool') {
-        return {
-          role: 'tool',
-          tool_call_id: m.toolCallId!,
-          content:
-            typeof m.content === 'string'
-              ? m.content
-              : m.content.map((p) => p.text).join(''),
-        };
-      }
-      if (m.role === 'assistant') {
-        return {
-          role: 'assistant',
-          content:
-            typeof m.content === 'string'
-              ? m.content
-              : m.content.map((p) => p.text).join(''),
-          ...(m.toolCalls && m.toolCalls.length > 0
-            ? {
-                tool_calls: m.toolCalls.map((tc) => ({
-                  id: tc.id,
-                  type: 'function' as const,
-                  function: {
-                    name: tc.name,
-                    arguments: JSON.stringify(tc.arguments),
-                  },
-                })),
-              }
-            : {}),
-        };
-      }
-
-      // role: 'system' | 'user' — the only ones where caching applies
-      const blocks =
-        typeof m.content === 'string'
-          ? [{ type: 'text' as const, text: m.content, cache: false }]
-          : m.content;
-
-      const content = blocks.map((b) => {
-        const part: Record<string, unknown> = { type: 'text', text: b.text };
-        if (enableCache && b.cache) {
-          // OpenRouter passes cache_control to Anthropic models.
-          part.cache_control = { type: 'ephemeral' };
-        }
-        return part;
-      });
-
-      return {
-        role: m.role as 'system' | 'user',
-        content: content as unknown as ChatCompletionMessageParam['content'],
-      } as ChatCompletionMessageParam;
-    });
+  /**
+   * Aceita IDs com prefix `anthropic/` por retrocompat (formato antigo) e
+   * retorna o ID exato que a Anthropic API espera.
+   */
+  private normalizeModelId(id: string): string {
+    if (id.startsWith('anthropic/')) return id.slice('anthropic/'.length);
+    return id;
   }
 
   /**
-   * Drops tools with obviously broken JSON Schema before they reach the
-   * provider. A single malformed schema (missing `type: object`, params not
-   * being an object, properties with empty type) makes the whole request
-   * 400 — and the agent can't recover from that. Better to lose one tool
-   * than the entire turn.
+   * Converte nosso array `LlmMessage[]` (formato OpenAI-like com role
+   * 'system'/'tool' soltos) pro shape Anthropic:
+   *   - `system`: blocks separados (não no array de messages).
+   *   - `messages`: só user/assistant; tool results viram blocks
+   *     `tool_result` dentro de uma user message; tool calls viram
+   *     blocks `tool_use` dentro de uma assistant message.
+   *   - mensagens 'tool' consecutivas são agrupadas numa única user
+   *     message com múltiplos tool_result blocks (formato canônico).
+   */
+  private toAnthropicMessages(input: LlmMessage[]): {
+    system?: Anthropic.TextBlockParam[];
+    messages: Anthropic.MessageParam[];
+  } {
+    let system: Anthropic.TextBlockParam[] | undefined;
+    const out: Anthropic.MessageParam[] = [];
+    let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
+
+    const flushToolResults = () => {
+      if (pendingToolResults.length === 0) return;
+      out.push({ role: 'user', content: pendingToolResults });
+      pendingToolResults = [];
+    };
+
+    for (const m of input) {
+      if (m.role === 'system') {
+        // System só aceita texto na Anthropic — filtra qualquer image
+        // que indevidamente apareça aqui (não deveria, system é construído
+        // pelo prompt-builder com texto only).
+        const blocks = this.toTextBlocks(m.content);
+        if (blocks.length > 0) system = blocks;
+        continue;
+      }
+
+      if (m.role === 'tool') {
+        const text =
+          typeof m.content === 'string'
+            ? m.content
+            : m.content
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { text: string }).text)
+                .join('');
+        if (!m.toolCallId) {
+          this.logger.warn('Tool message without toolCallId — dropping');
+          continue;
+        }
+        pendingToolResults.push({
+          type: 'tool_result',
+          tool_use_id: m.toolCallId,
+          content: text || '(empty)',
+        });
+        continue;
+      }
+
+      flushToolResults();
+
+      if (m.role === 'user') {
+        // User pode ter texto + imagem (vision). Mantemos string simples
+        // quando é texto puro sem cache, pra cair no fast-path antigo.
+        const blocks = this.toUserContentBlocks(m.content);
+        if (blocks.length === 0) continue;
+        const hasNonText = blocks.some((b) => b.type !== 'text');
+        const hasCache = blocks.some(
+          (b) =>
+            b.type === 'text' &&
+            (b as Anthropic.TextBlockParam).cache_control !== undefined,
+        );
+        if (!hasNonText && !hasCache) {
+          out.push({
+            role: 'user',
+            content: blocks.map((b) =>
+              b.type === 'text' ? (b as Anthropic.TextBlockParam).text : '',
+            ).join(''),
+          });
+        } else {
+          out.push({ role: 'user', content: blocks });
+        }
+        continue;
+      }
+
+      if (m.role === 'assistant') {
+        // Assistant não retorna imagens — filtramos qualquer image part
+        // por defesa (não deveria aparecer aqui).
+        const text =
+          typeof m.content === 'string'
+            ? m.content
+            : m.content
+                .filter((b) => b.type === 'text')
+                .map((b) => (b as { text: string }).text)
+                .join('');
+        const contentBlocks: Array<
+          Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam
+        > = [];
+        if (text && text.trim().length > 0) {
+          contentBlocks.push({ type: 'text', text });
+        }
+        for (const tc of m.toolCalls ?? []) {
+          contentBlocks.push({
+            type: 'tool_use',
+            id: tc.id,
+            name: tc.name,
+            input: tc.arguments,
+          });
+        }
+        // Anthropic não aceita assistant message vazio. Pula em vez de 400.
+        if (contentBlocks.length === 0) continue;
+        out.push({ role: 'assistant', content: contentBlocks });
+      }
+    }
+
+    flushToolResults();
+
+    return { system, messages: out };
+  }
+
+  /**
+   * Normaliza content em `TextBlockParam[]`. Para uso onde só TEXTO faz
+   * sentido (system prompt). Filtra image parts e blocks vazios.
+   */
+  private toTextBlocks(
+    content: LlmMessage['content'],
+  ): Anthropic.TextBlockParam[] {
+    const raw =
+      typeof content === 'string'
+        ? [{ type: 'text' as const, text: content }]
+        : content;
+    const blocks: Anthropic.TextBlockParam[] = [];
+    for (const part of raw) {
+      if (part.type !== 'text') continue;
+      if (!part.text || part.text.length === 0) continue;
+      const block: Anthropic.TextBlockParam = { type: 'text', text: part.text };
+      if ('cache' in part && part.cache) {
+        block.cache_control = { type: 'ephemeral' };
+      }
+      blocks.push(block);
+    }
+    return blocks;
+  }
+
+  /**
+   * Normaliza content de mensagem `user` em blocks que a Anthropic aceita
+   * em messages: text + image. Image vai como `source.type='url'` quando
+   * temos URL pública (caso default — todos os 3 canais resolvem mídia
+   * pra URL nossa via media-resolver) ou `source.type='base64'` quando
+   * passaram base64 explícito.
+   */
+  private toUserContentBlocks(
+    content: LlmMessage['content'],
+  ): Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> {
+    const raw =
+      typeof content === 'string'
+        ? [{ type: 'text' as const, text: content }]
+        : content;
+    const blocks: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> =
+      [];
+    for (const part of raw) {
+      if (part.type === 'text') {
+        if (!part.text || part.text.length === 0) continue;
+        const block: Anthropic.TextBlockParam = {
+          type: 'text',
+          text: part.text,
+        };
+        if ('cache' in part && part.cache) {
+          block.cache_control = { type: 'ephemeral' };
+        }
+        blocks.push(block);
+        continue;
+      }
+      if (part.type === 'image') {
+        if (part.url) {
+          blocks.push({
+            type: 'image',
+            source: { type: 'url', url: part.url },
+          });
+        } else if (part.base64) {
+          blocks.push({
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: part.base64
+                .mediaType as Anthropic.Base64ImageSource['media_type'],
+              data: part.base64.data,
+            },
+          });
+        }
+        // Image sem url nem base64 → drop silenciosamente.
+      }
+    }
+    return blocks;
+  }
+
+  /**
+   * Filtra tools com schema obviamente quebrado antes de mandar pra API.
+   * Um schema malformado (faltando `type:object`, properties não-objeto,
+   * etc) faz a API inteira 400 — perdemos UMA tool é melhor que perder
+   * o turno todo.
    */
   private sanitizeTools(tools: LlmToolDefinition[]): LlmToolDefinition[] {
     const valid: LlmToolDefinition[] = [];
@@ -270,168 +324,208 @@ export class LlmService {
     return null;
   }
 
-  private toOpenAiTools(
-    tools: LlmToolDefinition[],
-    enableCache: boolean,
-  ): ChatCompletionTool[] {
-    const result: ChatCompletionTool[] = tools.map((t) => ({
-      type: 'function',
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.parameters,
-      },
+  /**
+   * Converte tools pro shape Anthropic e marca o ÚLTIMO tool como
+   * cacheable. Anthropic interpreta `cache_control` em qualquer
+   * tool como "cache toda a array de tools até aqui" — então marcar
+   * o último basta pra cachear todas (95%+ economia em tools que
+   * não mudam entre turns).
+   */
+  private toAnthropicTools(tools: LlmToolDefinition[]): Anthropic.ToolUnion[] {
+    const result: Anthropic.Tool[] = tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool.InputSchema,
     }));
-
-    // Mark the tools array as cacheable for Anthropic — the schemas are
-    // stable so this saves ~95% of the tool-token cost on every call.
-    if (enableCache && result.length > 0) {
-      // Hack: we attach cache_control to the last tool. OpenRouter forwards
-      // it to Anthropic, which interprets it as "cache everything up to here".
-      (result[result.length - 1] as unknown as { cache_control: unknown }).cache_control = {
-        type: 'ephemeral',
-      };
+    if (result.length > 0) {
+      result[result.length - 1].cache_control = { type: 'ephemeral' };
     }
-
     return result;
   }
 
-  // ─── conversion: OpenAI SDK → our types ──────────────────────────
+  /**
+   * Opus 4.7+ removeu sampling parameters (temperature, top_p, top_k) —
+   * mandar qualquer um retorna 400 `<param> is deprecated for this model`.
+   * Outros modelos (Sonnet, Haiku) continuam aceitando normalmente.
+   */
+  private isOpus47(modelId: string): boolean {
+    return /^claude-opus-4-(7|8|9|\d{2,})/.test(modelId);
+  }
 
-  private fromOpenAiMessage(msg: any): LlmMessage {
-    const toolCalls = msg.tool_calls?.map((tc: any) => ({
-      id: tc.id,
-      name: tc.function?.name,
-      arguments: this.safeParseJson(tc.function?.arguments),
-    }));
+  /**
+   * Passa adiante apenas os params que a Anthropic API aceita —
+   * evita 400 por campo desconhecido em call sites genéricos. Em Opus 4.7
+   * também filtra os sampling parameters (que foram removidos do modelo).
+   */
+  private sanitizeModelParams(
+    params: Record<string, unknown> | undefined,
+    modelId: string,
+  ): Record<string, unknown> {
+    if (!params) return {};
+    const samplingBanned = this.isOpus47(modelId);
+    const allowed = new Set([
+      ...(samplingBanned ? [] : ['top_p', 'top_k']),
+      'stop_sequences',
+      'metadata',
+      'service_tier',
+      'thinking',
+    ]);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(params)) {
+      if (allowed.has(k)) out[k] = v;
+    }
+    return out;
+  }
+
+  // ─── conversão: Anthropic SDK → nossos tipos ─────────────────────
+
+  private fromAnthropicMessage(response: Anthropic.Message): LlmMessage {
+    let textContent = '';
+    const toolCalls: LlmToolCall[] = [];
+
+    for (const block of response.content) {
+      if (block.type === 'text') {
+        textContent += block.text;
+      } else if (block.type === 'tool_use') {
+        toolCalls.push({
+          id: block.id,
+          name: block.name,
+          arguments: (block.input ?? {}) as Record<string, unknown>,
+        });
+      }
+      // 'thinking' / 'redacted_thinking' / 'server_tool_use' / etc — ignora
+    }
 
     return {
       role: 'assistant',
-      content: msg.content ?? '',
-      ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+      content: textContent,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
     };
   }
 
   private normalizeStopReason(
-    reason?: string | null,
+    reason: Anthropic.Message['stop_reason'],
   ): LlmCompletionResponse['stopReason'] {
     switch (reason) {
-      case 'stop':
       case 'end_turn':
+      case 'stop_sequence':
         return 'stop';
-      case 'tool_calls':
       case 'tool_use':
+      case 'pause_turn':
         return 'tool_calls';
-      case 'length':
       case 'max_tokens':
         return 'length';
-      case 'content_filter':
+      case 'refusal':
         return 'content_filter';
       default:
         return 'other';
     }
   }
 
-  private extractUsage(response: any): LlmUsage {
-    const u = response.usage ?? {};
-    const promptTokensDetails = u.prompt_tokens_details ?? {};
+  private extractUsage(
+    usage: Anthropic.Usage,
+    modelId: string,
+  ): LlmUsage {
+    const input = usage.input_tokens ?? 0;
+    const output = usage.output_tokens ?? 0;
+    const cacheRead = usage.cache_read_input_tokens ?? 0;
+    const cacheWrite = usage.cache_creation_input_tokens ?? 0;
     return {
-      inputTokens: u.prompt_tokens ?? 0,
-      outputTokens: u.completion_tokens ?? 0,
-      cacheReadTokens: promptTokensDetails.cached_tokens ?? 0,
-      cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-      // OpenRouter only returns `cost` when usage.include=true is set.
-      costUsd: typeof u.cost === 'number' ? u.cost : 0,
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheWriteTokens: cacheWrite,
+      costUsd: this.calculateCost(modelId, {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+      }),
     };
   }
 
-  private safeParseJson(raw: unknown): Record<string, unknown> {
-    if (!raw || typeof raw !== 'string') return {};
-    try {
-      return JSON.parse(raw);
-    } catch {
-      this.logger.warn(`Tool call had unparseable arguments: ${raw}`);
-      return {};
-    }
+  /**
+   * Calcula custo USD client-side — Anthropic não retorna `cost` no
+   * response. Tabela de preços por modelo + cache read/write próprios.
+   */
+  private calculateCost(
+    modelId: string,
+    tokens: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    },
+  ): number {
+    const p =
+      MODEL_PRICING_USD_PER_MTOK[modelId] ??
+      MODEL_PRICING_USD_PER_MTOK.default;
+    return (
+      (tokens.input * p.input +
+        tokens.output * p.output +
+        tokens.cacheRead * p.cacheRead +
+        tokens.cacheWrite * p.cacheWrite) /
+      1_000_000
+    );
   }
-}
 
-/**
- * OpenRouter wraps upstream provider errors in a generic envelope:
- *   { error: { code, message: "Provider returned error",
- *              metadata: { raw, provider_name } } }
- *
- * The actual reason from Anthropic/OpenAI/etc lives in `metadata.raw`
- * as a JSON string (sometimes a plain string). We dig through every
- * shape we've seen and prefer the most specific message available.
- *
- * Returns a single human-readable line — what the agent run UI shows
- * to the operator and what the backend logs to error logs.
- */
-function extractProviderErrorDetail(err: any): string {
-  const candidates: string[] = [];
+  // ─── error handling ──────────────────────────────────────────────
 
-  // 1. OpenRouter envelope, accessible from multiple paths depending on
-  //    SDK version.
-  const envelopes = [
-    err?.error,
-    err?.error?.error,
-    err?.body?.error,
-    err?.response?.data?.error,
-    err?.response?.data,
-  ].filter(Boolean);
-
-  for (const e of envelopes) {
-    // metadata.raw — actual upstream body (often JSON string).
-    const raw = e?.metadata?.raw ?? e?.metadata?.body;
-    if (typeof raw === 'string' && raw.length > 0) {
-      const parsed = tryParseJson(raw);
-      if (parsed) {
-        const m =
-          parsed?.error?.message ??
-          parsed?.error?.error?.message ??
-          parsed?.message;
-        const t = parsed?.error?.type ?? parsed?.type;
-        if (typeof m === 'string' && m.length > 0) {
-          candidates.push(t ? `${t}: ${m}` : m);
-        }
-      } else {
-        // Not JSON — provider returned plain text. Trim the noise.
-        candidates.push(raw.slice(0, 500));
+  private handleAnthropicError(
+    err: unknown,
+    modelId: string,
+    tools: Anthropic.ToolUnion[] | undefined,
+    messages: Anthropic.MessageParam[],
+    system: Anthropic.TextBlockParam[] | undefined,
+  ): void {
+    const status =
+      err instanceof Anthropic.APIError ? err.status : undefined;
+    const message = this.errorMessage(err);
+    const toolNames = tools?.map((t) => (t as Anthropic.Tool).name).join(',');
+    this.logger.error(
+      `LLM call failed [${modelId}] status=${status ?? '?'}: ${message} | tools=[${toolNames ?? ''}]`,
+    );
+    if (err instanceof Anthropic.BadRequestError) {
+      // 400 — dump prompt sample + tools pra ajudar a debugar
+      this.logger.debug(`Messages count: ${messages.length}`);
+      if (system && system.length > 0) {
+        const sample = system[0].text.slice(0, 600);
+        this.logger.debug(`System sample: ${sample}...`);
+      }
+      if (tools) {
+        this.logger.debug(
+          `Tools dump: ${safeStringify(tools).slice(0, 4000)}`,
+        );
       }
     }
-    // Fallback to envelope-level fields, but skip the generic OpenRouter
-    // string when we already have a more specific one.
-    if (typeof e?.message === 'string' && e.message !== 'Provider returned error') {
-      candidates.push(e.message);
+  }
+
+  private errorMessage(err: unknown): string {
+    if (err instanceof Anthropic.APIError) {
+      return `${err.name}(${err.status}): ${err.message}`;
     }
-  }
-
-  // 2. SDK-level fallbacks.
-  if (typeof err?.message === 'string' && err.message !== 'Provider returned error') {
-    candidates.push(err.message);
-  }
-
-  // First non-empty wins. If everything else is empty, we still want to
-  // surface SOMETHING — fall back to the generic line so the run isn't
-  // labelled "unknown".
-  const detail = candidates.find((c) => c && c.trim().length > 0);
-  return detail ?? err?.error?.message ?? err?.message ?? 'unknown';
-}
-
-function tryParseJson(s: string): any | null {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
+    if (err instanceof Error) return err.message;
+    return String(err);
   }
 }
 
 /**
- * Stringify with circular-ref protection. Provider error objects often
- * carry circular `request`/`response` pointers from the OpenAI SDK that
- * crash a naive JSON.stringify.
+ * Tabela de preços (USD por 1M tokens) por modelo. Espelha a tabela
+ * pública da Anthropic em platform.claude.com/docs/en/pricing.
  */
+const MODEL_PRICING_USD_PER_MTOK: Record<
+  string,
+  { input: number; output: number; cacheRead: number; cacheWrite: number }
+> = {
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-sonnet-4-5': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-opus-4-7':   { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-6':   { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-haiku-4-5':  { input: 1, output: 5,  cacheRead: 0.1, cacheWrite: 1.25 },
+  // Fallback conservador (assume Sonnet) pra IDs desconhecidos.
+  default: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+};
+
 function safeStringify(input: unknown): string {
   const seen = new WeakSet<object>();
   try {

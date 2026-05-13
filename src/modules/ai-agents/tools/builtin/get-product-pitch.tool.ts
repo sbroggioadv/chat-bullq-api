@@ -15,7 +15,7 @@ import { AiTool, ToolContext, ToolResult } from '../tool.types';
  * x-admin-api-key + x-tenant-id headers (same pattern admin-actions).
  *
  * Env required:
- * - MEMBERS_TRIVAPP_URL (default https://members.bravy.school)
+ * - MEMBERS_TRIVAPP_URL (default https://api.trivapp.com.br)
  * - MEMBERS_ADMIN_KEY
  * - MEMBERS_TENANT_BRAVY (TODO: per-org mapping when multi-tenant)
  */
@@ -59,7 +59,7 @@ export class GetProductPitchTool implements AiTool {
 
     const baseUrl =
       this.config.get<string>('MEMBERS_TRIVAPP_URL') ??
-      'https://members.bravy.school';
+      'https://api.trivapp.com.br';
     const apiKey = this.config.get<string>('MEMBERS_ADMIN_KEY');
     const tenantId = this.config.get<string>('MEMBERS_TENANT_BRAVY');
 

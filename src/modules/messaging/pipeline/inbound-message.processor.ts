@@ -14,6 +14,7 @@ import { AgentRouterService } from '../../ai-agents/router/agent-router.service'
 import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.service';
 import { TranscriptionService } from '../messages/transcription.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
+import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import {
   AutomationTrigger,
   ChannelType,
@@ -94,6 +95,7 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly agentRunner: AiAgentRunnerService,
     private readonly transcription: TranscriptionService,
     private readonly outbox: OutboxService,
+    private readonly watchdog: WatchdogService,
     @InjectQueue('chatbot-processor') private readonly chatbotQueue: Queue,
   ) {
     super();
@@ -280,6 +282,21 @@ export class InboundMessageProcessor extends WorkerHost {
         `Inbound processed: msg=${savedMessage.id} conv=${conversationId} contact=${contactId} type=${message.type} echo=${isEcho}`,
       );
       if (webhookEventId) await this.webhookEvents.markProcessed(webhookEventId);
+
+      // Watchdog: cliente mandou mensagem nova → agenda timer pra detectar
+      // se ninguém respondeu na janela. Echo (msg da gente que voltou via
+      // webhook) não conta — essas vão pelo path OUTBOUND e cancelam.
+      if (!isEcho && direction === MessageDirection.INBOUND) {
+        this.watchdog.scheduleCheck(conversationId).catch((err) =>
+          this.logger.warn(
+            `Watchdog scheduleCheck failed for conv ${conversationId}: ${err?.message ?? err}`,
+          ),
+        );
+      } else if (isEcho) {
+        // Echo de msg nossa que finalmente voltou — cancela timer existente
+        // (pode ter sido enviada por outro path que não passou pelo cancel).
+        this.watchdog.cancelCheck(conversationId).catch(() => undefined);
+      }
 
       // Fire-and-forget AI dispatch. Failures here MUST NOT take down the
       // inbound pipeline — they're logged and the conversation continues
@@ -546,6 +563,16 @@ export class InboundMessageProcessor extends WorkerHost {
         conversation: conv,
         triggerMessage: latestInbound,
       });
+
+      // IA respondeu (ou pelo menos o run terminou sem throw) — limpa o
+      // timer reativo pra essa conversa e zera contador de tentativas.
+      this.watchdog
+        .cancelCheck(conversationId)
+        .catch((err) =>
+          this.logger.warn(
+            `Watchdog cancelCheck failed for conv ${conversationId}: ${err?.message ?? err}`,
+          ),
+        );
     } catch (err: any) {
       this.logger.error(
         `Debounced agent run failed for conv ${conversationId}: ${err?.message ?? err}`,

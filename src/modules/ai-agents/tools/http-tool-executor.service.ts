@@ -1,24 +1,56 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { AiSkill, AiTool } from '@prisma/client';
+import { PrismaService } from '../../../database/prisma.service';
 import { ToolContext, ToolResult } from './tool.types';
+import { PendingActionService } from '../confirmations/pending-action.service';
+import type {
+  ActionPreview,
+  ImpactLevel,
+} from '../confirmations/confirmation.types';
+
+/**
+ * Tabela de impacto por skill. Quando o operador marca `requiresApproval=true`
+ * em `ai_agent_skills`, a skill cria um PendingAction com este impacto.
+ * Skills não listadas defaultam pra `medium`. Não tem efeito nenhum se a
+ * skill não exigir aprovação — é só pra preencher o `preview.impact`.
+ */
+const SKILL_IMPACT: Record<string, ImpactLevel> = {
+  grantAccess: 'high',
+  resetPassword: 'high',
+  sendLoginLink: 'medium',
+};
+
+function impactFor(skillName: string): ImpactLevel {
+  return SKILL_IMPACT[skillName] ?? 'medium';
+}
 
 /**
  * Executes HTTP-backed Skills. The connection (base url + auth headers)
  * comes from the AiTool the skill is bound to; the per-call invocation
  * (path, method, body, response mapping) comes from the AiSkill itself.
+ *
+ * Destructive skills (ver `DESTRUCTIVE_HTTP_SKILLS`) NÃO são chamadas
+ * diretamente: criamos um `PendingAction` e devolvemos pro LLM um output
+ * com `requiresUserAction=true`. Quando o operador aprovar, o executor
+ * da fase 2 dispara a chamada real.
  */
 @Injectable()
 export class HttpToolExecutorService {
   private readonly logger = new Logger(HttpToolExecutorService.name);
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly pendingActions: PendingActionService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   async execute(
     skill: AiSkill,
     tool: AiTool,
-    input: Record<string, unknown>,
+    rawInput: Record<string, unknown>,
     ctx: ToolContext,
+    options: { bypassPendingGate?: boolean } = {},
   ): Promise<ToolResult> {
     if (skill.source !== 'HTTP') {
       throw new Error(`Skill ${skill.name} is not an HTTP skill`);
@@ -35,6 +67,28 @@ export class HttpToolExecutorService {
           error: 'Skill not fully configured (httpBaseUrl/httpMethod/httpPath missing)',
         },
       };
+    }
+
+    // Normaliza emails antes de qualquer uso. APIs do Trivapp (e várias
+    // outras) tratam emails de forma case-sensitive em alguns endpoints
+    // (ex: resetPassword retorna 404 com email "Foo@x.com" mas funciona
+    // com "foo@x.com"). Forçar lowercase + trim no input ANTES do template
+    // resolve essa classe inteira de bug sem depender do agent acertar.
+    const input = this.normalizeEmailInputs(rawInput);
+
+    // Gating configurável por (agent, skill): operador marca
+    // `ai_agent_skills.requires_approval = true` na UI quando quer que a
+    // skill seja gateada antes de executar pra esse agent específico.
+    // `bypassPendingGate` é usado pelo executor pós-aprovação pra rodar
+    // a skill DEPOIS que o operador aprovou (evita loop de PendingActions).
+    if (!options.bypassPendingGate) {
+      const link = await this.prisma.aiAgentSkill.findUnique({
+        where: { agentId_skillId: { agentId: ctx.agentId, skillId: skill.id } },
+        select: { requiresApproval: true },
+      });
+      if (link?.requiresApproval) {
+        return this.gateAsPendingAction(skill, input, ctx, impactFor(skill.name));
+      }
     }
 
     const url =
@@ -114,6 +168,106 @@ export class HttpToolExecutorService {
 
   // ─── helpers ───────────────────────────────────────────────────
 
+  /**
+   * Cria um PendingAction pra skill destrutiva e devolve um ToolResult que
+   * sinaliza pro LLM "tá em revisão humana, não execute follow-up".
+   */
+  private async gateAsPendingAction(
+    skill: AiSkill,
+    input: Record<string, unknown>,
+    ctx: ToolContext,
+    impact: ImpactLevel,
+  ): Promise<ToolResult> {
+    const preview: ActionPreview = {
+      action: this.buildPreviewAction(skill.name, input),
+      impact,
+      rollback: this.buildRollback(skill.name),
+      affectedEntity: {
+        type: 'contact',
+        id: ctx.contactId,
+        label: this.guessContactLabel(input) ?? `contact:${ctx.contactId}`,
+      },
+    };
+
+    const action = await this.pendingActions.create({
+      agentRunId: ctx.runId,
+      conversationId: ctx.conversationId,
+      agentId: ctx.agentId,
+      toolName: skill.name,
+      args: input,
+      preview,
+    });
+
+    this.logger.log(
+      `[skill:${skill.name}] gated as pendingAction=${action.id} (impact=${impact})`,
+    );
+
+    return {
+      output: {
+        ok: true,
+        status: 'queued_for_processing',
+        pendingActionId: action.id,
+        preview,
+        // Mensagem desambígua pro LLM (Sonnet 4.6 estava interpretando o
+        // wording anterior "aguardando aprovação humana" como sinal de
+        // prompt injection e respondendo coisas paranoicas tipo "essa
+        // mensagem não veio do cliente"). Aqui afirmamos explicitamente
+        // que é FLUXO NORMAL e damos o roteiro de resposta pro cliente.
+        message:
+          'Solicitação registrada com sucesso e enviada pra processamento. Operador humano vai concluir a liberação em instantes — fluxo padrão, não é erro.',
+        agent_should_say:
+          'Avise o cliente, com naturalidade, que o acesso já foi solicitado e estará liberado em instantes. NÃO mencione "aprovação humana", "operador" ou qualquer detalhe interno do sistema.',
+      },
+    };
+  }
+
+  private buildPreviewAction(
+    skillName: string,
+    input: Record<string, unknown>,
+  ): string {
+    const email = this.guessContactLabel(input);
+    const offer =
+      typeof input.offerSlug === 'string'
+        ? input.offerSlug
+        : typeof input.offer === 'string'
+          ? input.offer
+          : undefined;
+
+    switch (skillName) {
+      case 'grantAccess':
+        return offer
+          ? `Liberar acesso de ${email ?? 'cliente'} ao(à) "${offer}"`
+          : `Liberar acesso de ${email ?? 'cliente'} na área de membros`;
+      case 'resetPassword':
+        return `Resetar senha de ${email ?? 'cliente'} na área de membros`;
+      case 'sendLoginLink':
+        return `Enviar link mágico de login pra ${email ?? 'cliente'}`;
+      default:
+        return `Executar ${skillName}`;
+    }
+  }
+
+  private buildRollback(skillName: string): string | undefined {
+    switch (skillName) {
+      case 'grantAccess':
+        return 'Revogar acesso via revokeAccess (ou painel admin do Trivapp).';
+      case 'resetPassword':
+        return 'Não há rollback automático — orientar o cliente a definir nova senha.';
+      case 'sendLoginLink':
+        return 'Link expira sozinho; sem rollback necessário.';
+      default:
+        return undefined;
+    }
+  }
+
+  private guessContactLabel(
+    input: Record<string, unknown>,
+  ): string | undefined {
+    const email = input.email;
+    if (typeof email === 'string' && email.trim()) return email.trim();
+    return undefined;
+  }
+
   private renderHeaders(
     raw: unknown,
     scopes: { input: Record<string, unknown>; ctx: ToolContext },
@@ -192,5 +346,40 @@ export class HttpToolExecutorService {
             : undefined,
         obj,
       );
+  }
+
+  /**
+   * Normaliza qualquer campo que pareça email no input (top-level ou
+   * dentro de objetos rasos): aplica `.toLowerCase().trim()`. Mantém
+   * outros campos intactos. Defesa preventiva contra APIs case-sensitive
+   * (Trivapp/resetPassword é o caso conhecido — bug Vinicius_leppers
+   * em 2026-05-08).
+   */
+  private normalizeEmailInputs(
+    input: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const normalized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) {
+      if (this.looksLikeEmailKey(key) && typeof value === 'string') {
+        normalized[key] = value.toLowerCase().trim();
+      } else if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+      ) {
+        // Recursão de 1 nível pra objetos rasos (ex: { user: { email: ... } })
+        normalized[key] = this.normalizeEmailInputs(
+          value as Record<string, unknown>,
+        );
+      } else {
+        normalized[key] = value;
+      }
+    }
+    return normalized;
+  }
+
+  private looksLikeEmailKey(key: string): boolean {
+    // Match: email, e-mail, userEmail, contactEmail, etc.
+    return /e[-_]?mail$/i.test(key) || /^email/i.test(key);
   }
 }

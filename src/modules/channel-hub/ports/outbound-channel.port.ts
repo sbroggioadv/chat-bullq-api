@@ -44,6 +44,25 @@ export interface OutboundChannelPort {
     hint: ResolveMediaHint,
   ): Promise<{ fileUrl: string; mimeType?: string }>;
 
+  /**
+   * Delete a previously-sent outbound message FOR EVERYONE on the provider.
+   * Reach varies by channel:
+   *   - Zappfy/Uazapi  : supported via `/message/delete` — deleted on the
+   *     customer's WhatsApp app too.
+   *   - WhatsApp Cloud : NOT supported — Meta's API has no delete endpoint
+   *     for messages. Adapter throws so the caller can fall back to local-
+   *     only soft-delete.
+   *   - Instagram      : NOT supported — same as Meta WA.
+   *
+   * Optional on purpose: callers must check `typeof adapter.deleteMessage
+   * === 'function'` and translate to a 400 if absent.
+   */
+  deleteMessage?(
+    channel: Channel,
+    externalMessageId: string,
+    contactExternalId?: string,
+  ): Promise<void>;
+
   getRateLimits(): RateLimitConfig;
 }
 

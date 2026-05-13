@@ -71,6 +71,24 @@ export class WhatsAppOfficialOutboundAdapter implements OutboundChannelPort {
     return { fileUrl: saved.url, mimeType: saved.mimeType };
   }
 
+  /**
+   * Meta Cloud API NÃO suporta delete de mensagem — não existe endpoint
+   * público pra remover uma mensagem já enviada. Lançamos erro claro pra
+   * que o service de delete capture e siga com soft-delete (marca como
+   * revoked apenas no nosso lado, mas a mensagem permanece visível pro
+   * cliente final no WhatsApp dele).
+   */
+  async deleteMessage(
+    _channel: Channel,
+    externalMessageId: string,
+  ): Promise<void> {
+    throw new Error(
+      `WhatsApp Cloud API does not support message deletion (id=${externalMessageId}). ` +
+        'Marcamos a mensagem como deletada apenas no Chat BullQ — ' +
+        'no app do cliente ela continua existindo (limitação da Meta).',
+    );
+  }
+
   getRateLimits(): RateLimitConfig {
     return {
       maxPerSecond: 80,

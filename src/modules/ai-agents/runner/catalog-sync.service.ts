@@ -41,7 +41,7 @@ export class CatalogSyncService {
 
     const baseUrl =
       this.config.get<string>('MEMBERS_TRIVAPP_URL') ??
-      'https://members.bravy.school';
+      'https://api.trivapp.com.br';
     const apiKey = this.config.get<string>('MEMBERS_ADMIN_KEY');
     const tenantId = this.config.get<string>('MEMBERS_TENANT_BRAVY');
 

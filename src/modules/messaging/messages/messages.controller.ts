@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   Post,
   Body,
@@ -96,6 +97,20 @@ export class MessagesController {
       force: force === 'true' || force === '1',
       access,
     });
+  }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary:
+      'Deletar mensagem pra todos. Tenta propagar pro provider — Zappfy suporta (some no app do cliente), Meta WA Cloud e Instagram não suportam (some só no Chat BullQ).',
+  })
+  revoke(
+    @Param('id') id: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.revokeForEveryone(id, orgId, userId, access);
   }
 
   @Get()

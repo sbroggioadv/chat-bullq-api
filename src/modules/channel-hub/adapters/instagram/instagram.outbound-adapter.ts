@@ -51,6 +51,30 @@ export class InstagramOutboundAdapter implements OutboundChannelPort {
     return this.httpClient.downloadMedia(mediaUrl);
   }
 
+  /**
+   * Tenta o "unsend" via Graph API: `DELETE /{message-id}` em
+   * graph.instagram.com. Meta historicamente não documenta esse endpoint
+   * pra DM e, na maioria dos apps, retorna erro de permissão. Tentamos
+   * mesmo assim — se funcionar, ótimo; se falhar, o service captura e
+   * segue com soft-delete só no nosso lado.
+   */
+  async deleteMessage(
+    channel: Channel,
+    externalMessageId: string,
+  ): Promise<void> {
+    try {
+      await this.httpClient.deleteMessage(channel, externalMessageId);
+    } catch (err: any) {
+      const metaCode = err?.response?.data?.error?.code;
+      throw new Error(
+        `Instagram unsend failed (id=${externalMessageId}, code=${metaCode ?? 'n/a'}): ` +
+          `${err?.message ?? 'unknown'}. ` +
+          'Marcamos como deletada só no Chat BullQ — Meta não permite remover ' +
+          'mensagens já entregues no Direct via API.',
+      );
+    }
+  }
+
   getRateLimits(): RateLimitConfig {
     return {
       maxPerSecond: 200,
