@@ -7,7 +7,12 @@ export class MessagesRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(data: Prisma.MessageUncheckedCreateInput) {
-    return this.prisma.message.create({ data });
+    return this.prisma.message.create({
+      data,
+      include: {
+        sender: { select: { id: true, name: true, avatarUrl: true } },
+      },
+    });
   }
 
   async findByConversation(
