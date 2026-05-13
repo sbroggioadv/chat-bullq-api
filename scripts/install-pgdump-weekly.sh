@@ -37,8 +37,9 @@ docker exec -e PGPASSWORD="$PG_PASSWORD" "$CONTAINER_UUID" \
 [[ -s "$OUTPUT" ]] || { echo "FAIL: empty" >&2; exit 2; }
 SIZE=$(stat -c '%s' "$OUTPUT")
 [[ "$SIZE" -gt 1024 ]] || { echo "FAIL: too small ($SIZE)" >&2; exit 3; }
-zcat "$OUTPUT" | head -5 | grep -q "PostgreSQL database dump" || { echo "FAIL: no SQL header" >&2; exit 4; }
-TABLES=$(zcat "$OUTPUT" | grep -c "^CREATE TABLE")
+FIRST_LINES="$(zcat "$OUTPUT" 2>/dev/null | head -10)"
+echo "$FIRST_LINES" | grep -q "PostgreSQL database dump" || { echo "FAIL: no SQL header" >&2; exit 4; }
+TABLES="$(zcat "$OUTPUT" 2>/dev/null | grep -c "^CREATE TABLE")"
 echo "OK: $OUTPUT ($SIZE bytes, $TABLES tables)"
 
 cd "$BACKUP_DIR"
