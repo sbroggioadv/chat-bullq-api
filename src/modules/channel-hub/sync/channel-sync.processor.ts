@@ -223,7 +223,13 @@ export class ChannelSyncProcessor extends WorkerHost {
         conversationId,
         result.messages,
       );
-      imported += res.imported;
+      // Count both newly-inserted and skipped (already-existing) messages.
+      // Without `+ res.skipped`, re-syncs or races with inbound webhook
+      // produce undercount (QA-S17-010): if 62/63 messages exist, reports 1.
+      imported += res.imported + res.skipped;
+      this.logger.debug(
+        `importConversationMessages page: imported=${res.imported} skipped=${res.skipped} totalSoFar=${imported}`,
+      );
       cursor = result.nextCursor;
       if (imported >= MAX_MESSAGES_PER_CONVERSATION) break;
       await this.sleep(REQUEST_DELAY_MS);
