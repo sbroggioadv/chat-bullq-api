@@ -23,6 +23,7 @@ import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { AutomationsModule } from './modules/automations/automations.module';
 import { HealthModule } from './modules/health/health.module';
+import { StorageModule } from './modules/storage/storage.module';
 // ProductsModule removido — catálogo agora vive no Trivapp e é consumido
 // via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
 // fica órfã no DB (cleanup futuro). Não importar aqui.
@@ -45,6 +46,10 @@ import redisConfig from './config/redis.config';
     // AutomationsModule is @Global — register early so every domain
     // module can inject OutboxService without explicit imports.
     AutomationsModule,
+    // StorageModule is @Global — bootstrap-only today (S17/C4): boot
+    // guarantees the MinIO bucket exists. Registered early so future
+    // consumers can inject StorageService without explicit imports.
+    StorageModule,
     ChannelAccessModule,
     AuthModule,
     UsersModule,
