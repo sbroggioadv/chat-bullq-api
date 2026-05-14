@@ -111,6 +111,9 @@ export class AuthService {
         name: result.organization.name,
         slug: result.organization.slug,
         role: 'OWNER',
+        // Org recém-criada nunca tem brand setada — wizard de onboarding cuida disso
+        // assim que o OWNER entra no dashboard.
+        brand: result.organization.brand as 'A' | 'B' | 'C' | null,
         accessibleChannelIds: 'ALL' as const,
       }],
       accessToken: tokens.accessToken,
@@ -199,6 +202,9 @@ export class AuthService {
         name: result.organization.name,
         slug: result.organization.slug,
         role: invitation.role,
+        // Brand é herdado da org existente (não-OWNERs entrando via convite veem
+        // a identidade visual já escolhida pela banca; default visual = A se null).
+        brand: result.organization.brand as 'A' | 'B' | 'C' | null,
         // New invited members start with no channel grants (deny-by-default).
         // OWNER/ADMIN bypass; AGENT must be explicitly granted by an admin.
         accessibleChannelIds:
@@ -248,6 +254,7 @@ export class AuthService {
         name: m.organization.name,
         slug: m.organization.slug,
         role: m.role,
+        brand: m.organization.brand as 'A' | 'B' | 'C' | null,
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'
             ? ('ALL' as const)
@@ -300,6 +307,9 @@ export class AuthService {
         name: m.organization.name,
         slug: m.organization.slug,
         role: m.role,
+        // Brand do tema da banca. null = OWNER ainda não escolheu (wizard).
+        // Restringido a 'A'|'B'|'C' no DTO de update; aqui é só passthrough.
+        brand: m.organization.brand as 'A' | 'B' | 'C' | null,
         // 'ALL' for OWNER/ADMIN — they bypass the per-channel allowlist.
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'

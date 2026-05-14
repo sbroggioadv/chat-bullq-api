@@ -1,6 +1,7 @@
 import {
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsObject,
   IsOptional,
@@ -10,6 +11,9 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+
+export type OrganizationBrand = 'A' | 'B' | 'C';
+export const ORGANIZATION_BRANDS: readonly OrganizationBrand[] = ['A', 'B', 'C'] as const;
 
 export class UpdateOrganizationDto {
   @ApiPropertyOptional({ example: 'My Company' })
@@ -22,6 +26,15 @@ export class UpdateOrganizationDto {
   @IsOptional()
   @IsString()
   logoUrl?: string;
+
+  @ApiPropertyOptional({
+    description:
+      "Identidade visual da banca. 'A' = Sbroggio Graphite (institucional), 'B' = Plain Tech, 'C' = Stripe Paper. Setado pelo OWNER no onboarding wizard ou em Configurações > Aparência. null/undefined deixa o valor atual intocado.",
+    enum: ['A', 'B', 'C'],
+  })
+  @IsOptional()
+  @IsIn(ORGANIZATION_BRANDS)
+  brand?: OrganizationBrand;
 
   // ─── AI settings ────────────────────────────────────────────────
 
