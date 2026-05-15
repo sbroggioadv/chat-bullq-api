@@ -69,6 +69,29 @@ export class MessagesController {
     });
   }
 
+  @Post('uploads/image')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: UploadsService.MAX_IMAGE_BYTES },
+    }),
+  )
+  @ApiOperation({
+    summary:
+      'Upload an image (jpeg/png/gif/webp). Returns public URL ready to attach to an outbound IMAGE message. Max 10MB.',
+  })
+  @ApiConsumes('multipart/form-data')
+  async uploadImage(
+    @UploadedFile()
+    file?: { buffer: Buffer; mimetype: string; originalname?: string },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    return this.uploads.saveImage({
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+  }
+
   @Get(':id/media')
   @ApiOperation({
     summary:

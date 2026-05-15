@@ -66,6 +66,17 @@ export interface NormalizedInboundMessage {
   externalMessageId: string;
   externalContactId: string;
   contactName?: string;
+  /**
+   * True when `contactName` was sourced from the contact's own profile
+   * (e.g., WhatsApp pushName from a non-echo inbound). False/undefined when
+   * it came from a less-trustworthy source (group chat name, operator's
+   * own WhatsApp label on an echo, etc.).
+   *
+   * The resolver uses this to decide whether to *overwrite* an existing
+   * contact.name. Without this signal, an echo with a stale operator-side
+   * label would silently clobber a previously-correct profile name.
+   */
+  contactNameIsAuthoritative?: boolean;
   contactPhone?: string;
   contactAvatarUrl?: string;
   channelType: ChannelType;
