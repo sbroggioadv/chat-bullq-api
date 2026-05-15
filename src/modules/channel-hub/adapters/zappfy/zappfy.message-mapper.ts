@@ -20,21 +20,35 @@ export class ZappfyMessageMapper {
 
     // contactName resolution:
     //  - Group: chat name (the group's name).
-    //  - 1-on-1 inbound: senderName = the contact who sent it = correct.
-    //  - 1-on-1 echo (fromMe=true): senderName is OURSELVES (the connected
-    //    WhatsApp), NOT the contact. Using it here used to overwrite the
-    //    contact's profileName with the operator's own name every time they
-    //    replied from their phone. Fall back to chat name only.
+    //  - 1-on-1 inbound (NOT fromMe): senderName / pushName comes from the
+    //    contact's own WhatsApp profile = authoritative.
+    //  - 1-on-1 echo (fromMe=true): both senderName AND event.chat.name come
+    //    from the CONNECTED WhatsApp's address book — i.e. the OPERATOR's
+    //    local label for the contact. That label is often wrong (we've seen
+    //    "Luis Sbroggio" assigned to clients in the Doc's phone). Returning
+    //    undefined here keeps the previously-stored profileName/contactName
+    //    intact and lets a future inbound from the contact correct it via
+    //    their real pushName.
+    //
+    // We also surface a `contactNameIsAuthoritative` hint on the result so
+    // the resolver can safely overwrite a stale name without clobbering a
+    // user-set one. See contact-resolver.service.ts.
     const resolvedContactName = isGroup
       ? event?.chat?.name || msg.chatName
       : isEcho
-        ? event?.chat?.name
-        : msg.senderName || event?.chat?.name;
+        ? undefined
+        : msg.senderName || msg.pushName || undefined;
 
     const result: NormalizedInboundMessage = {
       externalMessageId: msg.messageid || msg.id || '',
       externalContactId: chatid,
       contactName: resolvedContactName,
+      // Authoritative only when the name came from the CONTACT's own
+      // WhatsApp profile via a non-echo inbound (msg.senderName/pushName).
+      // Echo + group fall back to operator-side labels which are NOT
+      // authoritative and shouldn't overwrite a stored name.
+      contactNameIsAuthoritative:
+        !isGroup && !isEcho && !!resolvedContactName,
       contactPhone: isGroup ? undefined : phone,
       channelType: ChannelType.WHATSAPP_ZAPPFY,
       timestamp: new Date(msg.messageTimestamp || Date.now()),

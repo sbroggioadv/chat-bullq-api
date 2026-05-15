@@ -19,6 +19,9 @@ export class WhatsAppOfficialMessageMapper {
       externalMessageId: message.id,
       externalContactId: message.from,
       contactName: contact?.profile?.name,
+      // WhatsApp Cloud's `contact.profile.name` is the contact's own
+      // WhatsApp display name — authoritative by definition.
+      contactNameIsAuthoritative: !!contact?.profile?.name,
       contactPhone: message.from,
       channelType: ChannelType.WHATSAPP_OFFICIAL,
       timestamp: new Date(parseInt(message.timestamp, 10) * 1000),

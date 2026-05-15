@@ -104,7 +104,11 @@ export class ContactResolverService {
       profileName: string | null;
       profileAvatarUrl: string | null;
       contactId: string;
-      contact: { name: string | null; phone: string | null };
+      contact: {
+        name: string | null;
+        phone: string | null;
+        metadata?: unknown;
+      };
     },
     message: NormalizedInboundMessage,
   ): Promise<void> {
@@ -125,18 +129,59 @@ export class ContactResolverService {
       });
     }
 
+    // contact.name is the user-visible label across the inbox. Updating it
+    // is more sensitive than profileName (which is just the per-channel
+    // raw value):
+    //
+    //   1) If the operator manually renamed the contact via the rename
+    //      dialog, we MUST NOT overwrite — that's the whole point of
+    //      renaming. We track this via `contact.metadata.nameLockedByUser`.
+    //
+    //   2) Otherwise, we *should* overwrite a stored name when the new one
+    //      is authoritative (came from the contact's own profile, not an
+    //      echo) AND it actually differs. This is what fixes the historical
+    //      "operator's address-book label leaks into our contact name" bug.
+    //
+    //   3) If the name has never been set, fill it from whatever we got
+    //      (including non-authoritative, which is better than nothing).
+    const metadata =
+      (existing.contact.metadata as Record<string, any> | null | undefined) ?? {};
+    const isLocked = metadata.nameLockedByUser === true;
     const contactUpdates: Record<string, any> = {};
-    if (message.contactName && !existing.contact.name) {
-      contactUpdates.name = message.contactName;
+
+    if (message.contactName) {
+      const currentName = existing.contact.name;
+      if (!currentName) {
+        // Empty → fill from anything.
+        contactUpdates.name = message.contactName;
+      } else if (
+        !isLocked &&
+        message.contactNameIsAuthoritative &&
+        currentName !== message.contactName
+      ) {
+        // Authoritative correction allowed.
+        contactUpdates.name = message.contactName;
+      }
     }
     if (message.contactPhone && !existing.contact.phone) {
       contactUpdates.phone = message.contactPhone;
     }
     if (Object.keys(contactUpdates).length > 0) {
+      const before = existing.contact.name;
       await this.prisma.contact.update({
         where: { id: existing.contactId },
         data: contactUpdates,
       });
+      if (
+        contactUpdates.name &&
+        before &&
+        before !== contactUpdates.name
+      ) {
+        this.logger.log(
+          `Contact ${existing.contactId} name corrected via authoritative inbound: ` +
+            `"${before}" → "${contactUpdates.name}"`,
+        );
+      }
     }
   }
 }
