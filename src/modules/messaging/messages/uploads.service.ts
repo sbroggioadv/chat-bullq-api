@@ -32,6 +32,12 @@ export class UploadsService {
   // transcribable without chunking.
   static readonly MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 
+  // 10MB cap for outbound images — generous for screenshots/photos but small
+  // enough to keep the upload+send round-trip under a few seconds and to fit
+  // comfortably under Zappfy/WhatsApp's 16MB media limit even after any
+  // multipart overhead.
+  static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
   // 64MB upper bound for any inbound media we mirror. WhatsApp Cloud caps
   // documents at 100MB but most chat content is well under this — bigger
   // files we'd want to stream rather than buffer in memory anyway.
@@ -45,6 +51,14 @@ export class UploadsService {
     'audio/wav',
     'audio/webm',
     'audio/webm;codecs=opus',
+  ]);
+
+  private static readonly ALLOWED_IMAGE_MIME = new Set([
+    'image/jpeg',
+    'image/jpg',
+    'image/png',
+    'image/gif',
+    'image/webp',
   ]);
 
   private readonly rootDir: string;
@@ -179,6 +193,56 @@ export class UploadsService {
     const url = `${this.publicBaseUrl}/audio/${dateFolder}/${finalName}`;
     this.logger.log(`Audio saved: ${finalPath} -> ${url}`);
     return { url, mimeType: finalMime, size: finalSize, filename: finalName };
+  }
+
+  /**
+   * Persists an agent-uploaded image (paste / drag-and-drop / file picker)
+   * and returns a public URL ready to attach to an outbound IMAGE message.
+   *
+   * Validates MIME against an allow-list (jpeg/png/gif/webp) — we reject
+   * anything else to avoid the provider 500-ing on exotic formats, and to
+   * keep the surface area predictable for the contact preview thumbnail.
+   *
+   * We DO NOT re-encode the image (unlike audio): provider compatibility
+   * for these formats is good enough across Zappfy/WhatsApp Cloud/IG, and
+   * re-encoding would either degrade quality or balloon CPU/memory.
+   */
+  async saveImage(file: {
+    buffer: Buffer;
+    mimetype: string;
+    originalname?: string;
+  }): Promise<UploadResult> {
+    if (!file?.buffer?.byteLength) {
+      throw new BadRequestException('Empty upload');
+    }
+    if (file.buffer.byteLength > UploadsService.MAX_IMAGE_BYTES) {
+      throw new BadRequestException(
+        `Image too large (max ${UploadsService.MAX_IMAGE_BYTES / 1024 / 1024}MB)`,
+      );
+    }
+    const mime = (file.mimetype || '').split(';')[0].trim().toLowerCase();
+    if (!UploadsService.ALLOWED_IMAGE_MIME.has(mime)) {
+      throw new BadRequestException(`Unsupported image mime type: ${file.mimetype}`);
+    }
+
+    const dateFolder = new Date().toISOString().slice(0, 10);
+    const dir = path.join(this.rootDir, 'images', dateFolder);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const id = crypto.randomBytes(16).toString('hex');
+    const ext = this.extFor(mime, file.originalname);
+    const filename = `${id}${ext}`;
+    const fullPath = path.join(dir, filename);
+    await fs.promises.writeFile(fullPath, file.buffer);
+
+    const url = `${this.publicBaseUrl}/images/${dateFolder}/${filename}`;
+    this.logger.log(`Image saved: ${fullPath} -> ${url}`);
+    return {
+      url,
+      mimeType: mime,
+      size: file.buffer.byteLength,
+      filename: file.originalname || filename,
+    };
   }
 
   private extFor(mime: string, originalFilename?: string | null): string {
