@@ -13,6 +13,7 @@ import type { Queue } from 'bullmq';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
 import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
+import { AiLlmRouterService } from '../providers/ai-llm-router.service';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import { ToolContext } from '../tools/tool.types';
 import { HttpToolExecutorService } from '../tools/http-tool-executor.service';
@@ -72,6 +73,7 @@ export class AiAgentRunnerService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly llm: LlmService,
+    private readonly llmRouter: AiLlmRouterService,
     private readonly registry: ToolRegistry,
     private readonly promptBuilder: PromptBuilderService,
     private readonly httpExecutor: HttpToolExecutorService,
@@ -269,13 +271,17 @@ export class AiAgentRunnerService {
       while (iterationCount < MAX_TOOL_ITERATIONS) {
         iterationCount++;
 
-        const response = await this.llm.complete({
+        // S18/W2: router resolves per-org provider + apiKey via routing.
+        // organizationId presence triggers org-credential lookup; fallback
+        // pra env preserva compat com setup pré-W2.
+        const response = await this.llmRouter.complete({
           modelId: agent.modelId,
           messages,
           tools,
           temperature: agent.temperature,
           maxTokens: agent.maxTokens,
           modelParams: (agent.modelParams as Record<string, unknown>) ?? undefined,
+          organizationId: conversation.organizationId,
         });
 
         aggregateUsage.inputTokens += response.usage.inputTokens;

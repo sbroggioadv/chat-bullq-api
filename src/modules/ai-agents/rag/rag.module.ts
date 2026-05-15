@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../../database/prisma.module';
 import { LlmModule } from '../llm/llm.module';
+import { AiProvidersModule } from '../providers/providers.module';
 import { EmbeddingsService } from './embeddings.service';
 import { VectorStoreService } from './vector-store.service';
 import { RetrievalService } from './retrieval.service';
@@ -33,6 +34,7 @@ const ragIndexerQueue = BullModule.registerQueue({ name: 'rag-indexer' });
     ConfigModule,
     PrismaModule,
     LlmModule,
+    AiProvidersModule,
     ragIndexerQueue,
   ],
   providers: [

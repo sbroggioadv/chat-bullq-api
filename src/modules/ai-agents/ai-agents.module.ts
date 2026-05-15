@@ -26,12 +26,14 @@ import { ConfirmationsModule } from './confirmations/confirmations.module';
 import { ConfirmationExecutorModule } from './confirmations/confirmation-executor.module';
 import { RagModule } from './rag/rag.module';
 import { EvalsModule } from './evals/evals.module';
+import { AiProvidersModule } from './providers/providers.module';
 
 @Module({
   imports: [
     ConfigModule,
     PrismaModule,
     LlmModule,
+    AiProvidersModule,
     ToolsModule,
     NotificationsModule,
     RealtimeModule,
