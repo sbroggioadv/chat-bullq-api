@@ -122,6 +122,10 @@ model User {
   conversationReads     ConversationRead[]
   assignedCards         Card[]             @relation("CardAssignee")
 
+  // ─── S18 Wave 2: AI credentials ──────────────────
+  createdCredentials OrganizationCredential[]      @relation("OrgCredentialCreatedBy")
+  credentialAudits   OrganizationCredentialAudit[] @relation("OrgCredentialAuditedBy")
+
   @@map("users")
 }
 
@@ -204,7 +208,115 @@ model Organization {
   cards         Card[]
   products      Product[]
 
+  // ─── S18 Wave 2: AI provider credentials per-org ─
+  credentials       OrganizationCredential[]
+  capabilityRouting OrganizationCapabilityRouting[]
+  credentialAudits  OrganizationCredentialAudit[]
+
   @@map("organizations")
+}
+
+// ────────────────────────────────────────────────────────
+// S18 Wave 2 — AI provider credentials per organization
+// ────────────────────────────────────────────────────────
+
+/// Quais providers de IA são suportados. ANTHROPIC e OPENAI já estão em uso
+/// hoje via env globals (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). GEMINI foi
+/// adicionado em S18/W2 pra dar opção a orgs que preferem Google.
+enum AiProvider {
+  ANTHROPIC
+  OPENAI
+  GEMINI
+}
+
+/// Cada "capability" representa uma função IA distinta que pode rotear
+/// pra provider diferente. Org pode mandar agentes LLM no Claude e
+/// transcrição de áudio no Whisper, por exemplo.
+enum AiCapability {
+  LLM_AGENT
+  TRANSCRIPTION
+  EMBEDDINGS
+}
+
+/// Status da última checagem de saúde da credencial (GET /v1/models pra
+/// OpenAI/Gemini, count_tokens pra Anthropic). Sintetiza pra UX exibir
+/// ✅⚠️❌⏸️.
+enum CredentialTestStatus {
+  UNTESTED
+  SUCCESS
+  FAILURE
+}
+
+/// Ações auditáveis em credenciais de IA. Append-only — nunca update/delete
+/// de linhas auditadas pra manter trilha íntegra (LGPD/SOC-friendly).
+enum CredentialAuditAction {
+  CREATED
+  UPDATED
+  DELETED
+  TESTED_SUCCESS
+  TESTED_FAILURE
+  ROUTING_CHANGED
+}
+
+model OrganizationCredential {
+  id             String                @id @default(cuid())
+  organizationId String                @map("organization_id")
+  provider       AiProvider
+  /// AES-256-GCM ciphertext em base64. Layout: 12B IV ‖ ciphertext ‖ 16B authTag.
+  /// Master key (32B hex) vem de `ENCRYPTION_KEY` env. Tampering com authTag
+  /// invalido => decrypt() throws.
+  encryptedKey   String                @map("encrypted_key") @db.Text
+  /// Últimos 4 chars da API key pra display tipo "sk-ant-...****1234".
+  /// Único campo legível sem decrypt.
+  keyHint        String                @map("key_hint")
+  lastTestAt     DateTime?             @map("last_test_at")
+  lastTestStatus CredentialTestStatus  @default(UNTESTED) @map("last_test_status")
+  lastTestError  String?               @map("last_test_error") @db.Text
+  createdById    String                @map("created_by_id")
+  createdAt      DateTime              @default(now()) @map("created_at")
+  updatedAt      DateTime              @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User         @relation("OrgCredentialCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+  @@map("organization_credentials")
+}
+
+model OrganizationCapabilityRouting {
+  organizationId   String       @map("organization_id")
+  capability       AiCapability
+  providerSelected AiProvider   @map("provider_selected")
+  /// Override opcional do model padrão do provider. Ex: "claude-3-5-sonnet-20241022"
+  /// pra forçar versão específica. NULL = usa default do código.
+  modelOverride    String?      @map("model_override")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, capability])
+  @@map("organization_capability_routing")
+}
+
+model OrganizationCredentialAudit {
+  id             String                @id @default(cuid())
+  organizationId String                @map("organization_id")
+  actorUserId    String?               @map("actor_user_id")
+  action         CredentialAuditAction
+  provider       AiProvider?
+  /// Campo livre pra contexto (ex: routing change "LLM_AGENT: ANTHROPIC -> OPENAI").
+  /// Nunca contém valores sensíveis.
+  detail         String?               @db.Text
+  ip             String?
+  userAgent      String?               @map("user_agent")
+  createdAt      DateTime              @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actorUser    User?        @relation("OrgCredentialAuditedBy", fields: [actorUserId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@map("organization_credential_audits")
 }
 
 model UserOrganization {
