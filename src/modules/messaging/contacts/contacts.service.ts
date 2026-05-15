@@ -23,8 +23,28 @@ export class ContactsService {
   }
 
   async update(id: string, organizationId: string, dto: UpdateContactDto) {
-    await this.findOne(id, organizationId);
-    return this.repository.update(id, dto);
+    const existing = await this.findOne(id, organizationId);
+
+    // When the operator explicitly sets a name we MUST mark the contact as
+    // "name-locked-by-user" so the inbound pipeline doesn't overwrite it on
+    // the next authoritative pushName arrival. We merge into existing
+    // metadata to avoid wiping unrelated keys.
+    let nextMetadata = dto.metadata;
+    if (dto.name !== undefined && dto.name !== null) {
+      const currentMeta =
+        (existing.metadata as Record<string, any> | null | undefined) ?? {};
+      nextMetadata = {
+        ...currentMeta,
+        ...(dto.metadata ?? {}),
+        nameLockedByUser: true,
+        nameLockedAt: new Date().toISOString(),
+      };
+    }
+
+    return this.repository.update(id, {
+      ...dto,
+      ...(nextMetadata !== undefined ? { metadata: nextMetadata } : {}),
+    });
   }
 
   async remove(id: string, organizationId: string) {
