@@ -1,7 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { AiProvider } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
+import { ProviderResolverService } from '../../ai-agents/providers/provider-resolver.service';
 import { MediaResolverService } from './media-resolver.service';
 import axios from 'axios';
 
@@ -9,7 +11,7 @@ export interface TranscriptionResult {
   text: string;
   language?: string;
   durationMs?: number;
-  provider: 'openai-whisper';
+  provider: 'openai-whisper' | 'gemini-audio';
   transcribedAt: string;
 }
 
@@ -35,6 +37,7 @@ export class TranscriptionService {
     private readonly config: ConfigService,
     private readonly adapterRegistry: ChannelAdapterRegistry,
     private readonly mediaResolver: MediaResolverService,
+    private readonly resolver: ProviderResolverService,
   ) {}
 
   async transcribe(
@@ -66,10 +69,14 @@ export class TranscriptionService {
       return metadata.transcription as TranscriptionResult;
     }
 
-    const apiKey = this.config.get<string>('OPENAI_API_KEY');
-    if (!apiKey) {
+    // S18/W2: resolve provider + key via routing. Org pode escolher
+    // OpenAI Whisper (atual default) ou Gemini Audio (Gemini 1.5 Flash
+    // tem audio understanding nativo, mas precisa Files API upload).
+    // Wave 2 entrega só OPENAI path completo + GEMINI stub explícito.
+    const resolved = await this.resolver.resolveForTranscription(organizationId);
+    if (resolved.source === 'NONE' || !resolved.apiKey) {
       throw new BadRequestException(
-        'OPENAI_API_KEY not configured on the server',
+        `No transcription credential configured for this organization (provider=${resolved.provider})`,
       );
     }
 
@@ -81,45 +88,30 @@ export class TranscriptionService {
     }
 
     this.logger.log(
-      `Transcribing message ${messageId} (${audio.buffer.byteLength} bytes, ${audio.mimeType})`,
+      `Transcribing message ${messageId} via ${resolved.provider} (${audio.buffer.byteLength} bytes, ${audio.mimeType})`,
     );
 
-    const formData = new FormData();
-    const blob = new Blob([audio.buffer as BlobPart], {
-      type: audio.mimeType || 'audio/mpeg',
-    });
-    formData.append('file', blob, audio.filename);
-    formData.append('model', TranscriptionService.MODEL);
-    formData.append('response_format', 'verbose_json');
-    // Portuguese bias by default — Whisper auto-detects, this just nudges.
-    formData.append(
-      'prompt',
-      'Conversa em português do Brasil entre cliente e atendente.',
-    );
+    let result: TranscriptionResult;
 
-    let response;
-    try {
-      response = await axios.post(TranscriptionService.API_URL, formData, {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        timeout: 120_000,
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
-      });
-    } catch (err: any) {
-      const detail =
-        err?.response?.data?.error?.message || err.message || 'unknown';
-      this.logger.error(`Whisper request failed: ${detail}`);
-      throw new BadRequestException(`Transcrição falhou: ${detail}`);
+    if (resolved.provider === AiProvider.GEMINI) {
+      // Gemini audio path: Files API upload → generateContent.
+      // Implementação stub aqui — full path requer Files API client
+      // que adiciona complexidade não-validada ainda. Cai pro OpenAI
+      // se env tiver fallback, senão throw claro pra UX.
+      this.logger.warn(
+        `Gemini transcription not yet implemented for messageId=${messageId}. ` +
+        `Falling back to OpenAI Whisper if available.`,
+      );
+      const fallback = this.config.get<string>('OPENAI_API_KEY');
+      if (!fallback) {
+        throw new BadRequestException(
+          'Gemini transcription pending; configure OpenAI fallback via OPENAI_API_KEY or set TRANSCRIPTION routing to OPENAI',
+        );
+      }
+      result = await this.transcribeWithOpenAi(audio, fallback);
+    } else {
+      result = await this.transcribeWithOpenAi(audio, resolved.apiKey);
     }
-
-    const data = response.data;
-    const result: TranscriptionResult = {
-      text: String(data?.text || '').trim(),
-      language: data?.language,
-      durationMs: data?.duration ? Math.round(Number(data.duration) * 1000) : undefined,
-      provider: 'openai-whisper',
-      transcribedAt: new Date().toISOString(),
-    };
 
     await this.prisma.message.update({
       where: { id: messageId },
@@ -183,6 +175,53 @@ export class TranscriptionService {
 
     const filename = this.filenameFor(mimeType);
     return { buffer, mimeType, filename };
+  }
+
+  /**
+   * Executa transcrição via OpenAI Whisper. Path extraído pra permitir
+   * roteamento provider (OpenAI primary + Gemini fallback futuro).
+   */
+  private async transcribeWithOpenAi(
+    audio: { buffer: Buffer; mimeType?: string; filename: string },
+    apiKey: string,
+  ): Promise<TranscriptionResult> {
+    const formData = new FormData();
+    const blob = new Blob([audio.buffer as BlobPart], {
+      type: audio.mimeType || 'audio/mpeg',
+    });
+    formData.append('file', blob, audio.filename);
+    formData.append('model', TranscriptionService.MODEL);
+    formData.append('response_format', 'verbose_json');
+    formData.append(
+      'prompt',
+      'Conversa em português do Brasil entre cliente e atendente.',
+    );
+
+    let response;
+    try {
+      response = await axios.post(TranscriptionService.API_URL, formData, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        timeout: 120_000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      });
+    } catch (err: any) {
+      const detail =
+        err?.response?.data?.error?.message || err.message || 'unknown';
+      this.logger.error(`Whisper request failed: ${detail}`);
+      throw new BadRequestException(`Transcrição falhou: ${detail}`);
+    }
+
+    const data = response.data;
+    return {
+      text: String(data?.text || '').trim(),
+      language: data?.language,
+      durationMs: data?.duration
+        ? Math.round(Number(data.duration) * 1000)
+        : undefined,
+      provider: 'openai-whisper',
+      transcribedAt: new Date().toISOString(),
+    };
   }
 
   private filenameFor(mimeType?: string): string {

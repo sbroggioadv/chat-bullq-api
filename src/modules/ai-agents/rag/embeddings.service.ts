@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ProviderResolverService } from '../providers/provider-resolver.service';
 import type { EmbeddingResult } from './types';
 
 /**
@@ -17,29 +18,51 @@ export class EmbeddingsService {
   private readonly MODEL = 'text-embedding-3-small';
   /** USD cost per 1M tokens for `text-embedding-3-small`. */
   private readonly COST_PER_1M_TOKENS = 0.02;
-  private readonly apiKey: string;
+  private readonly envApiKey: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    private readonly resolver: ProviderResolverService,
+  ) {
     const apiKey =
       config.get<string>('OPENAI_API_KEY') ?? process.env.OPENAI_API_KEY ?? '';
     if (!apiKey) {
       this.logger.warn(
-        'No OPENAI_API_KEY set — embeddings will fail at runtime',
+        'No OPENAI_API_KEY set — embeddings will fail at runtime unless org credential provided',
       );
     }
-    this.apiKey = apiKey;
+    this.envApiKey = apiKey;
+  }
+
+  /**
+   * Resolve OpenAI API key for the given org. Falls back to env if no
+   * org-level credential is configured. organizationId is optional pra
+   * preservar compat com callers internos que ainda não passam orgId.
+   */
+  private async resolveKey(organizationId?: string): Promise<string> {
+    if (!organizationId) return this.envApiKey;
+    const resolved = await this.resolver.resolveForEmbeddings(organizationId);
+    if (resolved.source === 'NONE' || !resolved.apiKey) {
+      throw new InternalServerErrorException(
+        `No OpenAI credential available for org=${organizationId}`,
+      );
+    }
+    return resolved.apiKey;
   }
 
   /**
    * Embeds a single string. Returns the vector + cost metadata so the
    * caller can log it against the agent run's budget.
+   *
+   * `organizationId` opcional — quando presente, busca credential org-level.
    */
-  async embed(text: string): Promise<EmbeddingResult> {
+  async embed(text: string, organizationId?: string): Promise<EmbeddingResult> {
+    const apiKey = await this.resolveKey(organizationId);
     const t0 = Date.now();
     const response = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ model: this.MODEL, input: text }),
@@ -83,14 +106,15 @@ export class EmbeddingsService {
    * across inputs so the caller can attribute cost back to each item
    * (the API itself only returns one aggregate token count).
    */
-  async embedBatch(texts: string[]): Promise<EmbeddingResult[]> {
+  async embedBatch(texts: string[], organizationId?: string): Promise<EmbeddingResult[]> {
     if (texts.length === 0) return [];
 
+    const apiKey = await this.resolveKey(organizationId);
     const t0 = Date.now();
     const response = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${this.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ model: this.MODEL, input: texts }),

@@ -29,18 +29,47 @@ import {
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
-  private readonly client: Anthropic;
+  private readonly envClient: Anthropic;
+  private readonly envApiKey: string | undefined;
   private readonly hasApiKey: boolean;
+  /**
+   * Cache de clients per-apiKey pra evitar instanciar `new Anthropic({apiKey})`
+   * em todo request (resolver retorna a mesma key por 60s, então cache aqui
+   * piggybacks no TTL do resolver de forma natural).
+   */
+  private readonly clientCache = new Map<string, Anthropic>();
 
   constructor(config: ConfigService) {
     const apiKey = config.get<string>('ANTHROPIC_API_KEY');
+    this.envApiKey = apiKey ?? undefined;
     this.hasApiKey = !!apiKey;
     if (!apiKey) {
       this.logger.warn(
-        'ANTHROPIC_API_KEY not set — AI agents will fail at runtime',
+        'ANTHROPIC_API_KEY not set — AI agents will fail at runtime if no org credential provided',
       );
     }
-    this.client = new Anthropic({ apiKey: apiKey ?? 'missing' });
+    this.envClient = new Anthropic({ apiKey: apiKey ?? 'missing' });
+  }
+
+  /**
+   * Resolve Anthropic client por API key. Quando `apiKey` é undefined,
+   * usa o env-based singleton (compat path pré-S18/W2). Quando presente
+   * (caller veio do ProviderResolverService com key org-level), reusa
+   * client cacheado ou cria novo + cacheia.
+   */
+  private clientFor(apiKey?: string): Anthropic {
+    if (!apiKey || apiKey === this.envApiKey) return this.envClient;
+    let client = this.clientCache.get(apiKey);
+    if (!client) {
+      client = new Anthropic({ apiKey });
+      this.clientCache.set(apiKey, client);
+      // Bound cache: max 50 distinct org keys cached (~30 orgs × 1.5 churn).
+      if (this.clientCache.size > 50) {
+        const firstKey = this.clientCache.keys().next().value;
+        if (firstKey) this.clientCache.delete(firstKey);
+      }
+    }
+    return client;
   }
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
@@ -54,9 +83,15 @@ export class LlmService {
     // e a API retorna 400. Omitir quando o modelo for Opus 4.7+.
     const supportsTemperature = !this.isOpus47(modelId);
 
+    // S18/W2: opcional override de apiKey (vem do ProviderResolverService).
+    // Tipos: LlmCompletionRequest tem `apiKey?: string` agregado em runtime
+    // pelo router. Mantemos backward compat: ausente = env.
+    const apiKey = (req as LlmCompletionRequest & { apiKey?: string }).apiKey;
+    const client = this.clientFor(apiKey);
+
     let response: Anthropic.Message;
     try {
-      response = await this.client.messages.create({
+      response = await client.messages.create({
         model: modelId,
         max_tokens: req.maxTokens ?? 2048,
         ...(supportsTemperature

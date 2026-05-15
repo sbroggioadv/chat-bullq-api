@@ -81,4 +81,47 @@ export class HealthController {
 
     return { status: 'ready', checks };
   }
+
+  /**
+   * S18/W2 — Reports which AI provider env globals are set + how many orgs
+   * have org-level credentials configured.
+   *
+   * Returns ONLY boolean presence + counts. NEVER value or key fragment.
+   * Public endpoint (no auth) — useful for external monitoring + the UI to
+   * know if ENV_FALLBACK is available before letting user disable
+   * org-level credential.
+   */
+  @Get('llm')
+  @ApiOperation({ summary: 'AI provider env presence + org credential counts' })
+  async llm() {
+    const env = {
+      anthropic: Boolean(
+        this.config.get<string>('ANTHROPIC_API_KEY') ?? process.env.ANTHROPIC_API_KEY,
+      ),
+      openai: Boolean(
+        this.config.get<string>('OPENAI_API_KEY') ?? process.env.OPENAI_API_KEY,
+      ),
+      gemini: Boolean(
+        this.config.get<string>('GEMINI_API_KEY') ?? process.env.GEMINI_API_KEY,
+      ),
+    };
+
+    let orgsWithCustomCredentials = 0;
+    try {
+      const distinct = await this.prisma.organizationCredential.findMany({
+        distinct: ['organizationId'],
+        select: { organizationId: true },
+      });
+      orgsWithCustomCredentials = distinct.length;
+    } catch (err) {
+      // Migration ainda não rodou? Reportamos 0 (graceful).
+      orgsWithCustomCredentials = 0;
+    }
+
+    return {
+      env,
+      orgsWithCustomCredentials,
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
