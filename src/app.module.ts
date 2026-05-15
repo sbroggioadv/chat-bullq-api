@@ -24,6 +24,7 @@ import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { AutomationsModule } from './modules/automations/automations.module';
 import { HealthModule } from './modules/health/health.module';
 import { StorageModule } from './modules/storage/storage.module';
+import { OrgCredentialsModule } from './modules/org-credentials/org-credentials.module';
 // ProductsModule removido — catálogo agora vive no Trivapp e é consumido
 // via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
 // fica órfã no DB (cleanup futuro). Não importar aqui.
@@ -50,6 +51,9 @@ import redisConfig from './config/redis.config';
     // guarantees the MinIO bucket exists. Registered early so future
     // consumers can inject StorageService without explicit imports.
     StorageModule,
+    // OrgCredentialsModule is @Global — register early so ai-agents
+    // resolver can inject OrgCredentialsService without circular imports.
+    OrgCredentialsModule,
     ChannelAccessModule,
     AuthModule,
     UsersModule,
