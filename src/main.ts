@@ -32,7 +32,14 @@ async function bootstrap() {
     '/api/v1/uploads',
     express.static(uploadsDir, {
       maxAge: '30d',
-      fallthrough: false,
+      // fallthrough:true (default) deixa o NestJS gerar 404 limpo pra arquivo
+      // ausente. Com false, o static chama next(err) com um erro genérico ENOENT
+      // que o GlobalExceptionFilter (@Catch() = pega tudo) convertia em 500
+      // opaco. Isso fazia o frontend cair no estado fallback ("Imagem" sem
+      // thumbnail) sempre que o blob fosse perdido — comum em prod até a
+      // configuração do volume persistente (uploads era efêmero). Bug
+      // descoberto 2026-05-16 quando Doc enviou screenshot via paste em prod.
+      fallthrough: true,
       index: false,
     }),
   );
