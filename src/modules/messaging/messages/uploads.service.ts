@@ -38,6 +38,15 @@ export class UploadsService {
   // multipart overhead.
   static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
+  // S18/W3-Z: caps por tipo de anexo genérico (drag-drop qualquer formato).
+  // Documents: 50MB cobre PDFs grandes + planilhas Excel comuns sem inflar muito.
+  // Video: 100MB alinha com WA Cloud Business limit (16MB Zappfy will reject —
+  // a UI vai mostrar erro friendly antes do envio fallhar lá).
+  // Audio (anexo, não voice note): 25MB, mesmo cap do /uploads/audio.
+  static readonly MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+  static readonly MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+  static readonly MAX_FILE_BYTES = 100 * 1024 * 1024; // cap absoluto pro endpoint
+
   // 64MB upper bound for any inbound media we mirror. WhatsApp Cloud caps
   // documents at 100MB but most chat content is well under this — bigger
   // files we'd want to stream rather than buffer in memory anyway.
@@ -60,6 +69,64 @@ export class UploadsService {
     'image/gif',
     'image/webp',
   ]);
+
+  /**
+   * S18/W3-Z: allow-list pro endpoint `/uploads/file` (drag-drop polimórfico).
+   * Listas explícitas evitam confiar em parsing genérico. Imagens não vão aqui
+   * (têm endpoint dedicado /uploads/image), mas se vier pelo file ainda assim,
+   * são aceitas — saveFile detecta tipo e roteia internamente pro extFor.
+   */
+  private static readonly ALLOWED_DOCUMENT_MIME = new Set([
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/zip',
+    'application/x-zip-compressed',
+    'application/x-rar-compressed',
+    'application/x-7z-compressed',
+    'text/plain',
+    'text/csv',
+    'application/json',
+  ]);
+
+  private static readonly ALLOWED_VIDEO_MIME = new Set([
+    'video/mp4',
+    'video/quicktime',
+    'video/webm',
+    'video/3gpp',
+    'video/x-matroska', // mkv (raro mas aparece)
+  ]);
+
+  /**
+   * S18/W3-Z: magic bytes (header signature) check pra defesa em profundidade.
+   * Atacante pode forjar Content-Type header (browser não valida payload), então
+   * comparamos primeiros bytes contra assinaturas conhecidas pra cada MIME
+   * sensível. Sem regex elaborado — só prefixos literais. Não cobre todos os
+   * formatos (não vale a pena), mas pega os 80% comuns + casos de spoof óbvio.
+   *
+   * Fonte: https://en.wikipedia.org/wiki/List_of_file_signatures
+   */
+  private static readonly MAGIC_BYTES_BY_MIME: Record<string, Buffer[]> = {
+    'application/pdf': [Buffer.from('25504446', 'hex')], // %PDF
+    'application/zip': [Buffer.from('504b0304', 'hex'), Buffer.from('504b0506', 'hex')],
+    'application/x-zip-compressed': [Buffer.from('504b0304', 'hex')],
+    // DOCX/XLSX/PPTX são ZIPs internos — mesma magic
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': [Buffer.from('504b0304', 'hex')],
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': [Buffer.from('504b0304', 'hex')],
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': [Buffer.from('504b0304', 'hex')],
+    // DOC/XLS/PPT legacy: D0CF11E0A1B11AE1 (OLE2)
+    'application/msword': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
+    'application/vnd.ms-excel': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
+    'application/vnd.ms-powerpoint': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
+    'video/mp4': [Buffer.from('66747970', 'hex')], // 'ftyp' (offset 4-8)
+    'video/quicktime': [Buffer.from('66747970', 'hex')],
+    'video/webm': [Buffer.from('1a45dfa3', 'hex')], // EBML
+    // text/* skip — too varied, MIME header suficiente
+  };
 
   private readonly rootDir: string;
   private readonly publicBaseUrl: string;
@@ -242,6 +309,103 @@ export class UploadsService {
       mimeType: mime,
       size: file.buffer.byteLength,
       filename: file.originalname || filename,
+    };
+  }
+
+  /**
+   * S18/W3-Z: aceita anexo de QUALQUER tipo (document/video/audio/image)
+   * vindo do composer (drag-drop, paste, file picker). Roteia internamente
+   * pro endpoint certo via MIME header e valida magic bytes pra prevenir
+   * spoof (browser não verifica payload contra Content-Type).
+   *
+   * Retorna URL pública + contentTypeBucket pra frontend mapear pro
+   * Message.contentType (IMAGE/AUDIO/VIDEO/DOCUMENT) sem precisar parsear
+   * MIME de novo.
+   */
+  async saveFile(file: {
+    buffer: Buffer;
+    mimetype: string;
+    originalname?: string;
+  }): Promise<UploadResult & { contentTypeBucket: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'DOCUMENT' }> {
+    if (!file?.buffer?.byteLength) {
+      throw new BadRequestException('Empty upload');
+    }
+    if (file.buffer.byteLength > UploadsService.MAX_FILE_BYTES) {
+      throw new BadRequestException(
+        `File too large (max ${UploadsService.MAX_FILE_BYTES / 1024 / 1024}MB)`,
+      );
+    }
+
+    const mimeRaw = (file.mimetype || '').toLowerCase();
+    const mime = mimeRaw.split(';')[0].trim();
+
+    // Routing por bucket — cada bucket tem cap próprio.
+    let bucket: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'DOCUMENT';
+    let subdir: string;
+    let bucketCap: number;
+
+    if (UploadsService.ALLOWED_IMAGE_MIME.has(mime)) {
+      bucket = 'IMAGE';
+      subdir = 'images';
+      bucketCap = UploadsService.MAX_IMAGE_BYTES;
+    } else if (UploadsService.ALLOWED_AUDIO_MIME.has(mime) || UploadsService.ALLOWED_AUDIO_MIME.has(mimeRaw)) {
+      bucket = 'AUDIO';
+      subdir = 'audio';
+      bucketCap = UploadsService.MAX_AUDIO_BYTES;
+    } else if (UploadsService.ALLOWED_VIDEO_MIME.has(mime)) {
+      bucket = 'VIDEO';
+      subdir = 'videos';
+      bucketCap = UploadsService.MAX_VIDEO_BYTES;
+    } else if (UploadsService.ALLOWED_DOCUMENT_MIME.has(mime) || mime.startsWith('text/')) {
+      bucket = 'DOCUMENT';
+      subdir = 'documents';
+      bucketCap = UploadsService.MAX_DOCUMENT_BYTES;
+    } else {
+      throw new BadRequestException(`Unsupported file mime type: ${file.mimetype}`);
+    }
+
+    if (file.buffer.byteLength > bucketCap) {
+      throw new BadRequestException(
+        `${bucket} too large (max ${bucketCap / 1024 / 1024}MB for this type)`,
+      );
+    }
+
+    // Magic bytes check — só pra MIMEs com signature conhecida.
+    const signatures = UploadsService.MAGIC_BYTES_BY_MIME[mime];
+    if (signatures && signatures.length > 0) {
+      const header = file.buffer.subarray(0, 16);
+      // MP4/MOV: signature 'ftyp' aparece em offset 4-8, não 0
+      const matched = signatures.some((sig) => {
+        if (mime === 'video/mp4' || mime === 'video/quicktime') {
+          return file.buffer.length >= 12 && file.buffer.subarray(4, 8).equals(sig);
+        }
+        return header.subarray(0, sig.length).equals(sig);
+      });
+      if (!matched) {
+        throw new BadRequestException(
+          `File content does not match declared MIME type (${mime}). Possible spoofed extension.`,
+        );
+      }
+    }
+
+    const dateFolder = new Date().toISOString().slice(0, 10);
+    const dir = path.join(this.rootDir, subdir, dateFolder);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const id = crypto.randomBytes(16).toString('hex');
+    const ext = this.extFor(mime, file.originalname);
+    const filename = `${id}${ext}`;
+    const fullPath = path.join(dir, filename);
+    await fs.promises.writeFile(fullPath, file.buffer);
+
+    const url = `${this.publicBaseUrl}/${subdir}/${dateFolder}/${filename}`;
+    this.logger.log(`File saved (${bucket}): ${fullPath} -> ${url}`);
+    return {
+      url,
+      mimeType: mime,
+      size: file.buffer.byteLength,
+      filename: file.originalname || filename,
+      contentTypeBucket: bucket,
     };
   }
 
