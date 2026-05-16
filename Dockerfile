@@ -33,6 +33,16 @@ COPY --from=builder /app/prisma ./prisma
 
 RUN mkdir -p /app/uploads
 
+# Declarar /app/uploads como volume — sinaliza pro Coolify/Docker que esse path
+# precisa ser montado num volume persistente, senão TODA imagem/áudio enviado
+# pelos operadores é apagado a cada redeploy. Bug descoberto 2026-05-16 quando
+# Doc enviou screenshot via paste e o blob sumiu no redeploy seguinte.
+# IMPORTANTE: declarar VOLUME no Dockerfile NÃO cria o volume automaticamente
+# no Coolify — é só uma anotação. O bind mount real precisa ser configurado no
+# painel: Storage tab → New Volume → Source: bullq2-api-uploads, Destination:
+# /app/uploads. Sem essa config no Coolify, VOLUME vira anon volume (perdido).
+VOLUME ["/app/uploads"]
+
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
