@@ -12,6 +12,8 @@
  * memory summaries).
  */
 
+import { LATEST_MODELS_PREFIXED } from '../llm/model-constants';
+
 export interface EmbeddingResult {
   /** 1536-dim float vector. */
   vector: number[];
@@ -111,10 +113,14 @@ export type IndexerJobData =
       id: string;
     };
 
+// LATEST_MODELS_PREFIXED.HAIKU = 'anthropic/claude-haiku-4-5' — atualizado em
+// 2026-05-16 (TD-W2-008). Era `anthropic/claude-3.5-haiku` deprecated antes do
+// fix. Centralizar em llm/model-constants.ts evita repetir o bug do Anthropic
+// test endpoint (era hardcode `claude-3-5-haiku-20241022` que retornava 404).
 export const DEFAULT_RAG_CONFIG: RagConfig = {
   embeddingModel: 'text-embedding-3-small',
   k: 5,
   minScore: 0.7,
   rerankEnabled: false,
-  rerankerModel: 'anthropic/claude-3.5-haiku',
+  rerankerModel: LATEST_MODELS_PREFIXED.HAIKU,
 };
