@@ -61,6 +61,12 @@ export interface LlmCompletionRequest {
   maxTokens?: number;
   /** Overrides do provedor (top_p, top_k, stop_sequences, thinking, etc). */
   modelParams?: Record<string, unknown>;
+  /**
+   * S18/W2: Quando presente, o ProviderResolverService busca a credential
+   * org-level pra escolher provider + key. Ausente = fallback pro env
+   * global ANTHROPIC_API_KEY (preserva setup pré-W2, zero breakage).
+   */
+  organizationId?: string;
 }
 
 export interface LlmUsage {
