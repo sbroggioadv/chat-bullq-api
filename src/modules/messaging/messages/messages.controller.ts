@@ -92,6 +92,32 @@ export class MessagesController {
     });
   }
 
+  @Post('uploads/file')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      // Cap absoluto no interceptor — saveFile reaplica cap por tipo internamente.
+      limits: { fileSize: UploadsService.MAX_FILE_BYTES },
+    }),
+  )
+  @ApiOperation({
+    summary:
+      'S18/W3-Z: Upload polimórfico (image/audio/video/document). Roteia internamente por MIME + valida magic bytes. ' +
+      'Caps por tipo: image 10MB, audio 25MB, document 50MB, video 100MB. ' +
+      'Retorna `{ url, mimeType, size, filename, contentTypeBucket }` pra UI mapear no Message.contentType.',
+  })
+  @ApiConsumes('multipart/form-data')
+  async uploadFile(
+    @UploadedFile()
+    file?: { buffer: Buffer; mimetype: string; originalname?: string },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    return this.uploads.saveFile({
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalname: file.originalname,
+    });
+  }
+
   @Get(':id/media')
   @ApiOperation({
     summary:
