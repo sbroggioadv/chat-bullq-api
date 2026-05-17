@@ -6,6 +6,7 @@ import { AddToPipelineHandler } from './handlers/add-to-pipeline.handler';
 import { MovePipelineStageHandler } from './handlers/move-pipeline-stage.handler';
 import { AssignUserHandler } from './handlers/assign-user.handler';
 import { SendMessageHandler } from './handlers/send-message.handler';
+import { WebhookOutHandler } from './handlers/webhook-out.handler';
 
 // Centralized lookup so the executor doesn't need to know about specific
 // handler classes — it just asks the registry for "the handler for type X".
@@ -21,6 +22,7 @@ export class ActionRegistryService implements OnModuleInit {
     private readonly movePipelineStage: MovePipelineStageHandler,
     private readonly assignUser: AssignUserHandler,
     private readonly sendMessage: SendMessageHandler,
+    private readonly webhookOut: WebhookOutHandler,
   ) {}
 
   onModuleInit() {
@@ -31,6 +33,7 @@ export class ActionRegistryService implements OnModuleInit {
       this.movePipelineStage,
       this.assignUser,
       this.sendMessage,
+      this.webhookOut,
     ]) {
       this.handlers.set(handler.type, handler);
     }

@@ -12,6 +12,7 @@ export const ACTION_TYPES = [
   'move_pipeline_stage',
   'assign_user',
   'send_message',
+  'webhook_out',
 ] as const;
 
 export type ActionType = (typeof ACTION_TYPES)[number];
