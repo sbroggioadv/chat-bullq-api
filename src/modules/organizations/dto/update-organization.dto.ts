@@ -9,8 +9,11 @@ import {
   MaxLength,
   Min,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { ThemeTokensDto } from './theme-tokens.dto';
 
 export type OrganizationBrand = 'A' | 'B' | 'C';
 export const ORGANIZATION_BRANDS: readonly OrganizationBrand[] = ['A', 'B', 'C'] as const;
@@ -35,6 +38,18 @@ export class UpdateOrganizationDto {
   @IsOptional()
   @IsIn(ORGANIZATION_BRANDS)
   brand?: OrganizationBrand;
+
+  @ApiPropertyOptional({
+    description:
+      'Sprint S18 Wave 3 — tokens customizados que sobrescrevem o brand. NULL/undefined = sem custom (usa brand). Objeto = override. Cores em OKLCH (`oklch(L C H)`). Server valida contraste WCAG AA antes de salvar e responde 422 com lista de pares falhos.',
+    type: ThemeTokensDto,
+    nullable: true,
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @ValidateNested()
+  @Type(() => ThemeTokensDto)
+  themeTokens?: ThemeTokensDto | null;
 
   // ─── AI settings ────────────────────────────────────────────────
 

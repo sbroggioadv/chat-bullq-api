@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   ConflictException,
   BadRequestException,
+  UnprocessableEntityException,
   Logger,
 } from '@nestjs/common';
 import { OrgRole, Prisma } from '@prisma/client';
@@ -11,6 +12,7 @@ import { OrganizationsRepository } from './organizations.repository';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
+import { validateThemeContrast } from './util/theme-contrast.util';
 
 @Injectable()
 export class OrganizationsService {
@@ -26,11 +28,38 @@ export class OrganizationsService {
 
   async updateOrganization(orgId: string, dto: UpdateOrganizationDto) {
     await this.getOrganization(orgId);
+
+    // Wave 3: valida contraste WCAG AA antes de persistir themeTokens.
+    // Doc pode pintar qualquer cor, mas se a combinação resultante for
+    // ilegível (texto branco em fundo branco, primary com baixo contraste,
+    // etc.), rejeitamos antes de quebrar a UX dos membros.
+    if (dto.themeTokens) {
+      const errors = validateThemeContrast({
+        light: {
+          primary: dto.themeTokens.light.primary,
+          accent: dto.themeTokens.light.accent,
+          danger: dto.themeTokens.light.danger,
+        },
+        dark: {
+          primary: dto.themeTokens.dark.primary,
+          accent: dto.themeTokens.dark.accent,
+          danger: dto.themeTokens.dark.danger,
+        },
+      });
+      if (errors.length > 0) {
+        throw new UnprocessableEntityException({
+          message: 'Tema custom falha WCAG AA',
+          errors,
+        });
+      }
+    }
+
     const {
       aiBusinessHours,
       watchdogBusinessHours,
       watchdogConfig,
       allowedUrlDomains,
+      themeTokens,
       ...rest
     } = dto;
     return this.repository.update(orgId, {
@@ -50,6 +79,14 @@ export class OrganizationsService {
               allowedUrlDomains === null
                 ? Prisma.JsonNull
                 : (allowedUrlDomains as Prisma.InputJsonValue),
+          }
+        : {}),
+      ...(themeTokens !== undefined
+        ? {
+            themeTokens:
+              themeTokens === null
+                ? Prisma.JsonNull
+                : (themeTokens as unknown as Prisma.InputJsonValue),
           }
         : {}),
     });

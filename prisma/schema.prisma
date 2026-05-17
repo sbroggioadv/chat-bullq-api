@@ -148,6 +148,14 @@ model Organization {
   /// no DTO (`@IsIn(['A','B','C'])`) pra evitar enum migration custosa.
   brand     String?   @map("brand")
 
+  /// Wave 3 (S18): tokens customizados que sobrescrevem o brand selecionado.
+  /// null = usa só brand (A/B/C). Não-null = override.
+  /// Shape: { base: 'A'|'B'|'C', light: { primary, accent, success, warning,
+  /// danger }, dark: {...}, radius: '0.5rem', density: 'compact'|'comfortable'
+  /// |'spacious' }. Cores em formato OKLCH (`oklch(L C H)`). Validação no
+  /// DTO + WCAG AA contraste server-side antes de salvar.
+  themeTokens Json? @map("theme_tokens")
+
   // ─── AI settings ────────────────────────────────
   aiEnabled            Boolean @default(true) @map("ai_enabled")
   aiTimezone           String  @default("America/Sao_Paulo") @map("ai_timezone")
