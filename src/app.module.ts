@@ -5,6 +5,7 @@ import { PrismaModule } from './database/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { OrganizationsModule } from './modules/organizations/organizations.module';
+import { ThemePresetsModule } from './modules/theme-presets/theme-presets.module';
 import { ChannelHubModule } from './modules/channel-hub/channel-hub.module';
 import { MessagingModule } from './modules/messaging/messaging.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
@@ -58,6 +59,7 @@ import redisConfig from './config/redis.config';
     AuthModule,
     UsersModule,
     OrganizationsModule,
+    ThemePresetsModule,
     RealtimeModule,
     ChannelHubModule,
     MessagingModule,
