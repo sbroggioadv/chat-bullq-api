@@ -23,6 +23,7 @@ import { ThemePresetsRepository } from './theme-presets.repository';
 import { CreateThemePresetDto } from './dto/create-theme-preset.dto';
 import { UpdateThemePresetDto } from './dto/update-theme-preset.dto';
 import { validateThemeContrast } from '../organizations/util/theme-contrast.util';
+import { normalizeThemeTokens } from '../organizations/util/theme-defaults.util';
 import type { ThemeTokensShape } from '../organizations/dto/theme-tokens.dto';
 
 export interface ThemePresetResponse {
@@ -62,7 +63,10 @@ export class ThemePresetsService {
     dto: CreateThemePresetDto,
     userId: string | null,
   ): Promise<ThemePresetResponse> {
-    this.assertWcag(dto.tokens as ThemeTokensShape);
+    // Wave 4.1: normaliza payload legacy (5 cores) -> 14 cores antes
+    // de validar e persistir. Garante shape canonico no banco.
+    const normalized = normalizeThemeTokens(dto.tokens as any);
+    this.assertWcag(normalized);
 
     const existing = await this.repository.findByName(orgId, dto.name);
     if (existing) {
@@ -74,7 +78,7 @@ export class ThemePresetsService {
     const preset = await this.repository.create(
       orgId,
       dto.name,
-      dto.tokens as ThemeTokensShape,
+      normalized,
       userId,
     );
     this.logger.log(`Preset "${dto.name}" criado (org ${orgId}, id ${preset.id})`);
@@ -97,8 +101,11 @@ export class ThemePresetsService {
     const preset = await this.repository.findById(orgId, presetId);
     if (!preset) throw new NotFoundException('Theme preset não encontrado');
 
+    // Wave 4.1: normaliza tokens antes de validar/persistir
+    let normalizedTokens: ThemeTokensShape | undefined;
     if (dto.tokens !== undefined) {
-      this.assertWcag(dto.tokens as ThemeTokensShape);
+      normalizedTokens = normalizeThemeTokens(dto.tokens as any);
+      this.assertWcag(normalizedTokens);
     }
 
     if (dto.name !== undefined && dto.name !== preset.name) {
@@ -112,18 +119,18 @@ export class ThemePresetsService {
 
     const updated = await this.repository.update(presetId, {
       name: dto.name,
-      tokens: dto.tokens as ThemeTokensShape | undefined,
+      tokens: normalizedTokens,
     });
 
     // Se o preset alterado é o ATIVO e tokens mudaram, atualiza o cache
     // pra refletir imediatamente sem requerer re-activate manual.
-    if (dto.tokens !== undefined) {
+    if (normalizedTokens !== undefined) {
       const activeId = await this.repository.getActivePresetId(orgId);
       if (activeId === presetId) {
         await this.repository.activate(
           orgId,
           presetId,
-          dto.tokens as ThemeTokensShape,
+          normalizedTokens,
         );
         this.logger.log(
           `Cache de tokens atualizado pro preset ativo ${presetId} (org ${orgId})`,
@@ -171,17 +178,12 @@ export class ThemePresetsService {
   // ─── Helpers ────────────────────────────────────────────
 
   private assertWcag(tokens: ThemeTokensShape) {
+    // Wave 4.1: passa palette inteira (14 cores) pro validador.
+    // Os 8 checks novos (estrutura + sidebar) sao executados quando os
+    // campos estao presentes. Pares legacy (Wave 3) continuam funcionando.
     const errors = validateThemeContrast({
-      light: {
-        primary: tokens.light.primary,
-        accent: tokens.light.accent,
-        danger: tokens.light.danger,
-      },
-      dark: {
-        primary: tokens.dark.primary,
-        accent: tokens.dark.accent,
-        danger: tokens.dark.danger,
-      },
+      light: tokens.light,
+      dark: tokens.dark,
     });
     if (errors.length > 0) {
       throw new UnprocessableEntityException({

@@ -109,11 +109,23 @@ const prismaMock = {
 const validTokens: ThemeTokensShape = {
   base: 'A',
   light: {
+    // Funcionais
     primary: 'oklch(0.22 0.04 250)',
     accent: 'oklch(0.5 0.16 35)',
     success: 'oklch(0.45 0.13 150)',
     warning: 'oklch(0.55 0.16 80)',
     danger: 'oklch(0.45 0.22 27)',
+    // Estrutura (Wave 4.1 — defaults brand A light)
+    bg: 'oklch(0.97 0.003 30)',
+    surface: 'oklch(1 0 0)',
+    fg: 'oklch(0.18 0.02 250)',
+    border: 'oklch(0.9 0.008 30)',
+    // Sidebar (Wave 4.1)
+    sidebar: 'oklch(0.985 0.003 30)',
+    sidebarFg: 'oklch(0.18 0.02 250)',
+    sidebarBorder: 'oklch(0.9 0.008 30)',
+    sidebarAccent: 'oklch(0.94 0.04 35)',
+    sidebarAccentFg: 'oklch(0.22 0.04 250)',
   },
   dark: {
     primary: 'oklch(0.32 0.04 250)',
@@ -121,6 +133,15 @@ const validTokens: ThemeTokensShape = {
     success: 'oklch(0.5 0.13 150)',
     warning: 'oklch(0.6 0.16 80)',
     danger: 'oklch(0.6 0.22 27)',
+    bg: 'oklch(0.16 0.012 250)',
+    surface: 'oklch(0.22 0.015 250)',
+    fg: 'oklch(0.97 0.003 30)',
+    border: 'oklch(0.3 0.015 250)',
+    sidebar: 'oklch(0.18 0.012 250)',
+    sidebarFg: 'oklch(0.97 0.003 30)',
+    sidebarBorder: 'oklch(0.3 0.015 250)',
+    sidebarAccent: 'oklch(0.32 0.06 35)',
+    sidebarAccentFg: 'oklch(0.97 0.003 30)',
   },
   radius: '0.5rem',
   density: 'comfortable',

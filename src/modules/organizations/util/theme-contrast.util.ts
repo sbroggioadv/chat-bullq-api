@@ -97,10 +97,37 @@ export function contrastRatio(fg: string, bg: string): number {
  * Valida que todos os pares criticos do tema custom passam WCAG AA.
  * Retorna array de erros (vazio = tudo OK). Service usa isso pra
  * decidir entre 200 (salva) ou 422 (rejeita com lista de falhas).
+ *
+ * Wave 4.1: expandido de 6 pra 14 checks pra cobrir bg/surface/fg/border
+ * e os 5 tokens de sidebar. Pares vindos do escopo expandido sao validados
+ * LITERALMENTE (fg vs bg fornecidos pelo Doc) — sem assumir FG_ON_DARK.
+ *
+ * Compat: pares legacy (Wave 3) continuam usando FG_ON_DARK fixo (tech
+ * debt conhecido — Sprint S19). Pares novos NAO sofrem do mesmo problema
+ * porque o Doc fornece a cor de fg explicitamente.
+ *
+ * Os campos de palette expandida (bg/surface/fg/border/sidebar*) sao
+ * opcionais aqui pra preservar backward-compat — se faltar, service
+ * deve ter chamado `normalizeThemeTokens()` antes pra preencher defaults.
  */
+export interface ContrastValidationPalette {
+  // Funcionais (sempre obrigatorias)
+  primary: string;
+  accent: string;
+  danger: string;
+  // Expandidas Wave 4.1 (opcionais aqui pra backward-compat)
+  bg?: string;
+  surface?: string;
+  fg?: string;
+  sidebar?: string;
+  sidebarFg?: string;
+  sidebarAccent?: string;
+  sidebarAccentFg?: string;
+}
+
 export function validateThemeContrast(tokens: {
-  light: { primary: string; accent: string; danger: string };
-  dark: { primary: string; accent: string; danger: string };
+  light: ContrastValidationPalette;
+  dark: ContrastValidationPalette;
 }): string[] {
   const errors: string[] = [];
 
@@ -111,10 +138,13 @@ export function validateThemeContrast(tokens: {
   // Botões são UI components no WCAG 2.1 (threshold 3:1 pra contraste de
   // fundo). Texto dentro do botão é normalmente bold/semibold em 14pt+,
   // categorizado como "large text" (também 3:1). Por isso usamos WCAG_AA_UI
-  // pra todos os pares — é o threshold correto pra componentes interativos,
-  // não o 4.5 que é só pra texto pequeno em prose.
+  // pra todos os pares de botao — é o threshold correto pra componentes
+  // interativos, não o 4.5 que é só pra texto pequeno em prose.
+  //
+  // Pares de TEXTO normal (fg em superficie) usam WCAG_AA_NORMAL_TEXT = 4.5:1.
   // Reference: https://www.w3.org/TR/WCAG21/#non-text-contrast
-  const checks: Array<{ name: string; fg: string; bg: string; min: number }> = [
+  const checks: Array<{ name: string; fg: string | undefined; bg: string | undefined; min: number }> = [
+    // ─── Legacy (Wave 3) — 6 checks ────────────────────────
     {
       name: 'light.primary vs primary-fg (botao primario)',
       fg: FG_ON_DARK,
@@ -151,9 +181,65 @@ export function validateThemeContrast(tokens: {
       bg: SURFACE_DARK,
       min: WCAG_AA_UI,
     },
+
+    // ─── Wave 4.1: estrutura (4 checks) ────────────────────
+    {
+      name: 'light.fg vs light.bg (texto principal em fundo claro)',
+      fg: tokens.light.fg,
+      bg: tokens.light.bg,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+    {
+      name: 'light.fg vs light.surface (texto em cards claro)',
+      fg: tokens.light.fg,
+      bg: tokens.light.surface,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+    {
+      name: 'dark.fg vs dark.bg (texto principal em fundo escuro)',
+      fg: tokens.dark.fg,
+      bg: tokens.dark.bg,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+    {
+      name: 'dark.fg vs dark.surface (texto em cards escuro)',
+      fg: tokens.dark.fg,
+      bg: tokens.dark.surface,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+
+    // ─── Wave 4.1: sidebar (4 checks) ──────────────────────
+    {
+      name: 'light.sidebarFg vs light.sidebar (texto sidebar claro)',
+      fg: tokens.light.sidebarFg,
+      bg: tokens.light.sidebar,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+    {
+      name: 'light.sidebarAccentFg vs light.sidebarAccent (item ativo claro)',
+      fg: tokens.light.sidebarAccentFg,
+      bg: tokens.light.sidebarAccent,
+      min: WCAG_AA_UI,
+    },
+    {
+      name: 'dark.sidebarFg vs dark.sidebar (texto sidebar escuro)',
+      fg: tokens.dark.sidebarFg,
+      bg: tokens.dark.sidebar,
+      min: WCAG_AA_NORMAL_TEXT,
+    },
+    {
+      name: 'dark.sidebarAccentFg vs dark.sidebarAccent (item ativo escuro)',
+      fg: tokens.dark.sidebarAccentFg,
+      bg: tokens.dark.sidebarAccent,
+      min: WCAG_AA_UI,
+    },
   ];
 
   for (const { name, fg, bg, min } of checks) {
+    // Pula checks Wave 4.1 quando palette legacy chega sem normalizar
+    // (backward-compat absoluta). Service moderno DEVE chamar
+    // normalizeThemeTokens() antes pra evitar isso.
+    if (!fg || !bg) continue;
     try {
       const ratio = contrastRatio(fg, bg);
       if (ratio < min) {

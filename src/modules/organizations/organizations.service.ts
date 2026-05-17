@@ -13,6 +13,7 @@ import { UpdateOrganizationDto } from './dto/update-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { validateThemeContrast } from './util/theme-contrast.util';
+import { normalizeThemeTokens } from './util/theme-defaults.util';
 
 @Injectable()
 export class OrganizationsService {
@@ -33,18 +34,16 @@ export class OrganizationsService {
     // Doc pode pintar qualquer cor, mas se a combinação resultante for
     // ilegível (texto branco em fundo branco, primary com baixo contraste,
     // etc.), rejeitamos antes de quebrar a UX dos membros.
+    //
+    // Wave 4.1: normaliza tokens (preenche os 9 campos novos com defaults
+    // do brand base se vier payload legacy de 5 cores) ANTES de validar.
+    // Persiste a versao normalizada — todo o sistema doravante usa o
+    // shape canonico com 14 tokens.
     if (dto.themeTokens) {
+      const normalized = normalizeThemeTokens(dto.themeTokens as any);
       const errors = validateThemeContrast({
-        light: {
-          primary: dto.themeTokens.light.primary,
-          accent: dto.themeTokens.light.accent,
-          danger: dto.themeTokens.light.danger,
-        },
-        dark: {
-          primary: dto.themeTokens.dark.primary,
-          accent: dto.themeTokens.dark.accent,
-          danger: dto.themeTokens.dark.danger,
-        },
+        light: normalized.light,
+        dark: normalized.dark,
       });
       if (errors.length > 0) {
         throw new UnprocessableEntityException({
@@ -52,6 +51,8 @@ export class OrganizationsService {
           errors,
         });
       }
+      // Substitui pelo shape normalizado pra persistir 14 campos garantidos.
+      dto.themeTokens = normalized as any;
     }
 
     const {
