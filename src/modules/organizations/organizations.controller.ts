@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
 import { OrganizationsService } from './organizations.service';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
+import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
@@ -29,6 +30,21 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'Get current organization details' })
   getCurrent(@CurrentOrg('id') orgId: string) {
     return this.service.getOrganization(orgId);
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: 'Create a new workspace (organization) owned by the current user',
+  })
+  createWorkspace(
+    @CurrentUser('id') userId: string,
+    @Body() dto: CreateOrganizationDto,
+  ) {
+    // S19 Wave 3: cria uma nova org adicional pro user logado. O header
+    // `x-organization-id` exigido pelo OrgGuard global vem da org ATUAL —
+    // este handler ignora (usa so o `userId`). Quando billing entrar, este
+    // ponto precisa checar plano do user antes de permitir mais 1 workspace.
+    return this.service.createWorkspace(userId, dto);
   }
 
   @Patch('current')
