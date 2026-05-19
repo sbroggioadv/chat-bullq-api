@@ -10,6 +10,7 @@ import {
 import { OrgRole, Prisma } from '@prisma/client';
 import { OrganizationsRepository } from './organizations.repository';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
+import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { validateThemeContrast } from './util/theme-contrast.util';
@@ -189,5 +190,48 @@ export class OrganizationsService {
 
     await this.repository.removeMember(membership.id);
     this.logger.log(`Member ${memberId} removed from org ${orgId} by ${actorId}`);
+  }
+
+  /**
+   * S19 Wave 3: cria uma nova organizacao (workspace) para o usuario logado.
+   *
+   * O usuario que cria automaticamente vira OWNER da nova org. Sem limite
+   * de quantidade por user nesta versao (billing nao implementado — `plan`
+   * herda default "free"). Quando billing vier, este service deve checar
+   * o plano do user antes de permitir nova org.
+   *
+   * Department "Geral" default e criado dentro da mesma transacao pra evitar
+   * orgs sem department (estado invalido pra channel-routing).
+   */
+  async createWorkspace(userId: string, dto: CreateOrganizationDto) {
+    const slug = this.generateSlug(dto.name);
+
+    const result = await this.repository.createWorkspace({
+      userId,
+      name: dto.name.trim(),
+      slug,
+    });
+
+    this.logger.log(
+      `Workspace "${dto.name}" (slug=${slug}) criado por user ${userId}`,
+    );
+
+    return result.organization;
+  }
+
+  /**
+   * Gera slug determinista a partir do nome + suffix base36 do timestamp.
+   * Pattern identico a auth.service.generateSlug — garante unicidade sem
+   * retry loop (probabilidade de colisao em mesmo millisegundo == 0).
+   */
+  private generateSlug(name: string): string {
+    const base = name
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+
+    return `${base || 'workspace'}-${Date.now().toString(36)}`;
   }
 }

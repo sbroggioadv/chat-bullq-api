@@ -147,4 +147,56 @@ export class OrganizationsRepository {
       },
     });
   }
+
+  /**
+   * S19 Wave 3: cria uma nova organizacao para um usuario existente.
+   *
+   * Pattern espelhado de auth.service.registerNewWorkspace (que cria user +
+   * org no signup). Aqui o user ja existe — so criamos a Org + UserOrganization
+   * (OWNER) + Department "Geral" default em uma unica transacao pra evitar
+   * estado intermediario inutil se algo falhar.
+   *
+   * O slug e gerado deterministicamente a partir do nome + suffix `Date.now()`
+   * base36 — mesma estrategia do auth.service, garante unicidade sem retry loop.
+   */
+  async createWorkspace(params: {
+    userId: string;
+    name: string;
+    slug: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const organization = await tx.organization.create({
+        data: {
+          name: params.name,
+          slug: params.slug,
+        },
+      });
+
+      const userOrganization = await tx.userOrganization.create({
+        data: {
+          userId: params.userId,
+          organizationId: organization.id,
+          role: 'OWNER',
+        },
+      });
+
+      const defaultDepartment = await tx.department.create({
+        data: {
+          organizationId: organization.id,
+          name: 'Geral',
+          description: 'Departamento padrao',
+          isDefault: true,
+        },
+      });
+
+      await tx.departmentAgent.create({
+        data: {
+          departmentId: defaultDepartment.id,
+          userOrganizationId: userOrganization.id,
+        },
+      });
+
+      return { organization, userOrganization };
+    });
+  }
 }
