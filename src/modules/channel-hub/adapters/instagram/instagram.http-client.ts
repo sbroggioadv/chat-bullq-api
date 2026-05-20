@@ -83,9 +83,18 @@ export class InstagramHttpClient {
 
     try {
       const { data } = await client.get('/me/conversations', { params });
+      const items: any[] = data?.data ?? [];
+      // A Graph API devolve `paging.cursors.after` + `paging.next` MESMO numa
+      // lista vazia, com um cursor novo a cada chamada — comparar cursores não
+      // detecta o fim. Página sem itens = fim da lista: sem `nextCursor` o loop
+      // de sync para. Sem isso, conta sem DMs pagina infinitamente até a Meta
+      // cortar com `[#1] An unknown error has occurred`.
       return {
-        data: data?.data ?? [],
-        nextCursor: data?.paging?.cursors?.after && data?.paging?.next ? data.paging.cursors.after : undefined,
+        data: items,
+        nextCursor:
+          items.length > 0 && data?.paging?.next
+            ? data?.paging?.cursors?.after
+            : undefined,
       };
     } catch (err: any) {
       throw this.wrapGraphError(err, 'listConversations');
@@ -107,9 +116,14 @@ export class InstagramHttpClient {
 
     try {
       const { data } = await client.get(`/${conversationId}/messages`, { params });
+      const items: any[] = data?.data ?? [];
+      // Mesmo motivo de listConversations: página vazia = fim, nunca pagina além.
       return {
-        data: data?.data ?? [],
-        nextCursor: data?.paging?.cursors?.after && data?.paging?.next ? data.paging.cursors.after : undefined,
+        data: items,
+        nextCursor:
+          items.length > 0 && data?.paging?.next
+            ? data?.paging?.cursors?.after
+            : undefined,
       };
     } catch (err: any) {
       throw this.wrapGraphError(err, 'listConversationMessages');
