@@ -259,6 +259,10 @@ export class AuthService {
         // depois do F5+visita em /settings/general (optimistic update).
         // Agora persiste no header do sidebar desde o boot.
         logoUrl: m.organization.logoUrl ?? null,
+        // themeTokens (cache do preset ativo) no payload — sem isso o
+        // BrandThemeBridge perde a customização no F5 e reverte pro brand
+        // base. Mesmo bug do logoUrl (S19 W1.1).
+        themeTokens: m.organization.themeTokens ?? null,
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'
             ? ('ALL' as const)
@@ -318,6 +322,10 @@ export class AuthService {
         // depois do F5+visita em /settings/general (optimistic update).
         // Agora persiste no header do sidebar desde o boot.
         logoUrl: m.organization.logoUrl ?? null,
+        // themeTokens (cache do preset ativo) no payload — sem isso o
+        // BrandThemeBridge perde a customização no F5 e reverte pro brand
+        // base. Mesmo bug do logoUrl (S19 W1.1).
+        themeTokens: m.organization.themeTokens ?? null,
         // 'ALL' for OWNER/ADMIN — they bypass the per-channel allowlist.
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'
