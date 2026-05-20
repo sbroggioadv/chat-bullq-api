@@ -29,6 +29,15 @@ export class OrgGuard implements CanActivate {
     const organizationId = request.headers['x-organization-id'];
     const userId = request.user?.id;
 
+    // API-key path: `ApiKeyStrategy` already resolved and attached
+    // `request.organization` (the key is org-bound) and `accessibleChannelIds`.
+    // There is no `x-organization-id` header in machine-to-machine calls — and
+    // there shouldn't be: the key itself IS the org scope. Trust what the
+    // strategy populated and skip the header-based membership lookup.
+    if (!organizationId && request.organization?.id && userId) {
+      return true;
+    }
+
     if (!organizationId) {
       throw new BadRequestException('x-organization-id header is required');
     }

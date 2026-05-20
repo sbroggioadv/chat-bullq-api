@@ -22,6 +22,11 @@ import { AutomationsController } from './automations.controller';
 import { AutomationsRunsController } from './automations-runs.controller';
 import { AutomationsValidator } from './automations.validator';
 import { AUTOMATION_QUEUE } from './automations.constants';
+import {
+  ApiKeyAuthGuard,
+  JwtAuthGuard,
+  JwtOrApiKeyGuard,
+} from '../../common/guards';
 
 @Global()
 @Module({
@@ -55,6 +60,12 @@ import { AUTOMATION_QUEUE } from './automations.constants';
     SendMessageHandler,
     WebhookOutHandler,
     ActionRegistryService,
+    // Auth — composite guard lets the controller accept JWT (web) OR API key
+    // (n8n COO workflows). See jwt-or-api-key.guard.ts. The two leaf guards
+    // are listed so Nest DI can resolve them into the composite.
+    JwtAuthGuard,
+    ApiKeyAuthGuard,
+    JwtOrApiKeyGuard,
   ],
   exports: [OutboxService, KillSwitchService],
 })
