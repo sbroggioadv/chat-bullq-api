@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Patch, Post, Delete, Param, Body, Query, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
 import { ContactsService } from './contacts.service';
@@ -44,5 +44,20 @@ export class ContactsController {
   @ApiOperation({ summary: 'Soft delete contact' })
   remove(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
     return this.service.remove(id, orgId);
+  }
+
+  /**
+   * S20 Wave 1: backfill sincrono de fotos do WhatsApp pra todos os
+   * contatos da org. RBAC OWNER/ADMIN (operacao cara em chamadas Zappfy).
+   * Retorna stats { total, enriched, skipped, failed, durationMs }.
+   */
+  @Post('sync-avatars')
+  @HttpCode(HttpStatus.OK)
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({
+    summary: 'Backfill profile pictures from WhatsApp (Zappfy) for all org contacts',
+  })
+  syncAvatars(@CurrentOrg('id') orgId: string) {
+    return this.service.syncWhatsAppAvatars(orgId);
   }
 }
