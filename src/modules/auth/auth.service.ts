@@ -255,6 +255,10 @@ export class AuthService {
         slug: m.organization.slug,
         role: m.role,
         brand: m.organization.brand as 'A' | 'B' | 'C' | null,
+        // S19 Wave 1.1: logo da org no payload de login. Antes só vinha
+        // depois do F5+visita em /settings/general (optimistic update).
+        // Agora persiste no header do sidebar desde o boot.
+        logoUrl: m.organization.logoUrl ?? null,
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'
             ? ('ALL' as const)
@@ -310,6 +314,10 @@ export class AuthService {
         // Brand do tema da banca. null = OWNER ainda não escolheu (wizard).
         // Restringido a 'A'|'B'|'C' no DTO de update; aqui é só passthrough.
         brand: m.organization.brand as 'A' | 'B' | 'C' | null,
+        // S19 Wave 1.1: logo da org no payload de /auth/me. Antes só vinha
+        // depois do F5+visita em /settings/general (optimistic update).
+        // Agora persiste no header do sidebar desde o boot.
+        logoUrl: m.organization.logoUrl ?? null,
         // 'ALL' for OWNER/ADMIN — they bypass the per-channel allowlist.
         accessibleChannelIds:
           m.role === 'OWNER' || m.role === 'ADMIN'
