@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
-import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
+import { JwtOrApiKeyGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import { CurrentOrg, CurrentUser, Roles } from '../../common/decorators';
 import { AutomationsService } from './automations.service';
 import {
@@ -20,9 +20,14 @@ import {
   UpdateAutomationDto,
 } from './dto/automation.dto';
 
+// Auth — `JwtOrApiKeyGuard` accepts EITHER a browser JWT OR an `pk_*` API key.
+// The web frontend keeps using JWT; the n8n COO workflows authenticate with an
+// organization API key. `OrgGuard` is harmless on the API-key path (the key
+// strategy already populated `request.organization`); on the JWT path it still
+// resolves the org from the `x-organization-id` header as before.
 @ApiTags('Automations')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
+@UseGuards(JwtOrApiKeyGuard, OrgGuard, RolesGuard)
 @Controller('automations')
 export class AutomationsController {
   constructor(private readonly service: AutomationsService) {}
