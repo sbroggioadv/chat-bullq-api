@@ -91,6 +91,14 @@ export class OrganizationsService {
                 : (themeTokens as unknown as Prisma.InputJsonValue),
           }
         : {}),
+      // Aplicar um brand embutido (A/B/C) zera qualquer tema customizado:
+      // brand e custom sao mutuamente exclusivos ("apenas 1 ativo por vez").
+      // Sem isso, o override custom (themeTokens) continua vencendo o brand
+      // recem-aplicado no BrandThemeBridge. So dispara quando o request muda
+      // APENAS o brand — se themeTokens vier explicito no payload, prevalece.
+      ...(dto.brand !== undefined && themeTokens === undefined
+        ? { themeTokens: Prisma.JsonNull, activeThemePresetId: null }
+        : {}),
     });
   }
 
