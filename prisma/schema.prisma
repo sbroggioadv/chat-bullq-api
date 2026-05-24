@@ -177,6 +177,11 @@ model Organization {
 
   // ─── AI settings ────────────────────────────────
   aiEnabled             Boolean  @default(true) @map("ai_enabled")
+  /// S22.2 — Panic mode: kill switch absoluto que ignora TUDO (scope,
+  /// conversation override, channel override). Pra emergência (suspeita
+  /// de ban, agente fora de controle). 1-click no header global ou via
+  /// PATCH /organizations/:id. Default false.
+  aiPanicMode           Boolean  @default(false) @map("ai_panic_mode")
   aiTimezone            String   @default("America/Sao_Paulo") @map("ai_timezone")
   aiBusinessHours       Json?    @map("ai_business_hours")
   aiOutOfHoursMessage   String?  @map("ai_out_of_hours_message")

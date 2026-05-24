@@ -115,9 +115,11 @@ describe('AgentRouterService — S22 scope extensions', () => {
 
   // S22.1 — scope explícito sobrevive ao kill switch geral
   it('S22.1: org.aiEnabled=false + agente com pipelineScope match → handle=true', async () => {
-    deps.prisma.organization.findUnique.mockResolvedValueOnce({
-      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
-    });
+    deps.prisma.organization.findUnique
+      .mockResolvedValueOnce({ aiPanicMode: false })
+      .mockResolvedValueOnce({
+        id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+      });
     const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] };
     deps.state.agents.push(agent);
     deps.state.cards.push({ conversationId: 'c1', status: 'OPEN', pipelineId: 'p1' });
@@ -130,9 +132,11 @@ describe('AgentRouterService — S22 scope extensions', () => {
   });
 
   it('S22.1: org.aiEnabled=false + agente sem pipelineScope (genérico) → handle=false', async () => {
-    deps.prisma.organization.findUnique.mockResolvedValueOnce({
-      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
-    });
+    deps.prisma.organization.findUnique
+      .mockResolvedValueOnce({ aiPanicMode: false })
+      .mockResolvedValueOnce({
+        id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+      });
     const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: [] };
     deps.state.agents.push(agent);
     const conv = {
@@ -144,10 +148,43 @@ describe('AgentRouterService — S22 scope extensions', () => {
     expect(r.reason).toBe('org.aiEnabled=false');
   });
 
+  // S22.2 — Panic mode override
+  it('S22.2: aiPanicMode=true cala TUDO mesmo com agente scopado + conv force-on', async () => {
+    // 1ª findUnique = panic check (true) → curto-circuita
+    deps.prisma.organization.findUnique.mockResolvedValueOnce({ aiPanicMode: true });
+    const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] };
+    deps.state.agents.push(agent);
+    deps.state.cards.push({ conversationId: 'c1', status: 'OPEN', pipelineId: 'p1' });
+    const conv = {
+      id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
+      isGroup: false, aiEnabled: true /* force-on não vence panic */, activeAgentId: 'a1',
+    };
+    const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
+    expect(r.handle).toBe(false);
+    expect(r.reason).toBe('ORG_PANIC_MODE');
+  });
+
+  it('S22.2: aiPanicMode=false (default) NÃO interfere — comportamento normal', async () => {
+    // panic check (false) → continua fluxo normal → segundo findUnique do org (aiEnabled true)
+    deps.prisma.organization.findUnique
+      .mockResolvedValueOnce({ aiPanicMode: false })
+      .mockResolvedValueOnce({ id: 'org-1', aiEnabled: true, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo' });
+    const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: [] };
+    deps.state.agents.push(agent);
+    const conv = {
+      id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
+      isGroup: false, aiEnabled: null, activeAgentId: null,
+    };
+    const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
+    expect(r.handle).toBe(true);
+  });
+
   it('S22.1: org.aiEnabled=false + conversa sem cards → handle=false (sem scope match)', async () => {
-    deps.prisma.organization.findUnique.mockResolvedValueOnce({
-      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
-    });
+    deps.prisma.organization.findUnique
+      .mockResolvedValueOnce({ aiPanicMode: false })
+      .mockResolvedValueOnce({
+        id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+      });
     const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] };
     deps.state.agents.push(agent);
     // sem cards push
