@@ -230,13 +230,10 @@ describe('MessagesService.forwardMessage', () => {
       'org1',
       'ALL',
     );
-    // Cada send é invocado com 5o argumento opcional `{delayMs}` que o service
-    // calcula. Verificamos pela ordem dos sendCalls + extras passados.
+    // send(dto, senderId, orgId, access, delayMs) — delayMs no index 4 (5º arg).
     const calls = deps.sendImpl.mock.calls;
     expect(calls.length).toBe(3);
-    // Service deve passar delayMs como 6o param. Se ainda não passa, o teste
-    // captura essa lacuna.
-    const delays = calls.map((c: any) => c[5] /* delayMs */);
+    const delays = calls.map((c: any) => c[4] /* delayMs */);
     expect(delays).toEqual([0, 1100, 0]);
   });
 

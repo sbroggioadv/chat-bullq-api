@@ -45,7 +45,6 @@ export class MessagesService {
     senderId: string,
     organizationId: string,
     access: ChannelAccess = 'ALL',
-    _reserved?: unknown,
     delayMs: number = 0,
   ) {
     const conversation = await this.prisma.conversation.findUnique({
@@ -619,7 +618,6 @@ export class MessagesService {
           senderId,
           organizationId,
           access,
-          undefined,
           delayMs,
         );
         queued.push(destId);
