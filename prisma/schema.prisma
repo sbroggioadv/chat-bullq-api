@@ -129,6 +129,8 @@ model User {
   // ─── S18 Wave 4: theme presets ────────────────────
   createdThemePresets ThemePreset[] @relation("ThemePresetCreatedBy")
 
+  quickReplies          QuickReply[]
+
   @@map("users")
 }
 
@@ -844,6 +846,7 @@ model ChatbotFlowChannel {
 model QuickReply {
   id             String    @id @default(cuid())
   organizationId String    @map("organization_id")
+  userId         String?   @map("user_id")
   shortcut       String
   title          String
   content        String
@@ -853,8 +856,10 @@ model QuickReply {
   deletedAt      DateTime? @map("deleted_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([organizationId, shortcut])
+  @@unique([organizationId, userId, shortcut])
+  @@index([organizationId, userId])
   @@map("quick_replies")
 }
 

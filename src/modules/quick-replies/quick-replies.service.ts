@@ -11,8 +11,12 @@ import { UpdateQuickReplyDto } from './dto/update-quick-reply.dto';
 export class QuickRepliesService {
   constructor(private readonly repository: QuickRepliesRepository) {}
 
-  async create(orgId: string, dto: CreateQuickReplyDto) {
-    const existing = await this.repository.findByShortcut(orgId, dto.shortcut);
+  async create(orgId: string, userId: string, dto: CreateQuickReplyDto) {
+    const existing = await this.repository.findByShortcut(
+      orgId,
+      userId,
+      dto.shortcut,
+    );
     if (existing) {
       throw new ConflictException('Shortcut already in use');
     }
@@ -21,25 +25,39 @@ export class QuickRepliesService {
       title: dto.title,
       content: dto.content,
       organization: { connect: { id: orgId } },
+      user: { connect: { id: userId } },
     });
   }
 
-  async findAll(orgId: string) {
-    return this.repository.findByOrg(orgId);
+  async findAll(orgId: string, userId: string) {
+    return this.repository.findByOrgAndUser(orgId, userId);
   }
 
-  async findOne(id: string, orgId: string) {
+  async findOne(id: string, orgId: string, userId: string) {
     const row = await this.repository.findById(id);
-    if (!row || row.organizationId !== orgId) {
+    if (
+      !row ||
+      row.organizationId !== orgId ||
+      (row.userId !== null && row.userId !== userId)
+    ) {
       throw new NotFoundException('Quick reply not found');
     }
     return row;
   }
 
-  async update(id: string, orgId: string, dto: UpdateQuickReplyDto) {
-    await this.findOne(id, orgId);
-    if (dto.shortcut !== undefined) {
-      const clash = await this.repository.findByShortcut(orgId, dto.shortcut);
+  async update(
+    id: string,
+    orgId: string,
+    userId: string,
+    dto: UpdateQuickReplyDto,
+  ) {
+    const current = await this.findOne(id, orgId, userId);
+    if (dto.shortcut !== undefined && dto.shortcut !== current.shortcut) {
+      const clash = await this.repository.findByShortcut(
+        orgId,
+        current.userId,
+        dto.shortcut,
+      );
       if (clash && clash.id !== id) {
         throw new ConflictException('Shortcut already in use');
       }
@@ -51,8 +69,8 @@ export class QuickRepliesService {
     });
   }
 
-  async remove(id: string, orgId: string) {
-    await this.findOne(id, orgId);
+  async remove(id: string, orgId: string, userId: string) {
+    await this.findOne(id, orgId, userId);
     return this.repository.softDelete(id);
   }
 }
