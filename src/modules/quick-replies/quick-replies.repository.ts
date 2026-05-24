@@ -10,9 +10,13 @@ export class QuickRepliesRepository {
     return this.prisma.quickReply.create({ data });
   }
 
-  async findByOrg(organizationId: string) {
+  async findByOrgAndUser(organizationId: string, userId: string) {
     return this.prisma.quickReply.findMany({
-      where: { organizationId, deletedAt: null },
+      where: {
+        organizationId,
+        deletedAt: null,
+        OR: [{ userId }, { userId: null }],
+      },
       orderBy: { shortcut: 'asc' },
     });
   }
@@ -23,9 +27,13 @@ export class QuickRepliesRepository {
     });
   }
 
-  async findByShortcut(organizationId: string, shortcut: string) {
+  async findByShortcut(
+    organizationId: string,
+    userId: string | null,
+    shortcut: string,
+  ) {
     return this.prisma.quickReply.findFirst({
-      where: { organizationId, shortcut, deletedAt: null },
+      where: { organizationId, userId, shortcut, deletedAt: null },
     });
   }
 
