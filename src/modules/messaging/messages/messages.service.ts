@@ -4,6 +4,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -22,6 +23,7 @@ import {
 } from '../../iam/channel-access/channel-access.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
+import { MediaResolverService } from './media-resolver.service';
 
 @Injectable()
 export class MessagesService {
@@ -34,6 +36,7 @@ export class MessagesService {
     private readonly channelAccess: ChannelAccessService,
     private readonly watchdog: WatchdogService,
     private readonly adapterRegistry: ChannelAdapterRegistry,
+    private readonly mediaResolver: MediaResolverService,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -42,6 +45,7 @@ export class MessagesService {
     senderId: string,
     organizationId: string,
     access: ChannelAccess = 'ALL',
+    delayMs: number = 0,
   ) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: dto.conversationId },
@@ -303,6 +307,7 @@ export class MessagesService {
         backoff: { type: 'exponential', delay: 3000 },
         removeOnComplete: true,
         removeOnFail: false,
+        delay: delayMs > 0 ? delayMs : undefined,
       },
     );
 
@@ -470,5 +475,169 @@ export class MessagesService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * Encaminha uma mensagem (texto ou mídia) pra N conversas-destino. Reusa
+   * o caminho `send()` por destino — herda validação de org, channel-access,
+   * criação de row, WebSocket message:new, auto-assign e auto-pause da IA.
+   *
+   * Validações síncronas (cross-org, sem acesso ao canal, destino inexistente)
+   * vão em `rejected`. Falhas assíncronas do provider surgem via WebSocket
+   * `message:status` por mensagem, com `failedReason`.
+   *
+   * Tipos suportados v1: TEXT, IMAGE, AUDIO, VIDEO, DOCUMENT.
+   * Tipos negados (UnprocessableEntity 422): STICKER, LOCATION, REACTION,
+   * TEMPLATE, INTERACTIVE. Mensagens QUEUED/FAILED/revoked também são 422.
+   *
+   * Rate-limit Zappfy (1 msg/s, 30/min por canal): destinos no mesmo canal
+   * ganham delay escalonado `index * 1100ms`; canais diferentes contam
+   * separadamente.
+   */
+  async forwardMessage(
+    sourceMessageId: string,
+    destinationConversationIds: string[],
+    senderId: string,
+    organizationId: string,
+    access: ChannelAccess = 'ALL',
+  ): Promise<{
+    queued: string[];
+    rejected: Array<{ conversationId: string; reason: string }>;
+  }> {
+    const SUPPORTED_TYPES: ReadonlySet<MessageContentType> = new Set([
+      MessageContentType.TEXT,
+      MessageContentType.IMAGE,
+      MessageContentType.AUDIO,
+      MessageContentType.VIDEO,
+      MessageContentType.DOCUMENT,
+    ]);
+    const MEDIA_TYPES: ReadonlySet<MessageContentType> = new Set([
+      MessageContentType.IMAGE,
+      MessageContentType.AUDIO,
+      MessageContentType.VIDEO,
+      MessageContentType.DOCUMENT,
+    ]);
+
+    // 1) Buscar mensagem-fonte + checar acesso
+    const source = await this.prisma.message.findFirst({
+      where: { id: sourceMessageId },
+      include: { conversation: true },
+    });
+    if (!source) throw new NotFoundException('Source message not found');
+    if (source.conversation.organizationId !== organizationId) {
+      throw new NotFoundException('Source message not found');
+    }
+    this.channelAccess.assertChannelAccess(access, source.conversation.channelId);
+
+    // 2) Bloqueios duros — 422
+    if (source.revokedAt) {
+      throw new UnprocessableEntityException('Cannot forward a revoked message');
+    }
+    if (source.status === 'QUEUED' || source.status === 'FAILED') {
+      throw new UnprocessableEntityException(
+        `Cannot forward a message in status ${source.status} — wait until SENT/DELIVERED/READ`,
+      );
+    }
+    if (!SUPPORTED_TYPES.has(source.type)) {
+      throw new UnprocessableEntityException(
+        `Forward not supported for message type ${source.type} (v1 supports TEXT, IMAGE, AUDIO, VIDEO, DOCUMENT)`,
+      );
+    }
+
+    // 3) Re-resolver mídia inbound antes de fan-out — Zappfy URLs expiram ~14d
+    let sourceContent = (source.content ?? {}) as Record<string, any>;
+    if (
+      source.direction === 'INBOUND' &&
+      MEDIA_TYPES.has(source.type) &&
+      source.externalId
+    ) {
+      try {
+        const fresh = await this.mediaResolver.resolve(
+          source.id,
+          organizationId,
+          access,
+          { forceRefresh: true },
+        );
+        sourceContent = {
+          ...sourceContent,
+          mediaUrl: fresh.url,
+          ...(fresh.mimeType && !sourceContent.mimeType
+            ? { mimeType: fresh.mimeType }
+            : {}),
+        };
+      } catch (err) {
+        this.logger.warn(
+          `forwardMessage: failed to re-resolve media for source ${source.id} — proceeding with cached URL: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    // 4) Sanitizar conteúdo: remover keys de menção / contextInfo do grupo-origem
+    const sanitized = this.stripForwardableContent(sourceContent);
+
+    // 5) Buscar conversas-destino + filtrar
+    const destRows = await this.prisma.conversation.findMany({
+      where: { id: { in: destinationConversationIds } },
+      select: { id: true, organizationId: true, channelId: true, isGroup: true },
+    });
+    const destMap = new Map(destRows.map((d) => [d.id, d]));
+
+    const queued: string[] = [];
+    const rejected: Array<{ conversationId: string; reason: string }> = [];
+
+    // Conta destinos por canal pra calcular delay escalonado serializado
+    const perChannelIndex = new Map<string, number>();
+
+    for (const destId of destinationConversationIds) {
+      const dest = destMap.get(destId);
+      if (!dest) {
+        rejected.push({ conversationId: destId, reason: 'NOT_FOUND' });
+        continue;
+      }
+      if (dest.organizationId !== organizationId) {
+        rejected.push({ conversationId: destId, reason: 'CROSS_ORG' });
+        continue;
+      }
+      if (!this.channelAccess.hasAccess(access, dest.channelId)) {
+        rejected.push({ conversationId: destId, reason: 'CHANNEL_FORBIDDEN' });
+        continue;
+      }
+
+      // Delay escalonado: index 0 no canal = 0ms; 1 = 1100ms; 2 = 2200ms ...
+      const idx = perChannelIndex.get(dest.channelId) ?? 0;
+      perChannelIndex.set(dest.channelId, idx + 1);
+      const delayMs = idx * 1100;
+
+      try {
+        await this.send(
+          {
+            conversationId: destId,
+            type: source.type as string,
+            content: sanitized,
+          },
+          senderId,
+          organizationId,
+          access,
+          delayMs,
+        );
+        queued.push(destId);
+      } catch (err) {
+        const reason =
+          err instanceof Error ? err.message.slice(0, 200) : 'SEND_FAILED';
+        rejected.push({ conversationId: destId, reason });
+      }
+    }
+
+    return { queued, rejected };
+  }
+
+  /**
+   * Remove keys de menção / contextInfo que pertencem ao grupo-origem.
+   * Menções carregam JIDs que não existem no grupo-destino — vazariam
+   * tags inválidas se copiadas cruas.
+   */
+  private stripForwardableContent(content: Record<string, any>): Record<string, any> {
+    const { mentions, contextInfo, mentionedJid, ...rest } = content;
+    return rest;
   }
 }

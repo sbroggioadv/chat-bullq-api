@@ -18,6 +18,7 @@ import { TranscriptionService } from './transcription.service';
 import { UploadsService } from './uploads.service';
 import { MediaResolverService } from './media-resolver.service';
 import { SendMessageDto } from './dto/send-message.dto';
+import { ForwardMessageDto } from './dto/forward-message.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../../common/guards';
 import {
   CurrentUser,
@@ -179,6 +180,30 @@ export class MessagesController {
       orgId,
       parseInt(page || '1', 10),
       parseInt(limit || '50', 10),
+      access,
+    );
+  }
+
+  @Post(':id/forward')
+  @ApiOperation({
+    summary:
+      'Encaminhar mensagem pra N conversas-destino. Reusa pipeline send() — herda WS+auto-assign+auto-pause. ' +
+      'Tipos v1: TEXT, IMAGE, AUDIO, VIDEO, DOCUMENT. Bloqueia QUEUED/FAILED/revoked (422). ' +
+      'Validação por destino: rejeita cross-org/sem-acesso com motivo claro em `rejected`. ' +
+      'Delay escalonado serializado por channelId — destinos no mesmo canal ganham +1100ms por posição.',
+  })
+  forward(
+    @Param('id') id: string,
+    @Body() dto: ForwardMessageDto,
+    @CurrentUser('id') userId: string,
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+  ) {
+    return this.service.forwardMessage(
+      id,
+      dto.destinationConversationIds,
+      userId,
+      orgId,
       access,
     );
   }
