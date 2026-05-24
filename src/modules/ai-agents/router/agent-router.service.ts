@@ -286,7 +286,21 @@ export class AgentRouterService {
     if (convOverride !== true && channelOverride !== true) {
       // Sem override "ON" em conv nem channel → regras globais valem.
       if (!org.aiEnabled) {
-        return { handle: false, reason: 'org.aiEnabled=false' };
+        // S22.1 — scope explícito sobrevive ao kill switch geral.
+        // Se o operador foi explicitamente scopar um agente a um pipeline,
+        // esse é um sinal de intenção clara: o agente deve atuar nesse
+        // contexto mesmo com a IA da org "desligada". O `org.aiEnabled=false`
+        // passa a calar SÓ agentes genéricos (sem pipelineScope). Pra kill
+        // switch absoluto: setar `agent.isActive = false` ou desabilitar
+        // `aiAllowedInGroup` por grupo.
+        const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
+          conversation.organizationId,
+          conversation.id,
+        );
+        if (!hasScopedAgent) {
+          return { handle: false, reason: 'org.aiEnabled=false' };
+        }
+        // Caso contrário, continua — o route() vai escolher o agente scopado.
       }
       if (!this.isWithinBusinessHours(org)) {
         return { handle: false, reason: 'outside-business-hours' };
@@ -329,6 +343,36 @@ export class AgentRouterService {
     }
 
     return { handle: true };
+  }
+
+  /**
+   * S22.1 — Checa se a conversa tem cards ativos em pipelines scopados por
+   * algum agente. Usado pra deixar agentes scopados sobreviverem ao
+   * `org.aiEnabled=false` (kill switch geral). A intenção explícita do
+   * operador (scopar um agente a um pipeline) vale mais que o switch global.
+   */
+  private async hasPipelineScopedAgentForConversation(
+    organizationId: string,
+    conversationId: string,
+  ): Promise<boolean> {
+    const activeCards = await this.prisma.card.findMany({
+      where: { conversationId, status: 'OPEN' },
+      select: { pipelineId: true },
+    });
+    const pipelineIds = Array.from(
+      new Set(activeCards.map((c) => c.pipelineId).filter(Boolean) as string[]),
+    );
+    if (pipelineIds.length === 0) return false;
+    const match = await this.prisma.aiAgent.findFirst({
+      where: {
+        organizationId,
+        isActive: true,
+        deletedAt: null,
+        pipelineScope: { hasSome: pipelineIds },
+      },
+      select: { id: true },
+    });
+    return !!match;
   }
 
   private isWithinBusinessHours(org: Organization): boolean {

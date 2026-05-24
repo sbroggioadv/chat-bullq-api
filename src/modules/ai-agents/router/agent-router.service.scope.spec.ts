@@ -13,6 +13,17 @@ const makeDeps = () => {
         findMany: jest.fn(async ({ where }: any) =>
           agents.filter((a) => a.organizationId === where.organizationId && a.isActive && a.deletedAt === null)
         ),
+        findFirst: jest.fn(async ({ where }: any) => {
+          // simula filtro de pipelineScope hasSome
+          const want = where.pipelineScope?.hasSome ?? [];
+          return agents.find((a) =>
+            a.organizationId === where.organizationId &&
+            a.isActive === true &&
+            a.deletedAt === null &&
+            Array.isArray(a.pipelineScope) &&
+            a.pipelineScope.some((p: string) => want.includes(p))
+          ) ?? null;
+        }),
         findUnique: jest.fn(async ({ where }: any) => agents.find((a) => a.id === where.id) ?? null),
       },
       aiAgentChannel: { findFirst: jest.fn().mockResolvedValue({ id: 'ac-1' }) },
@@ -100,5 +111,52 @@ describe('AgentRouterService — S22 scope extensions', () => {
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
     expect(r.handle).toBe(true);
+  });
+
+  // S22.1 — scope explícito sobrevive ao kill switch geral
+  it('S22.1: org.aiEnabled=false + agente com pipelineScope match → handle=true', async () => {
+    deps.prisma.organization.findUnique.mockResolvedValueOnce({
+      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+    });
+    const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] };
+    deps.state.agents.push(agent);
+    deps.state.cards.push({ conversationId: 'c1', status: 'OPEN', pipelineId: 'p1' });
+    const conv = {
+      id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
+      isGroup: false, aiEnabled: null, activeAgentId: null,
+    };
+    const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
+    expect(r.handle).toBe(true);
+  });
+
+  it('S22.1: org.aiEnabled=false + agente sem pipelineScope (genérico) → handle=false', async () => {
+    deps.prisma.organization.findUnique.mockResolvedValueOnce({
+      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+    });
+    const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: [] };
+    deps.state.agents.push(agent);
+    const conv = {
+      id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
+      isGroup: false, aiEnabled: null, activeAgentId: null,
+    };
+    const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
+    expect(r.handle).toBe(false);
+    expect(r.reason).toBe('org.aiEnabled=false');
+  });
+
+  it('S22.1: org.aiEnabled=false + conversa sem cards → handle=false (sem scope match)', async () => {
+    deps.prisma.organization.findUnique.mockResolvedValueOnce({
+      id: 'org-1', aiEnabled: false, aiMonthlyTokenCap: null, aiBusinessHours: null, aiTimezone: 'America/Sao_Paulo',
+    });
+    const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] };
+    deps.state.agents.push(agent);
+    // sem cards push
+    const conv = {
+      id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
+      isGroup: false, aiEnabled: null, activeAgentId: null,
+    };
+    const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
+    expect(r.handle).toBe(false);
+    expect(r.reason).toBe('org.aiEnabled=false');
   });
 });
