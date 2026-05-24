@@ -17,7 +17,11 @@ RUN npx prisma generate
 RUN yarn build
 
 FROM node:20-alpine AS runner
-RUN apk add --no-cache openssl curl tini
+# ffmpeg é necessário pro saveAudio transcodar webm/mp4 → ogg/opus (WhatsApp
+# voice note exige container OGG). Sem isso, /messages/uploads/audio sempre
+# devolve BadRequestException "Failed to process audio". O package ffmpeg
+# do Alpine vem com libopus habilitado por padrão.
+RUN apk add --no-cache openssl curl tini ffmpeg
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001
