@@ -202,6 +202,17 @@ export class AgentRouterService {
     //   org.aiEnabled (true/false) — global
     // Qualquer "false" mais específico bloqueia mesmo se mais genérico está ON.
     // "true" mais específico libera mesmo se mais genérico está OFF.
+
+    // S22.2 — Panic mode é a PRIMEIRA coisa. Override absoluto: ignora scope,
+    // conv override, channel override, tudo. Kill switch de emergência.
+    const orgPanic = await this.prisma.organization.findUnique({
+      where: { id: conversation.organizationId },
+      select: { aiPanicMode: true },
+    });
+    if (orgPanic?.aiPanicMode) {
+      return { handle: false, reason: 'ORG_PANIC_MODE' };
+    }
+
     const convOverride = conversation.aiEnabled;
 
     if (convOverride === false) {

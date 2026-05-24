@@ -58,6 +58,14 @@ export class UpdateOrganizationDto {
   @IsBoolean()
   aiEnabled?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'S22.2 — Panic mode (kill switch absoluto). Quando true, ignora scope, conv override, channel override — cala TUDO. Emergência only.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  aiPanicMode?: boolean;
+
   @ApiPropertyOptional({ example: 'America/Sao_Paulo' })
   @IsOptional()
   @IsString()
