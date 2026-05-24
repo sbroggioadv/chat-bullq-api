@@ -147,6 +147,13 @@ export class ConversationsService {
       });
     }
 
+    // S22 — aiAllowedInGroup: whitelist explícita pra IA em grupos
+    if (dto.aiAllowedInGroup !== undefined) {
+      await this.repository.update(id, {
+        aiAllowedInGroup: dto.aiAllowedInGroup,
+      });
+    }
+
     const updated = await this.repository.findById(id);
     this.broadcastUpdate(updated as Conversation | null);
     return updated;

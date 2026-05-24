@@ -35,6 +35,7 @@ import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
+import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
 
 const MAX_TOOL_ITERATIONS = 8;
 const MAX_RECENT_MESSAGES = 30;
@@ -85,6 +86,7 @@ export class AiAgentRunnerService {
     private readonly retrieval: RetrievalService,
     private readonly realtime: RealtimeGateway,
     private readonly mediaUrlResolver: MediaUrlResolverService,
+    private readonly cadence: AgentCadenceController,
     @InjectQueue('memory-extractor')
     private readonly memoryExtractorQueue: Queue,
     @InjectQueue('rag-indexer')
@@ -119,6 +121,41 @@ export class AiAgentRunnerService {
         `No agent resolved for conv ${conversation.id} — skipping run`,
       );
       return;
+    }
+
+    // S22 — Cadence gate: verifica caps de rate-limit antes de iniciar o run
+    // (evita gastar tokens do LLM se a resposta vai ser bloqueada de qualquer forma)
+    const scopeFeatureEnabled = process.env.AI_SCOPE_RESOLVER_ENABLED !== 'false';
+    if (scopeFeatureEnabled) {
+      const inboundText = this.extractText((triggerMessage.content as unknown) ?? '');
+      // Para cadence pre-check, passamos string vazia como responseText (não temos ainda)
+      // O check real de cadência é feito pelo cap horário e consecutivo — que não dependem do responseText
+      const cadenceDecision = await this.cadence.evaluate(
+        conversation.channelId,
+        conversation.id,
+        agent,
+        '', // responseText ainda não foi gerado — caps não dependem dele
+        inboundText,
+      );
+      if (!cadenceDecision.shouldSend) {
+        this.logger.log(
+          `[cadence] skip pre-run: conv=${conversation.id} reason=${cadenceDecision.reason}`,
+        );
+        this.realtime.emitToConversation(conversation.id, 'ai:cadence-skipped', {
+          agentId: agent.id,
+          agentName: agent.name,
+          reason: cadenceDecision.reason,
+        });
+        return;
+      }
+      // Emit typing indicator com delay estimado
+      if (cadenceDecision.delayMs > 0) {
+        this.realtime.emitToConversation(conversation.id, 'ai:typing', {
+          agentId: agent.id,
+          agentName: agent.name,
+          etaMs: cadenceDecision.delayMs,
+        });
+      }
     }
 
     const [organization, channel, contact, recentMessages, memory, catalog] =
@@ -448,6 +485,29 @@ export class AiAgentRunnerService {
         cacheWriteTokens: aggregateUsage.cacheWriteTokens,
         costUsd: aggregateUsage.costUsd,
       });
+
+      // S22 — Persist AiResponseLog pra cap queries (rolling window 7d)
+      // Só persiste quando o agente realmente respondeu ao cliente —
+      // runs que terminaram sem reply não contam pro rate-limit.
+      if (
+        scopeFeatureEnabled &&
+        (finalAction === AiFinalAction.REPLIED ||
+          finalAction === AiFinalAction.DELEGATED ||
+          finalAction === AiFinalAction.NO_ACTION) // NO_ACTION pode ter gerado reply via fallback
+      ) {
+        this.prisma.aiResponseLog.create({
+          data: {
+            organizationId: conversation.organizationId,
+            agentId: agent.id,
+            channelId: conversation.channelId,
+            conversationId: conversation.id,
+          },
+        }).catch((err: any) =>
+          this.logger.warn(
+            `AiResponseLog persist failed for run ${run.id}: ${err?.message ?? err}`,
+          ),
+        );
+      }
 
       // Fase 2: enfileirar jobs assíncronos de memória + RAG
       // (fire-and-forget — falha não pode quebrar o run)

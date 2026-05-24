@@ -135,16 +135,23 @@ export class MessagesService {
       // metadata.replyTo é consumido pela UI pra renderizar a quote box
       // em cima da bolha — sem isso o quote só apareceria no app do
       // cliente (WhatsApp/IG), nunca no nosso inbox.
-      metadata: replyTo
-        ? {
-            replyTo: {
-              messageId: replyTo.messageId,
-              externalMessageId: replyTo.externalMessageId,
-              previewText: replyTo.previewText,
-              senderName: replyTo.senderName,
-            },
-          }
-        : undefined,
+      // metadata.aiAgentId (S22) é usado pelo GroupMentionDetector pra
+      // identificar replies nativos a mensagens da IA em grupos.
+      metadata: (() => {
+        const meta: Record<string, unknown> = {};
+        if (replyTo) {
+          meta.replyTo = {
+            messageId: replyTo.messageId,
+            externalMessageId: replyTo.externalMessageId,
+            previewText: replyTo.previewText,
+            senderName: replyTo.senderName,
+          };
+        }
+        if (dto.senderAgentId) {
+          meta.aiAgentId = dto.senderAgentId;
+        }
+        return Object.keys(meta).length > 0 ? (meta as object) : undefined;
+      })(),
     });
 
     // Auto-pause the AI on this conversation when a human replies. Behavior

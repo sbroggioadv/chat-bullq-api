@@ -450,29 +450,37 @@ export class InboundMessageProcessor extends WorkerHost {
     conversationId: string,
     triggerMessageId: string,
   ): Promise<void> {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-    });
-    if (!conversation) return;
-
-    const decision = await this.agentRouter.shouldHandle(conversation);
-    if (!decision.handle) {
-      this.logger.debug(
-        `AI skipped for conv ${conversationId}: ${decision.reason}`,
-      );
-      return;
-    }
-
-    const triggerMessage = await this.prisma.message.findUnique({
-      where: { id: triggerMessageId },
-    });
-    if (!triggerMessage) return;
+    const [conversation, triggerMessage] = await Promise.all([
+      this.prisma.conversation.findUnique({ where: { id: conversationId } }),
+      this.prisma.message.findUnique({ where: { id: triggerMessageId } }),
+    ]);
+    if (!conversation || !triggerMessage) return;
 
     // REACTION/SYSTEM nunca dispara IA — não tem conteúdo pra responder.
     if (NON_TRIGGERING_MESSAGE_TYPES.includes(triggerMessage.type)) {
       this.logger.debug(
         `AI skipped: message type=${triggerMessage.type} not actionable`,
       );
+      return;
+    }
+
+    // S22 — passa triggerMessage pra shouldHandle pra permitir group gate
+    // (@handle detection + reply nativo). Callers sem mensagem (watchdog)
+    // não passam message — group gate usa fail-closed GROUP_NO_MENTION.
+    const scopeFeatureEnabled = process.env.AI_SCOPE_RESOLVER_ENABLED !== 'false';
+    const decision = await this.agentRouter.shouldHandle(
+      conversation,
+      scopeFeatureEnabled ? triggerMessage : undefined,
+    );
+    if (!decision.handle) {
+      this.logger.debug(
+        `AI skipped for conv ${conversationId}: ${decision.reason}`,
+      );
+      if (scopeFeatureEnabled) {
+        this.realtimeGateway.emitToConversation(conversationId, 'ai:scope-skipped', {
+          reason: decision.reason,
+        });
+      }
       return;
     }
 

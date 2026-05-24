@@ -16,6 +16,9 @@ import { AgentsController } from './agents/agents.controller';
 import { ToolsCatalogService } from './catalog/tools.service';
 import { SkillsCatalogService } from './catalog/skills.service';
 import { AiCatalogController } from './catalog/catalog.controller';
+import { GroupMentionDetector } from './scope/group-mention-detector.service';
+import { AgentCadenceController } from './scope/agent-cadence-controller.service';
+import { AiResponseLogCleanupService } from './scope/ai-response-log-cleanup.service';
 
 // ─── Fase 2 — AI Intelligence Layer ──────────────
 import { PromptsModule } from './prompts/prompts.module';
@@ -57,7 +60,10 @@ import { AiProvidersModule } from './providers/providers.module';
     SkillsCatalogService,
     CatalogSyncService,
     MediaUrlResolverService,
+    GroupMentionDetector,
+    AgentCadenceController,
+    AiResponseLogCleanupService,
   ],
-  exports: [AiAgentRunnerService, AgentRouterService],
+  exports: [AiAgentRunnerService, AgentRouterService, GroupMentionDetector, AgentCadenceController],
 })
 export class AiAgentsModule {}

@@ -8,6 +8,7 @@ import type {
   ClassifierMessage,
 } from '../classifier/intent.types';
 import { IntentType } from '../classifier/intent.types';
+import { GroupMentionDetector } from '../scope/group-mention-detector.service';
 
 interface BusinessHoursDay {
   enabled: boolean;
@@ -42,6 +43,7 @@ export class AgentRouterService {
     private readonly prisma: PrismaService,
     private readonly classifier: IntentClassifierService,
     private readonly intentRouter: IntentRouterService,
+    private readonly groupMentionDetector: GroupMentionDetector,
   ) {}
 
   /**
@@ -187,7 +189,10 @@ export class AgentRouterService {
    * `null` if it should not, or the resolved active agent for the run.
    * The runner does the actual execution.
    */
-  async shouldHandle(conversation: Conversation): Promise<{
+  async shouldHandle(
+    conversation: Conversation & { isGroup?: boolean; aiAllowedInGroup?: boolean },
+    message?: { content: any; metadata?: any },
+  ): Promise<{
     handle: boolean;
     reason?: string;
   }> {
@@ -201,6 +206,64 @@ export class AgentRouterService {
 
     if (convOverride === false) {
       return { handle: false, reason: 'conversation.aiEnabled=force-off' };
+    }
+
+    // S22 — Group gate: em grupos, exige whitelist + @ mention/reply
+    if ((conversation as any).isGroup) {
+      if (!(conversation as any).aiAllowedInGroup) {
+        return { handle: false, reason: 'GROUP_NOT_WHITELISTED' };
+      }
+      if (!message) {
+        // chamado sem mensagem (caller errado) — fail-closed
+        return { handle: false, reason: 'GROUP_NO_MENTION' };
+      }
+      const candidates = await this.prisma.aiAgent.findMany({
+        where: {
+          organizationId: conversation.organizationId,
+          isActive: true,
+          deletedAt: null,
+        },
+        select: { id: true, mentionHandle: true },
+      });
+      const matched = await this.groupMentionDetector.findMatchingAgent(
+        message as any,
+        candidates,
+      );
+      if (!matched) {
+        return { handle: false, reason: 'GROUP_NO_MENTION' };
+      }
+      // Achou agente mencionado — bypassa pipeline scope (mention é mais forte)
+      return { handle: true };
+    }
+
+    // S22 — Pipeline scope: se a conversa tem cards ativos em pipelines
+    // scopados a algum agente, verifica se há match antes de prosseguir.
+    // Conv com activeAgentId já definido bypassa (conversa em andamento).
+    if (!conversation.activeAgentId) {
+      const activeCards = await this.prisma.card.findMany({
+        where: { conversationId: conversation.id, status: 'OPEN' },
+        select: { pipelineId: true },
+      });
+      const activePipelineIds = Array.from(
+        new Set(activeCards.map((c: any) => c.pipelineId).filter(Boolean) as string[]),
+      );
+      if (activePipelineIds.length > 0) {
+        const matches = await this.prisma.aiAgent.findMany({
+          where: {
+            organizationId: conversation.organizationId,
+            isActive: true,
+            deletedAt: null,
+            pipelineScope: { hasSome: activePipelineIds },
+          },
+          select: { id: true },
+        });
+        if (matches.length > 0) {
+          // Há agente com pipeline scope matching — pode prosseguir
+          // (o selectAgent/route vai escolher qual agente atua)
+        }
+        // Se há pipelines ativos mas nenhum agente com scope compatível,
+        // deixa prosseguir normalmente (fallback pro orchestrator genérico)
+      }
     }
 
     // Carrega channel + org pra cascade de checks.

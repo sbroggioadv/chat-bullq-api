@@ -240,6 +240,9 @@ model Organization {
   capabilityRouting OrganizationCapabilityRouting[]
   credentialAudits  OrganizationCredentialAudit[]
 
+  // ─── S22 ─────────────────────────────────────────
+  aiResponseLogs AiResponseLog[]
+
   @@map("organizations")
 }
 
@@ -624,6 +627,9 @@ model Conversation {
   aiDisabledBy  String?   @map("ai_disabled_by")
   aiDisabledAt  DateTime? @map("ai_disabled_at")
   activeAgentId String?   @map("active_agent_id")
+  /// S22 — Whitelist explícita pra IA atuar em grupos. Só consultado
+  /// quando isGroup=true. Default false = grupos começam silenciosos.
+  aiAllowedInGroup Boolean @default(false) @map("ai_allowed_in_group")
 
   // ─── Watchdog state ─────────────────────────────
   /// Tentativas de reativação. Cada vez que o watchdog reaciona a IA na
@@ -839,6 +845,26 @@ model ChatbotFlowChannel {
 
   @@id([flowId, channelId])
   @@map("chatbot_flow_channels")
+}
+
+// ─── S22 — AI response audit log (rolling window) ─────────────
+
+model AiResponseLog {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  agentId        String   @map("agent_id")
+  channelId      String   @map("channel_id")
+  conversationId String   @map("conversation_id")
+  messageId      String?  @map("message_id")
+  sentAt         DateTime @default(now()) @map("sent_at")
+
+  agent        AiAgent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, sentAt(sort: Desc)])
+  @@index([conversationId, sentAt(sort: Desc)])
+  @@index([organizationId, sentAt(sort: Desc)])
+  @@map("ai_response_logs")
 }
 
 // ─── Quick Replies ───────────────────────────────
@@ -1059,6 +1085,27 @@ model AiAgent {
   followUpEnabled      Boolean @default(true) @map("follow_up_enabled")
   followUpCadenceHours Int[]   @default([4, 24, 72, 168, 336]) @map("follow_up_cadence_hours")
 
+  // ─── S22 — Scope & Cadence ─────────────────────────────────
+  /// Pipelines onde este agente atua. Vazio = atua como fallback genérico
+  /// (ORCHESTRATOR/kind permitindo). IDs órfãos (pipeline deletado) são
+  /// ignorados em runtime; limpeza via cron mensal opcional.
+  pipelineScope       String[] @default([])      @map("pipeline_scope")
+  /// Handle pra detecção @handle em grupos. Único na org. Null = agente
+  /// não pode ser invocado por @ direta (mas pode por reply nativo).
+  mentionHandle       String?                    @map("mention_handle")
+  /// Cap por canal por hora. Default 60 (Zappfy WA tolera 1msg/s = 60/min,
+  /// mas pra evitar trigger antiautomação WA, 60/hora é conservador).
+  rateLimitPerHour    Int      @default(60)      @map("rate_limit_per_hour")
+  /// Máx msgs IA consecutivas (desde último inbound do cliente) na mesma
+  /// conversa. Anti-monólogo.
+  consecutiveMsgCap   Int      @default(5)       @map("consecutive_msg_cap")
+  /// Liga o jitter humanizado de leitura+pensamento+digitação. OFF = só
+  /// minDelayMs vale.
+  humanizationEnabled Boolean  @default(true)    @map("humanization_enabled")
+  /// Delay mínimo absoluto em ms entre receber inbound e enviar OUTBOUND.
+  /// Aplicado mesmo se humanização OFF. Default 15s.
+  minDelayMs          Int      @default(15000)   @map("min_delay_ms")
+
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
@@ -1073,7 +1120,9 @@ model AiAgent {
   pendingActions AiPendingAction[]
   activeOn       Conversation[]    @relation("ActiveAgent")
   skills         AiAgentSkill[]
+  responseLogs   AiResponseLog[]
 
+  @@unique([organizationId, mentionHandle])
   @@index([organizationId], name: "idx_ai_agent_org")
   @@index([organizationId, kind], name: "idx_ai_agent_org_kind")
   @@index([parentAgentId], name: "idx_ai_agent_parent")

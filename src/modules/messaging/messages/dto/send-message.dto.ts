@@ -32,4 +32,16 @@ export class SendMessageDto {
   @IsOptional()
   @IsObject()
   replyTo?: { externalMessageId: string };
+
+  /**
+   * S22 — Quando uma mensagem é enviada por um agente IA, gravado em
+   * metadata.aiAgentId pra reply detection em grupos. Null = mensagem
+   * enviada por humano ou sistema.
+   */
+  @ApiPropertyOptional({
+    description: 'Quando uma mensagem é enviada por um agente IA, gravado em metadata.aiAgentId pra reply detection em grupos (S22).',
+  })
+  @IsOptional()
+  @IsString()
+  senderAgentId?: string;
 }
