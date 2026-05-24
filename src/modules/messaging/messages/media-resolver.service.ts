@@ -29,6 +29,7 @@ export class MediaResolverService {
     messageId: string,
     organizationId: string,
     access: import('../../iam/channel-access/channel-access.service').ChannelAccess = 'ALL',
+    opts: { forceRefresh?: boolean } = {},
   ): Promise<{ url: string; mimeType?: string }> {
     const message = await this.prisma.message.findUnique({
       where: { id: messageId },
@@ -47,7 +48,8 @@ export class MediaResolverService {
 
     const content = (message.content ?? {}) as Record<string, any>;
 
-    if (typeof content.mediaUrl === 'string' && content.mediaUrl) {
+    // Cache hit — só retorna se NÃO for force-refresh.
+    if (!opts.forceRefresh && typeof content.mediaUrl === 'string' && content.mediaUrl) {
       return { url: content.mediaUrl, mimeType: content.mimeType };
     }
 
