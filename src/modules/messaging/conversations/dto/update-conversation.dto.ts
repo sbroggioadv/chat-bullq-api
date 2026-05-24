@@ -1,4 +1,4 @@
-import { IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, IsEnum, MaxLength } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 import { ConversationStatus } from '@prisma/client';
 
@@ -24,4 +24,10 @@ export class UpdateConversationDto {
   @IsString()
   @MaxLength(120)
   subject?: string;
+
+  /** S22 — Whitelist explícita pra IA atuar em grupos. Default false. */
+  @ApiPropertyOptional({ description: 'Whitelist explícita pra IA atuar em grupos. Default false.' })
+  @IsOptional()
+  @IsBoolean()
+  aiAllowedInGroup?: boolean;
 }

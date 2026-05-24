@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -117,6 +118,23 @@ export class AgentsService {
       }
     }
 
+    // S22 — Validate mentionHandle uniqueness within org
+    if (dto.mentionHandle !== undefined && dto.mentionHandle !== null) {
+      const conflicting = await this.prisma.aiAgent.findFirst({
+        where: {
+          organizationId,
+          mentionHandle: dto.mentionHandle,
+          id: { not: id },
+          deletedAt: null,
+        },
+      });
+      if (conflicting) {
+        throw new ConflictException(
+          `mentionHandle "${dto.mentionHandle}" já está em uso por outro agente`,
+        );
+      }
+    }
+
     // Touch operationalContextUpdatedAt apenas quando o conteúdo mudou de
     // verdade. Se o cliente reenvia o mesmo texto (ex: salvou outros
     // campos), não bombardeia o "atualizado em" — operador vai confiar
@@ -133,6 +151,14 @@ export class AgentsService {
         ...(operationalContextChanged
           ? { operationalContextUpdatedAt: new Date() }
           : {}),
+        // S22 — Spread scope & cadence fields explicitly (dto spread above
+        // already covers them; this block is here for clarity and future-proofing)
+        ...(dto.pipelineScope !== undefined && { pipelineScope: dto.pipelineScope }),
+        ...(dto.mentionHandle !== undefined && { mentionHandle: dto.mentionHandle }),
+        ...(dto.rateLimitPerHour !== undefined && { rateLimitPerHour: dto.rateLimitPerHour }),
+        ...(dto.consecutiveMsgCap !== undefined && { consecutiveMsgCap: dto.consecutiveMsgCap }),
+        ...(dto.humanizationEnabled !== undefined && { humanizationEnabled: dto.humanizationEnabled }),
+        ...(dto.minDelayMs !== undefined && { minDelayMs: dto.minDelayMs }),
       },
     });
   }
