@@ -136,6 +136,8 @@ export class OutboundMessageProcessor extends WorkerHost {
       // para o conv room garante que agents fora do channel room (edge case
       // de AGENT sem grant ou que perdeu o channel join) recebam o update
       // SENT como message:new, não só via message:status.
+      // Também cobre o caso de echo de mídia onde o id da mensagem pode ter
+      // trocado (placeholder deletado) — o front precisa do objeto inteiro.
       this.realtimeGateway.emitToConversation(updated.conversationId, 'message:new', {
         message: updated,
         conversationId: updated.conversationId,
