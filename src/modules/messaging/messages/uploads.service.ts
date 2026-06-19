@@ -87,11 +87,33 @@ export class UploadsService {
     'application/zip',
     'application/x-zip-compressed',
     'application/x-rar-compressed',
+    'application/vnd.rar',
     'application/x-7z-compressed',
     'text/plain',
     'text/csv',
     'application/json',
   ]);
+
+  /**
+   * Extensões de arquivo compactado/documento que o sistema conhece.
+   * Usado como fallback quando o browser envia application/octet-stream
+   * (especialmente comum no macOS para .rar e .zip desconhecidos).
+   */
+  private static readonly EXT_TO_MIME: Record<string, string> = {
+    '.zip': 'application/zip',
+    '.rar': 'application/vnd.rar',
+    '.7z': 'application/x-7z-compressed',
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+  };
 
   private static readonly ALLOWED_VIDEO_MIME = new Set([
     'video/mp4',
@@ -122,6 +144,11 @@ export class UploadsService {
     'application/msword': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
     'application/vnd.ms-excel': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
     'application/vnd.ms-powerpoint': [Buffer.from('d0cf11e0a1b11ae1', 'hex')],
+    // RAR v1.5+ signature: 526172211a0700; RAR v5+: 526172211a070100
+    'application/x-rar-compressed': [Buffer.from('526172211a0700', 'hex'), Buffer.from('526172211a070100', 'hex')],
+    'application/vnd.rar': [Buffer.from('526172211a0700', 'hex'), Buffer.from('526172211a070100', 'hex')],
+    // 7z: 377ABCAF271C
+    'application/x-7z-compressed': [Buffer.from('377abcaf271c', 'hex')],
     'video/mp4': [Buffer.from('66747970', 'hex')], // 'ftyp' (offset 4-8)
     'video/quicktime': [Buffer.from('66747970', 'hex')],
     'video/webm': [Buffer.from('1a45dfa3', 'hex')], // EBML
@@ -336,8 +363,22 @@ export class UploadsService {
       );
     }
 
-    const mimeRaw = (file.mimetype || '').toLowerCase();
-    const mime = mimeRaw.split(';')[0].trim();
+    let mimeRaw = (file.mimetype || '').toLowerCase();
+    let mime = mimeRaw.split(';')[0].trim();
+
+    // Fallback por extensão quando o browser/envia application/octet-stream
+    // ou outro MIME genérico (comum no macOS para .rar/.zip).
+    if ((mime === 'application/octet-stream' || !mime) && file.originalname) {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const inferred = UploadsService.EXT_TO_MIME[ext];
+      if (inferred) {
+        this.logger.log(
+          `Inferred MIME ${inferred} from extension ${ext} for ${file.originalname}`,
+        );
+        mime = inferred;
+        mimeRaw = inferred;
+      }
+    }
 
     // Routing por bucket — cada bucket tem cap próprio.
     let bucket: 'IMAGE' | 'AUDIO' | 'VIDEO' | 'DOCUMENT';
@@ -437,7 +478,9 @@ export class UploadsService {
     if (m === 'video/webm') return '.webm';
     // document
     if (m === 'application/pdf') return '.pdf';
-    if (m === 'application/zip') return '.zip';
+    if (m === 'application/zip' || m === 'application/x-zip-compressed') return '.zip';
+    if (m === 'application/x-rar-compressed' || m === 'application/vnd.rar') return '.rar';
+    if (m === 'application/x-7z-compressed') return '.7z';
     if (m === 'application/msword') return '.doc';
     if (m === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '.docx';
     if (m === 'application/vnd.ms-excel') return '.xls';

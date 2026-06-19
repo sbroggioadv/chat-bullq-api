@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ChannelType } from '@prisma/client';
 import {
   NormalizedInboundMessage,
@@ -9,6 +9,8 @@ import {
 
 @Injectable()
 export class ZappfyMessageMapper {
+  private readonly logger = new Logger(ZappfyMessageMapper.name);
+
   normalizeInbound(event: any): NormalizedInboundMessage | null {
     const msg = event?.message;
     if (!msg) return null;
@@ -214,17 +216,19 @@ export class ZappfyMessageMapper {
           }),
         };
 
-      case MessageContentType.DOCUMENT:
-        return {
-          endpoint: '/send/media',
-          payload: withReply({
-            number,
-            file: message.content.mediaUrl,
-            type: 'document',
-            filename: message.content.fileName || '',
-            caption: message.content.caption || '',
-          }),
-        };
+      case MessageContentType.DOCUMENT: {
+        const docPayload = withReply({
+          number,
+          file: message.content.mediaUrl,
+          type: 'document',
+          filename: message.content.fileName || '',
+          caption: message.content.caption || '',
+        });
+        this.logger.log(
+          `DOCUMENT payload to Zappfy for ${number}: ${JSON.stringify(docPayload)}`,
+        );
+        return { endpoint: '/send/media', payload: docPayload };
+      }
 
       case MessageContentType.STICKER:
         return {
