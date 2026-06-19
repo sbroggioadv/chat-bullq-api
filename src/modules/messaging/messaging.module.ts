@@ -6,6 +6,7 @@ import { AiAgentsModule } from '../ai-agents/ai-agents.module';
 import { AiProvidersModule } from '../ai-agents/providers/providers.module';
 import { WatchdogModule } from '../routing/watchdog/watchdog.module';
 import { SegmentsModule } from '../segments/segments.module';
+import { ProjectsModule } from '../projects/projects.module';
 import { IdempotencyService } from './pipeline/idempotency.service';
 import { ContactResolverService } from './pipeline/contact-resolver.service';
 import { ConversationResolverService } from './pipeline/conversation-resolver.service';
@@ -39,6 +40,7 @@ import { ContactsRepository } from './contacts/contacts.repository';
     AiProvidersModule,
     WatchdogModule,
     SegmentsModule,
+    ProjectsModule,
   ],
   controllers: [ConversationsController, MessagesController, ContactsController],
   providers: [
