@@ -112,6 +112,7 @@ model User {
 
   organizations         UserOrganization[]
   assignedConversations Conversation[]     @relation("AssignedAgent")
+  projectsResponsible   Project[]          @relation("ProjectResponsible")
   sentMessages          Message[]          @relation("MessageSender")
   revokedMessages       Message[]          @relation("MessageRevoker")
   notifications         Notification[]
@@ -239,6 +240,8 @@ model Organization {
   pipelines     Pipeline[]
   cards         Card[]
   products      Product[]
+  segments      Segment[]
+  projects      Project[]
 
   // ─── S18 Wave 2: AI provider credentials per-org ─
   credentials       OrganizationCredential[]
@@ -457,16 +460,93 @@ model Channel {
   updatedAt      DateTime          @updatedAt @map("updated_at")
   deletedAt      DateTime?         @map("deleted_at")
 
-  organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  contactChannels ContactChannel[]
-  conversations   Conversation[]
-  chatbotFlows    ChatbotFlowChannel[]
-  syncJobs        ChannelSyncJob[]
-  channelAgents   ChannelAgent[]
-  aiAgentChannels AiAgentChannel[]
+  organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contactChannels    ContactChannel[]
+  conversations      Conversation[]
+  chatbotFlows       ChatbotFlowChannel[]
+  syncJobs           ChannelSyncJob[]
+  channelAgents      ChannelAgent[]
+  aiAgentChannels    AiAgentChannel[]
+  segmentMemberships SegmentChannel[]
+  primaryOfSegments  Segment[]            @relation("SegmentPrimaryChannel")
 
   @@index([organizationId, type], name: "idx_channel_org_type")
   @@map("channels")
+}
+
+// ─── Segments (grupos compartilhados entre vários canais) ─────────
+//
+// Um Segmento agrupa N canais (instâncias) que dividem os MESMOS grupos
+// de WhatsApp. As conversas de GRUPO desses canais são afuniladas para o
+// canal principal (`primaryChannelId`): a conversa mantém channelId = principal,
+// mas é localizada por (segmentId, group_JID) para deduplicar entre os membros.
+// Conversas individuais (privadas) NÃO são afetadas — continuam por canal.
+model Segment {
+  id               String    @id @default(cuid())
+  organizationId   String    @map("organization_id")
+  name             String
+  primaryChannelId String?   @map("primary_channel_id")
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  primaryChannel Channel?         @relation("SegmentPrimaryChannel", fields: [primaryChannelId], references: [id], onDelete: SetNull)
+  members        SegmentChannel[]
+  conversations  Conversation[]
+
+  @@index([organizationId], name: "idx_segment_org")
+  @@map("segments")
+}
+
+model SegmentChannel {
+  id        String   @id @default(cuid())
+  segmentId String   @map("segment_id")
+  channelId String   @map("channel_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  segment Segment @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([segmentId, channelId], name: "uq_segment_channel")
+  @@index([channelId], name: "idx_segment_channel_channel")
+  @@map("segment_channels")
+}
+
+// ─── Projects (grupo = projeto) ──────────────────
+//
+// Cada grupo de WhatsApp é tratado como um Projeto perene. Um grupo tem N
+// conversas/contatos (um por canal-membro); o invariante estável é o JID do
+// grupo (contact_channels.external_id, "...@g.us"). Por isso o Project é keyed
+// por (organizationId, groupJid) — NÃO por conversa. A ligação projeto↔conversas
+// é feita por leitura (derivando o JID), igual ao SegmentReadService.
+//
+// Extensibilidade: colunas tipadas para o que é estável/filtrável; o resto
+// (campos que vão sendo adicionados) vive em `metadata` (merge no update),
+// sem migration por campo — mesmo padrão de Product/Card/Contact.
+model Project {
+  id                String    @id @default(cuid())
+  organizationId    String    @map("organization_id")
+  groupJid          String    @map("group_jid")
+  name              String
+  hoppeId           String?   @map("hoppe_id")
+  responsibleUserId String?   @map("responsible_user_id")
+  status            String?
+  metadata          Json      @default("{}")
+  isActive          Boolean   @default(true) @map("is_active")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  responsible  User?        @relation("ProjectResponsible", fields: [responsibleUserId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, groupJid], name: "uq_project_org_jid")
+  @@index([organizationId, hoppeId], name: "idx_project_org_hoppe")
+  @@index([organizationId, responsibleUserId], name: "idx_project_org_responsible")
+  @@index([organizationId, status], name: "idx_project_org_status")
+  @@map("projects")
 }
 
 model ChannelAgent {
@@ -599,6 +679,11 @@ model Conversation {
   id              String             @id @default(cuid())
   organizationId  String             @map("organization_id")
   channelId       String             @map("channel_id")
+  // Quando setado, a conversa pertence a um Segmento (apenas grupos).
+  // channelId continua sendo o canal PRINCIPAL do segmento (usado p/ envio,
+  // RBAC, realtime). segmentId serve para localizar/deduplicar a conversa de
+  // grupo entre os vários canais membros via (segmentId, group_JID).
+  segmentId       String?            @map("segment_id")
   contactId       String             @map("contact_id")
   assignedToId    String?            @map("assigned_to_id")
   departmentId    String?            @map("department_id")
@@ -652,6 +737,7 @@ model Conversation {
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   channel      Channel      @relation(fields: [channelId], references: [id])
+  segment      Segment?     @relation(fields: [segmentId], references: [id], onDelete: SetNull)
   contact      Contact      @relation(fields: [contactId], references: [id])
   assignedTo   User?        @relation("AssignedAgent", fields: [assignedToId], references: [id], onDelete: SetNull)
   department   Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
@@ -674,6 +760,7 @@ model Conversation {
   @@index([organizationId, isArchived], name: "idx_conv_org_archived")
   @@index([contactId], name: "idx_conv_contact")
   @@index([lastMessageAt], name: "idx_conv_last_msg")
+  @@index([segmentId, contactId], name: "idx_conv_segment_contact")
   @@map("conversations")
 }
 
@@ -737,6 +824,10 @@ model Message {
   status         MessageStatus      @default(QUEUED)
   senderName     String?            @map("sender_name")
   senderId       String?            @map("sender_id")
+  // Timestamp REAL do evento no provider (WhatsApp), não a hora de inserção.
+  // Usado para ordenar a timeline de forma determinística quando a mesma
+  // mensagem de grupo chega por vários canais com latências diferentes.
+  providerTimestamp DateTime?       @map("provider_timestamp")
   sentAt         DateTime?          @map("sent_at")
   deliveredAt    DateTime?          @map("delivered_at")
   readAt         DateTime?          @map("read_at")
@@ -763,6 +854,7 @@ model Message {
 
   @@unique([conversationId, externalId], name: "uq_msg_conv_external")
   @@index([conversationId, createdAt], name: "idx_msg_conv_time")
+  @@index([conversationId, providerTimestamp], name: "idx_msg_conv_provider_ts")
   @@index([externalId], name: "idx_msg_external_id")
   @@map("messages")
 }
