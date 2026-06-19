@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Channel } from '@prisma/client';
 import axios, { AxiosInstance } from 'axios';
-import FormData from 'form-data';
+import * as FormData from 'form-data';
 
 @Injectable()
 export class ZappfyHttpClient {
