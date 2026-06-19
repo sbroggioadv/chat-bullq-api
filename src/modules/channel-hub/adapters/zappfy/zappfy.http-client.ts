@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Channel } from '@prisma/client';
 import axios, { AxiosInstance } from 'axios';
+import FormData from 'form-data';
 
 @Injectable()
 export class ZappfyHttpClient {
@@ -28,6 +29,57 @@ export class ZappfyHttpClient {
     } catch (error: any) {
       this.logger.error(
         `Zappfy API error: ${endpoint} - ${error.response?.data?.message || error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Envia requisição multipart/form-data para endpoints como /send/media.
+   * Usado para DOCUMENT uploads onde precisamos preservar o filename original.
+   */
+  async sendMultipartRequest(
+    channel: Channel,
+    endpoint: string,
+    fields: Record<string, any>,
+    fileBuffer: Buffer,
+    fileName: string,
+    mimeType: string,
+  ): Promise<any> {
+    const config = channel.config as Record<string, any>;
+    const form = new FormData();
+
+    Object.entries(fields).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        form.append(key, String(value));
+      }
+    });
+
+    form.append('file', fileBuffer, {
+      filename: fileName,
+      contentType: mimeType,
+    });
+
+    this.logger.log(
+      `Sending multipart to Zappfy ${endpoint} with filename ${fileName} (${fileBuffer.length} bytes)`,
+    );
+
+    try {
+      const response = await axios.post(
+        `${ZappfyHttpClient.BASE_URL}${endpoint}`,
+        form,
+        {
+          headers: {
+            token: config.token,
+            ...form.getHeaders(),
+          },
+          timeout: 120000,
+        },
+      );
+      return response.data;
+    } catch (error: any) {
+      this.logger.error(
+        `Zappfy multipart API error: ${endpoint} - ${error.response?.data?.message || error.message}`,
       );
       throw error;
     }

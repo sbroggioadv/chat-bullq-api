@@ -164,7 +164,11 @@ export class ZappfyMessageMapper {
   denormalize(
     message: NormalizedOutboundMessage,
     contactExternalId: string,
-  ): { endpoint: string; payload: Record<string, any> } {
+  ): {
+    endpoint: string;
+    payload: Record<string, any>;
+    fileUpload?: { url: string; name: string };
+  } {
     const number = contactExternalId.replace(/@s\.whatsapp\.net|@g\.us/g, '');
     // Uazapi/Zappfy aceita `replyid` (id da mensagem citada) em
     // /send/text e /send/media. Quando o cliente recebe, o WhatsApp
@@ -217,17 +221,26 @@ export class ZappfyMessageMapper {
         };
 
       case MessageContentType.DOCUMENT: {
+        // O Zappfy ignora "filename" quando enviamos uma URL pública,
+        // usando o nome do arquivo no path da URL (hash) como nome final.
+        // Enviamos o arquivo por upload direto (multipart) para preservar
+        // o nome original no WhatsApp.
         const docPayload = withReply({
           number,
-          file: message.content.mediaUrl,
           type: 'document',
-          filename: message.content.fileName || '',
           caption: message.content.caption || '',
         });
         this.logger.log(
           `DOCUMENT payload to Zappfy for ${number}: ${JSON.stringify(docPayload)}`,
         );
-        return { endpoint: '/send/media', payload: docPayload };
+        return {
+          endpoint: '/send/media',
+          payload: docPayload,
+          fileUpload: {
+            url: message.content.mediaUrl || '',
+            name: message.content.fileName || 'document.bin',
+          },
+        };
       }
 
       case MessageContentType.STICKER:

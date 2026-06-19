@@ -8,6 +8,7 @@ import {
 } from '../../ports/types';
 import { ZappfyMessageMapper } from './zappfy.message-mapper';
 import { ZappfyHttpClient } from './zappfy.http-client';
+import axios from 'axios';
 
 @Injectable()
 export class ZappfyOutboundAdapter implements OutboundChannelPort {
@@ -24,16 +25,23 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
     contactExternalId: string,
     message: NormalizedOutboundMessage,
   ): Promise<SendResult> {
-    const { endpoint, payload } = this.mapper.denormalize(
-      message,
-      contactExternalId,
-    );
+    const denormalized = this.mapper.denormalize(message, contactExternalId);
 
-    const response = await this.httpClient.sendRequest(
-      channel,
-      endpoint,
-      payload,
-    );
+    let response: any;
+    if (denormalized.fileUpload) {
+      response = await this.sendMultipart(
+        channel,
+        denormalized.endpoint,
+        denormalized.payload,
+        denormalized.fileUpload,
+      );
+    } else {
+      response = await this.httpClient.sendRequest(
+        channel,
+        denormalized.endpoint,
+        denormalized.payload,
+      );
+    }
 
     return {
       // Prefer `messageid` — the send response returns `id` as `<owner>:<msgid>`
@@ -47,6 +55,44 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
         '',
       providerResponse: response,
     };
+  }
+
+  private async sendMultipart(
+    channel: Channel,
+    endpoint: string,
+    payload: Record<string, any>,
+    fileUpload: { url: string; name: string },
+  ): Promise<any> {
+    try {
+      this.logger.log(
+        `Downloading file for multipart upload: ${fileUpload.url} (name: ${fileUpload.name})`,
+      );
+      const fileResponse = await axios.get(fileUpload.url, {
+        responseType: 'arraybuffer',
+        timeout: 60000,
+      });
+      const buffer = Buffer.from(fileResponse.data);
+      const mimeType =
+        fileResponse.headers['content-type'] || 'application/octet-stream';
+
+      this.logger.log(
+        `File downloaded: ${fileUpload.name}, size: ${buffer.length}, mime: ${mimeType}`,
+      );
+
+      return await this.httpClient.sendMultipartRequest(
+        channel,
+        endpoint,
+        payload,
+        buffer,
+        fileUpload.name,
+        mimeType,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Multipart upload failed for ${fileUpload.url}: ${error.message}`,
+      );
+      throw error;
+    }
   }
 
   async sendTypingIndicator(
