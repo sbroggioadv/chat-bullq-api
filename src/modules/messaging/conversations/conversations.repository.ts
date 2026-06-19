@@ -143,6 +143,15 @@ export class ConversationsRepository {
     // truncated each page to the unread subset of those 30 rows and made
     // pagination terminate early — unread conversations sitting past row 30
     // never surfaced.
+    // Uma inbound só conta como não lida se for mais nova que (a) o cursor
+    // de leitura DESTE usuário e (b) a última OUTBOUND da conversa — de
+    // QUALQUER pessoa (operador, IA, ou echo do celular sem sender). Inbox
+    // de atendimento é compartilhado: se alguém da equipe já respondeu, a
+    // conversa não está mais pendente pra ninguém. Sem o critério (b),
+    // conversas respondidas pela colega continuavam em "não lidas" de todo
+    // o resto do time pra sempre (ConversationRead é per-user).
+    // Trade-off consciente: "marcar como não lida" deixa de surtir efeito
+    // quando a última mensagem da conversa é uma resposta da equipe.
     if (filters.unreadOnly && currentUserId) {
       const rows = await this.prisma.$queryRaw<{ conversation_id: string }[]>`
         SELECT DISTINCT m.conversation_id
@@ -151,10 +160,19 @@ export class ConversationsRepository {
         LEFT JOIN conversation_reads cr
           ON cr.conversation_id = m.conversation_id
           AND cr.user_id = ${currentUserId}
+        LEFT JOIN (
+          SELECT mo.conversation_id, MAX(mo.created_at) AS last_outbound_at
+          FROM messages mo
+          JOIN conversations co ON co.id = mo.conversation_id
+          WHERE co.organization_id = ${filters.organizationId}
+            AND mo.direction = 'OUTBOUND'
+          GROUP BY mo.conversation_id
+        ) lo ON lo.conversation_id = m.conversation_id
         WHERE c.organization_id = ${filters.organizationId}
           AND c.deleted_at IS NULL
           AND m.direction = 'INBOUND'
           AND (cr.last_read_at IS NULL OR m.created_at > cr.last_read_at)
+          AND (lo.last_outbound_at IS NULL OR m.created_at > lo.last_outbound_at)
       `;
       const unreadIds = rows.map((r) => r.conversation_id);
       if (unreadIds.length === 0) return { conversations: [], total: 0 };
@@ -230,18 +248,34 @@ export class ConversationsRepository {
   >(conversations: T[], userId: string): Promise<Array<T & { unreadCount: number }>> {
     if (conversations.length === 0) return [];
     const ids = conversations.map((c) => c.id);
-    const reads = await this.prisma.conversationRead.findMany({
-      where: { userId, conversationId: { in: ids } },
-      select: { conversationId: true, lastReadAt: true },
-    });
+    const [reads, lastOutbounds] = await Promise.all([
+      this.prisma.conversationRead.findMany({
+        where: { userId, conversationId: { in: ids } },
+        select: { conversationId: true, lastReadAt: true },
+      }),
+      this.prisma.message.groupBy({
+        by: ['conversationId'],
+        where: { conversationId: { in: ids }, direction: 'OUTBOUND' },
+        _max: { createdAt: true },
+      }),
+    ]);
     const readByConv = new Map(
       reads.map((r) => [r.conversationId, r.lastReadAt]),
+    );
+    const outByConv = new Map(
+      lastOutbounds.map((r) => [r.conversationId, r._max.createdAt]),
     );
 
     // Run the counts in parallel — bounded by `take` (≤ 30 typically).
     const counts = await Promise.all(
       conversations.map((c) => {
-        const cursor = readByConv.get(c.id);
+        // Mesmo critério do filtro unreadOnly acima: o badge conta inbound
+        // mais novas que o MAIOR entre o cursor de leitura do usuário e a
+        // última resposta da equipe — senão badge e filtro divergem.
+        const read = readByConv.get(c.id);
+        const out = outByConv.get(c.id);
+        const cursor =
+          read && out ? (read > out ? read : out) : (read ?? out);
         return this.prisma.message.count({
           where: {
             conversationId: c.id,
