@@ -18,6 +18,18 @@ export class ZappfyMessageMapper {
    * Providers como Zappfy/Uazapi extraem o filename do path da URL, entao
    * essa rota faz com que o arquivo chegue no WhatsApp com o nome correto.
    */
+  private inferFilenameFromUrl(publicUrl: string): string | null {
+    try {
+      const url = new URL(publicUrl);
+      const segments = url.pathname.split('/');
+      const last = segments[segments.length - 1];
+      if (last && last.includes('.')) return decodeURIComponent(last);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
   private buildFriendlyMediaUrl(publicUrl: string, fileName: string): string {
     if (!publicUrl) return '';
     try {
@@ -203,16 +215,17 @@ export class ZappfyMessageMapper {
           payload: withReply({ number, text: message.content.text, delay: 1000 }),
         };
 
-      case MessageContentType.IMAGE:
-        return {
-          endpoint: '/send/media',
-          payload: withReply({
-            number,
-            file: message.content.mediaUrl,
-            type: 'image',
-            caption: message.content.caption || '',
-          }),
-        };
+      case MessageContentType.IMAGE: {
+        const imageUrl = message.content.mediaUrl || '';
+        const imageName = message.content.fileName || this.inferFilenameFromUrl(imageUrl) || 'image.jpg';
+        const imagePayload = withReply({
+          number,
+          file: this.buildFriendlyMediaUrl(imageUrl, imageName),
+          type: 'image',
+          caption: message.content.caption || '',
+        });
+        return { endpoint: '/send/media', payload: imagePayload };
+      }
 
       case MessageContentType.AUDIO:
         return {
@@ -227,23 +240,24 @@ export class ZappfyMessageMapper {
           }),
         };
 
-      case MessageContentType.VIDEO:
-        return {
-          endpoint: '/send/media',
-          payload: withReply({
-            number,
-            file: message.content.mediaUrl,
-            type: 'video',
-            caption: message.content.caption || '',
-          }),
-        };
+      case MessageContentType.VIDEO: {
+        const videoUrl = message.content.mediaUrl || '';
+        const videoName = message.content.fileName || this.inferFilenameFromUrl(videoUrl) || 'video.mp4';
+        const videoPayload = withReply({
+          number,
+          file: this.buildFriendlyMediaUrl(videoUrl, videoName),
+          type: 'video',
+          caption: message.content.caption || '',
+        });
+        return { endpoint: '/send/media', payload: videoPayload };
+      }
 
       case MessageContentType.DOCUMENT: {
         // O Zappfy/Uazapi extrai o nome do arquivo do path da URL publica,
         // ignorando o parametro `filename`. Para preservar o nome original,
         // usamos uma URL amigavel (/uploads/media/<nome-original>?key=<hash>).
         const originalUrl = message.content.mediaUrl || '';
-        const fileName = message.content.fileName || 'document.bin';
+        const fileName = message.content.fileName || this.inferFilenameFromUrl(originalUrl) || 'document.bin';
         const friendlyUrl = this.buildFriendlyMediaUrl(originalUrl, fileName);
         const docPayload = withReply({
           number,
