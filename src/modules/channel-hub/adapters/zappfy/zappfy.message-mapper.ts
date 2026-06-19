@@ -11,6 +11,28 @@ import {
 export class ZappfyMessageMapper {
   private readonly logger = new Logger(ZappfyMessageMapper.name);
 
+  /**
+   * Reescreve uma URL publica de upload (/uploads/documents/.../hash.zip)
+   * para uma URL cujo path termina com o nome original do arquivo
+   * (/uploads/media/nome-original.zip?key=documents/.../hash.zip).
+   * Providers como Zappfy/Uazapi extraem o filename do path da URL, entao
+   * essa rota faz com que o arquivo chegue no WhatsApp com o nome correto.
+   */
+  private buildFriendlyMediaUrl(publicUrl: string, fileName: string): string {
+    if (!publicUrl) return '';
+    try {
+      const url = new URL(publicUrl);
+      const match = url.pathname.match(/\/api\/v1\/uploads\/(.+)$/);
+      if (!match) return publicUrl;
+      const key = match[1];
+      url.pathname = `/api/v1/uploads/media/${encodeURIComponent(fileName)}`;
+      url.searchParams.set('key', key);
+      return url.toString();
+    } catch {
+      return publicUrl;
+    }
+  }
+
   normalizeInbound(event: any): NormalizedInboundMessage | null {
     const msg = event?.message;
     if (!msg) return null;
@@ -164,11 +186,7 @@ export class ZappfyMessageMapper {
   denormalize(
     message: NormalizedOutboundMessage,
     contactExternalId: string,
-  ): {
-    endpoint: string;
-    payload: Record<string, any>;
-    fileUpload?: { url: string; name: string };
-  } {
+  ): { endpoint: string; payload: Record<string, any> } {
     const number = contactExternalId.replace(/@s\.whatsapp\.net|@g\.us/g, '');
     // Uazapi/Zappfy aceita `replyid` (id da mensagem citada) em
     // /send/text e /send/media. Quando o cliente recebe, o WhatsApp
@@ -221,26 +239,22 @@ export class ZappfyMessageMapper {
         };
 
       case MessageContentType.DOCUMENT: {
-        // O Zappfy ignora "filename" quando enviamos uma URL pública,
-        // usando o nome do arquivo no path da URL (hash) como nome final.
-        // Enviamos o arquivo por upload direto (multipart) para preservar
-        // o nome original no WhatsApp.
+        // O Zappfy/Uazapi extrai o nome do arquivo do path da URL publica,
+        // ignorando o parametro `filename`. Para preservar o nome original,
+        // usamos uma URL amigavel (/uploads/media/<nome-original>?key=<hash>).
+        const originalUrl = message.content.mediaUrl || '';
+        const fileName = message.content.fileName || 'document.bin';
+        const friendlyUrl = this.buildFriendlyMediaUrl(originalUrl, fileName);
         const docPayload = withReply({
           number,
+          file: friendlyUrl,
           type: 'document',
           caption: message.content.caption || '',
         });
         this.logger.log(
           `DOCUMENT payload to Zappfy for ${number}: ${JSON.stringify(docPayload)}`,
         );
-        return {
-          endpoint: '/send/media',
-          payload: docPayload,
-          fileUpload: {
-            url: message.content.mediaUrl || '',
-            name: message.content.fileName || 'document.bin',
-          },
-        };
+        return { endpoint: '/send/media', payload: docPayload };
       }
 
       case MessageContentType.STICKER:

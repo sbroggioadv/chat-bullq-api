@@ -43,6 +43,27 @@ async function bootstrap() {
       index: false,
     }),
   );
+
+  // Endpoint amigável para providers (Zappfy/Uazapi) baixarem mídia com o nome
+  // original do arquivo no path. O provider extrai o filename do path da URL,
+  // então servimos uma URL como /uploads/media/nome-original.zip?key=...hash...
+  (app as any).get('/api/v1/uploads/media/:filename', (req: any, res: any, next: any) => {
+    const filename = req.params.filename;
+    const key = String(req.query.key || '');
+    if (!key || !/^(documents|images|videos|audio)\/[\w\-/.]+$/.test(key)) {
+      return res.status(400).json({ message: 'Invalid media key' });
+    }
+    if (key.includes('..')) {
+      return res.status(400).json({ message: 'Invalid media key' });
+    }
+    const filePath = path.join(uploadsDir, key);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      return res.status(404).json({ message: 'File not found' });
+    }
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'public, max-age=2592000');
+    return res.sendFile(filePath);
+  });
   // CORS_ORIGIN aceita lista separada por virgula (ex: "https://web.com,http://localhost:3000").
   // Sem o split, NestJS envia a string toda como Access-Control-Allow-Origin, e o browser
   // rejeita ("multiple values, but only one is allowed"). Array faz o NestJS escolher
