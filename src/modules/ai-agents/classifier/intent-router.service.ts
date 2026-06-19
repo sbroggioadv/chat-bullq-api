@@ -19,6 +19,7 @@ export class IntentRouterService {
     [IntentType.SALES_ACCOUNTING]: { agentName: 'André Silva', skip: true },
     [IntentType.SALES_LEGAL]: { agentName: 'Bruno Costa', skip: true },
     [IntentType.SUPPORT]: { agentName: 'Lívia Andrade', skip: true },
+    [IntentType.IMPLEMENTATION]: { agentName: 'Sofia Almeida', skip: true },
     // Augusto cuida — orchestrator decide a próxima jogada.
     [IntentType.SMALL_TALK]: { agentName: 'Augusto Mendes', skip: false },
     [IntentType.AMBIGUOUS]: { agentName: 'Augusto Mendes', skip: false },

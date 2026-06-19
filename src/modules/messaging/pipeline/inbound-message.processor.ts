@@ -403,6 +403,9 @@ export class InboundMessageProcessor extends WorkerHost {
           content: message.content as any,
           externalId: message.externalMessageId || null,
           status: isEcho ? MessageStatus.SENT : MessageStatus.DELIVERED,
+          // Timestamp do provedor — ordena corretamente as cópias de grupo
+          // que chegam fora de ordem por instâncias membros diferentes.
+          providerTimestamp: message.timestamp ?? null,
           senderName: message.senderName || null,
           sentAt: isEcho ? new Date() : null,
           deliveredAt: isEcho ? null : new Date(),

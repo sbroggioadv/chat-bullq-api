@@ -19,6 +19,8 @@ export enum IntentType {
   SALES_LEGAL = 'SALES_LEGAL',
   /** Cliente já comprou e precisa de ajuda → Lívia Andrade */
   SUPPORT = 'SUPPORT',
+  /** Cliente em projeto de implementação (ClickUp/automações/reuniões) → Sofia Almeida */
+  IMPLEMENTATION = 'IMPLEMENTATION',
   /** Oi/bom dia/agradecimento → Augusto responde direto */
   SMALL_TALK = 'SMALL_TALK',
   /** Não dá pra decidir → Augusto resolve */

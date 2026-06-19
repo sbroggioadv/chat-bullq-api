@@ -11,12 +11,14 @@ export const CLASSIFIER_SYSTEM_PROMPT = `Você é um classificador de intençõe
 - Contabilidade pra empresas (agente: André Silva)
 - Advocacia / escritórios jurídicos (agente: Bruno Costa)
 - Suporte pós-venda: acesso, login, reembolso, dúvida de aula (agente: Lívia Andrade)
+- Implementação de gestão pra clientes em projeto: ClickUp, automações n8n, reuniões do projeto (agente: Sofia Almeida)
 
 Classifique a mensagem em UM destes intents (use exatamente o código):
 - SALES_GENERAL: interesse em curso de marketing/tráfego/copy/anúncios
 - SALES_ACCOUNTING: dono de contabilidade procurando solução pro escritório
 - SALES_LEGAL: advogado / banca jurídica buscando capacitação
 - SUPPORT: já é cliente e precisa de ajuda (login, acesso, dúvida pós-compra, reembolso)
+- IMPLEMENTATION: cliente em projeto de implementação falando de ClickUp (estrutura, tasks, views, "meu ClickUp"), automações/n8n do projeto, ou reuniões de implementação (resumo de reunião passada, agendar call do projeto)
 - SMALL_TALK: oi, bom dia, agradecimento, conversa fiada sem pedido claro
 - AMBIGUOUS: não dá pra decidir entre dois ou mais intents — confidence baixa
 - SPAM_OR_NOISE: spam, áudio sem transcrição, link suspeito, mensagem sem sentido
@@ -36,6 +38,7 @@ Campo suggestedAgent:
 - "André Silva" pra SALES_ACCOUNTING
 - "Bruno Costa" pra SALES_LEGAL
 - "Lívia Andrade" pra SUPPORT
+- "Sofia Almeida" pra IMPLEMENTATION
 - null pros demais intents`;
 
 /**
