@@ -47,7 +47,7 @@ async function bootstrap() {
   // Endpoint amigável para providers (Zappfy/Uazapi) baixarem mídia com o nome
   // original do arquivo no path. O provider extrai o filename do path da URL,
   // então servimos uma URL como /uploads/media/nome-original.zip?key=...hash...
-  (app as any).get('/api/v1/uploads/media/:filename', (req: any, res: any, next: any) => {
+  app.getHttpAdapter().get('/api/v1/uploads/media/:filename', (req: any, res: any, next: any) => {
     const filename = req.params.filename;
     const key = String(req.query.key || '');
     if (!key || !/^(documents|images|videos|audio)\/[\w\-/.]+$/.test(key)) {
