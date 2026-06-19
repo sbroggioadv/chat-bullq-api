@@ -84,11 +84,16 @@ export class SegmentReadService {
    * Uma conversa "representante" por JID de grupo — a de atividade mais
    * recente. É a conversa que a inbox exibe (uma linha por grupo); a timeline
    * dela faz a união com as conversas-irmãs ao abrir.
+   *
+   * Retorna também os `memberChannelIds`: o chamador filtra a inbox por
+   * `channelId IN (membros)` JUNTO com `id IN (representantes)` para o planner
+   * usar o índice (org, channel) e evitar varrer o índice de last_message_at
+   * (que torna a query O(segundos) com `id IN` puro).
    */
   async groupRepresentativeIds(
     organizationId: string,
     segmentId: string,
-  ): Promise<string[]> {
+  ): Promise<{ representativeIds: string[]; memberChannelIds: string[] }> {
     const members = await this.memberChannelIds(organizationId, segmentId);
     const convs = await this.loadGroupConvs(organizationId, members);
     const repByJid = new Map<string, ConvWithJid>();
@@ -99,7 +104,10 @@ export class SegmentReadService {
       const curT = cur?.lastMessageAt?.getTime() ?? 0;
       if (!cur || t > curT) repByJid.set(c.jid, c);
     }
-    return Array.from(repByJid.values()).map((c) => c.id);
+    return {
+      representativeIds: Array.from(repByJid.values()).map((c) => c.id),
+      memberChannelIds: members,
+    };
   }
 
   /**

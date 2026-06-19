@@ -86,15 +86,20 @@ export class ConversationsService {
     // representante por grupo (JID) entre os canais-membros e lista só
     // essas (uma linha por grupo, sem duplicar). Sem coluna/merge no banco.
     let conversationIds = filters.conversationIds;
+    let segmentChannelIds: string[] | undefined;
     if (filters.segmentId) {
-      const repIds = await this.segmentRead.groupRepresentativeIds(
-        organizationId,
-        filters.segmentId,
-      );
+      const { representativeIds, memberChannelIds } =
+        await this.segmentRead.groupRepresentativeIds(
+          organizationId,
+          filters.segmentId,
+        );
       // Intersecta com conversationIds pré-existente (ex.: inbox view), se houver.
       conversationIds = filters.conversationIds
-        ? repIds.filter((id) => filters.conversationIds!.includes(id))
-        : repIds;
+        ? representativeIds.filter((id) => filters.conversationIds!.includes(id))
+        : representativeIds;
+      // Filtra TAMBÉM por canais-membros: dá ao planner o índice (org,channel)
+      // e evita varrer o índice de last_message_at (query O(segundos)).
+      segmentChannelIds = memberChannelIds;
       // Conjunto vazio → nada a mostrar (evita cair no caminho "sem filtro").
       if (conversationIds.length === 0) {
         return {
@@ -107,9 +112,10 @@ export class ConversationsService {
     const inboxFilters: InboxFilters = {
       organizationId,
       status: parsedStatuses?.length ? parsedStatuses : undefined,
-      // Num segmento o filtro de canal é ignorado (a lista é por grupo).
+      // Num segmento o filtro de canal vira o conjunto de canais-membros
+      // (necessário pro plano da query); senão, o filtro de canal do usuário.
       channelId: filters.segmentId ? undefined : filters.channelId,
-      channelIds: filters.segmentId ? undefined : filters.channelIds,
+      channelIds: filters.segmentId ? segmentChannelIds : filters.channelIds,
       conversationIds,
       kind: filters.segmentId ? 'GROUP' : filters.kind,
       tagIds: filters.tagIds,
