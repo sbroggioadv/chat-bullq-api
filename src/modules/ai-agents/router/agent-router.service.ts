@@ -157,16 +157,33 @@ export class AgentRouterService {
   private async fallbackToOrchestrator(
     conversation: Conversation,
   ): Promise<AgentSelection | null> {
-    const link = await this.prisma.aiAgentChannel.findFirst({
+    // kind: ORCHESTRATOR é obrigatório — sem esse filtro o findFirst
+    // devolvia um worker arbitrário do canal (visto em prod: Daniel
+    // recebendo small talk/spam/fallback que era do Augusto).
+    let link = await this.prisma.aiAgentChannel.findFirst({
       where: {
         channelId: conversation.channelId,
         mode: 'AUTONOMOUS',
-        agent: { isActive: true, deletedAt: null },
+        agent: { isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' },
       },
       include: {
         agent: { select: { id: true, name: true } },
       },
     });
+    if (!link) {
+      // Canal sem orquestrador vinculado: melhor um worker qualquer
+      // do que ninguém responder.
+      link = await this.prisma.aiAgentChannel.findFirst({
+        where: {
+          channelId: conversation.channelId,
+          mode: 'AUTONOMOUS',
+          agent: { isActive: true, deletedAt: null },
+        },
+        include: {
+          agent: { select: { id: true, name: true } },
+        },
+      });
+    }
     if (!link?.agent) {
       this.logger.warn({
         msg: 'no_orchestrator_for_channel',
