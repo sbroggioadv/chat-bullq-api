@@ -295,11 +295,15 @@ model ThemePreset {
 
 /// Quais providers de IA são suportados. ANTHROPIC e OPENAI já estão em uso
 /// hoje via env globals (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). GEMINI foi
-/// adicionado em S18/W2 pra dar opção a orgs que preferem Google.
+/// adicionado em S18/W2 pra dar opção a orgs que preferem Google. KIMI
+/// (Moonshot) e ZAI (Zhipu/GLM) são providers OpenAI-compatible adicionados
+/// depois — reusam o OpenAiCompatibleAdapter via baseUrl próprio.
 enum AiProvider {
   ANTHROPIC
   OPENAI
   GEMINI
+  KIMI
+  ZAI
 }
 
 /// Cada "capability" representa uma função IA distinta que pode rotear
@@ -342,6 +346,9 @@ model OrganizationCredential {
   /// Últimos 4 chars da API key pra display tipo "sk-ant-...****1234".
   /// Único campo legível sem decrypt.
   keyHint        String               @map("key_hint")
+  /// Endpoint OpenAI-compatible custom (OpenAI/Kimi/z.ai). NULL => resolver
+  /// usa o default do provider. Ex: endpoint China da Moonshot/Zhipu ou proxy.
+  baseUrl        String?              @map("base_url")
   lastTestAt     DateTime?            @map("last_test_at")
   lastTestStatus CredentialTestStatus @default(UNTESTED) @map("last_test_status")
   lastTestError  String?              @map("last_test_error") @db.Text
