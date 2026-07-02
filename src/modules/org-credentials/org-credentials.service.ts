@@ -11,6 +11,7 @@ import {
   CredentialTestStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { assertAllowedProviderBaseUrl } from '../ai-agents/providers/provider-baseurl-guard';
 import { CryptoService } from './crypto.service';
 import { CredentialAuditService, AuditContext } from './audit.service';
 import { testProviderKey } from './providers/credential-tester';
@@ -69,6 +70,12 @@ export class OrgCredentialsService {
      */
     baseUrl?: string,
   ) {
+    // SSRF guard (defense-in-depth): valida mesmo se o request não passou pelo
+    // DTO (ex: chamada interna). Rejeita host fora da allowlist / privado / http.
+    if (baseUrl !== undefined) {
+      assertAllowedProviderBaseUrl(baseUrl);
+    }
+
     const encryptedKey = this.crypto.encrypt(plaintextKey);
     const keyHint = CryptoService.hint(plaintextKey);
 

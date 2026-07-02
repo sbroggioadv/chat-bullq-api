@@ -1,10 +1,16 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiCapability, AiProvider } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { CredentialEventsBus } from '../../org-credentials/credential-events';
 import { OrgCredentialsService } from '../../org-credentials/org-credentials.service';
 import { defaultBaseUrlFor } from './provider-defaults';
+import { isAllowedProviderBaseUrl } from './provider-baseurl-guard';
 
 /**
  * Source enum: identifica origem da credential resolvida pra observability/audit.
@@ -110,7 +116,12 @@ export class ProviderResolverService implements OnModuleInit {
     );
     if (orgCred) {
       // Precedência: baseUrl custom da credencial → default do provider.
-      const baseUrl = orgCred.baseUrl ?? this.defaultBaseUrl(provider);
+      // Fail-closed contra SSRF: se um baseUrl legado/inválido escapou da
+      // validação de write, aborta ANTES de qualquer fetch downstream.
+      const baseUrl = this.assertSafeBaseUrl(
+        provider,
+        orgCred.baseUrl ?? this.defaultBaseUrl(provider),
+      );
       this.cache.set(cacheKey, {
         apiKey: orgCred.apiKey,
         baseUrl,
@@ -123,7 +134,10 @@ export class ProviderResolverService implements OnModuleInit {
     const envKey = this.envKeyFor(provider);
     if (envKey) {
       // Precedência: env override (ex: KIMI_BASE_URL) → default do provider.
-      const baseUrl = this.envBaseUrl(provider) ?? this.defaultBaseUrl(provider);
+      const baseUrl = this.assertSafeBaseUrl(
+        provider,
+        this.envBaseUrl(provider) ?? this.defaultBaseUrl(provider),
+      );
       return { provider, apiKey: envKey, source: 'ENV', modelOverride, baseUrl };
     }
 
@@ -182,6 +196,27 @@ export class ProviderResolverService implements OnModuleInit {
    */
   private defaultBaseUrl(provider: AiProvider): string | null {
     return defaultBaseUrlFor(provider);
+  }
+
+  /**
+   * SSRF fail-closed: valida o baseUrl resolvido contra a allowlist ANTES de
+   * devolvê-lo (o router/adapter fará fetch autenticado nele). Defaults são
+   * sempre allowlisted; só um baseUrl custom/env inválido dispara o throw —
+   * assim nenhuma request é feita a um host proibido, mesmo com dado legado.
+   */
+  private assertSafeBaseUrl(
+    provider: AiProvider,
+    baseUrl: string | null,
+  ): string | null {
+    if (baseUrl && !isAllowedProviderBaseUrl(baseUrl)) {
+      this.logger.error(
+        `Blocked disallowed provider baseUrl for provider=${provider} (SSRF guard)`,
+      );
+      throw new InternalServerErrorException(
+        'Configured provider baseUrl is not allowed',
+      );
+    }
+    return baseUrl;
   }
 
   /**

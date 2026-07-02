@@ -90,14 +90,15 @@ describe('ProviderResolverService — baseUrl resolution', () => {
     expect(r.apiKey).toBe('env-moonshot');
   });
 
-  it('env KIMI_BASE_URL sobrescreve o default no path ENV', async () => {
+  it('env KIMI_BASE_URL (host allowlisted) sobrescreve o default no path ENV', async () => {
     const { service } = makeResolver({
       provider: AiProvider.KIMI,
       orgCred: null,
-      env: { KIMI_API_KEY: 'env-kimi', KIMI_BASE_URL: 'https://proxy.internal/v1' },
+      // Endpoint China da Moonshot — allowlisted, prova a precedência do override.
+      env: { KIMI_API_KEY: 'env-kimi', KIMI_BASE_URL: 'https://api.moonshot.cn/v1' },
     });
     const r = await service.resolveForLlm('org1');
-    expect(r.baseUrl).toBe('https://proxy.internal/v1');
+    expect(r.baseUrl).toBe('https://api.moonshot.cn/v1');
   });
 
   it('env ZAI_API_KEY → source ENV + default z.ai', async () => {
@@ -143,5 +144,34 @@ describe('ProviderResolverService — baseUrl resolution', () => {
     expect(r.source).toBe('NONE');
     expect(r.apiKey).toBeNull();
     expect(r.baseUrl).toBeNull();
+  });
+
+  describe('SSRF fail-closed (baseUrl inválido não faz fetch downstream)', () => {
+    it('ORG cred com baseUrl de IP interno → rejeita (não resolve)', async () => {
+      const { service } = makeResolver({
+        provider: AiProvider.KIMI,
+        orgCred: { apiKey: 'sk-kimi', baseUrl: 'https://169.254.169.254/v1' },
+      });
+      await expect(service.resolveForLlm('org1')).rejects.toThrow(
+        /baseUrl is not allowed/i,
+      );
+    });
+
+    it('ORG cred com host fora da allowlist → rejeita', async () => {
+      const { service } = makeResolver({
+        provider: AiProvider.ZAI,
+        orgCred: { apiKey: 'sk-zai', baseUrl: 'https://evil.com/v1' },
+      });
+      await expect(service.resolveForLlm('org1')).rejects.toThrow();
+    });
+
+    it('env override para host proibido → rejeita', async () => {
+      const { service } = makeResolver({
+        provider: AiProvider.KIMI,
+        orgCred: null,
+        env: { KIMI_API_KEY: 'env-kimi', KIMI_BASE_URL: 'http://127.0.0.1:8080/v1' },
+      });
+      await expect(service.resolveForLlm('org1')).rejects.toThrow();
+    });
   });
 });

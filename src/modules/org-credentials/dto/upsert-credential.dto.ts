@@ -1,11 +1,5 @@
-import {
-  IsOptional,
-  IsString,
-  IsUrl,
-  MaxLength,
-  Matches,
-  MinLength,
-} from 'class-validator';
+import { IsOptional, IsString, MaxLength, Matches, MinLength } from 'class-validator';
+import { IsAllowedProviderBaseUrl } from '../../ai-agents/providers/provider-baseurl-guard';
 
 /**
  * Body para PUT /organizations/current/credentials/:provider.
@@ -18,6 +12,11 @@ import {
  * credencial — ex: endpoint China da Moonshot (`api.moonshot.cn`) / Zhipu
  * (`open.bigmodel.cn`) ou proxy self-hosted. Ausente => resolver usa o
  * default do provider.
+ *
+ * SSRF guard: `baseUrl` é validado contra uma allowlist de hosts de providers
+ * conhecidos (match exato, https-only, sem IP privado/loopback) — ver
+ * provider-baseurl-guard. Sem isso, um baseUrl interno transformaria o server
+ * num proxy SSRF (o adapter faz fetch autenticado nesse host).
  */
 export class UpsertCredentialDto {
   @IsString()
@@ -28,10 +27,8 @@ export class UpsertCredentialDto {
   apiKey!: string;
 
   @IsOptional()
-  @IsUrl(
-    { protocols: ['http', 'https'], require_protocol: true },
-    { message: 'baseUrl must be a valid http(s) URL' },
-  )
+  @IsString()
   @MaxLength(300, { message: 'baseUrl too long (max 300 chars)' })
+  @IsAllowedProviderBaseUrl()
   baseUrl?: string;
 }
