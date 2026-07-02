@@ -19,6 +19,7 @@ import {
   ProvisionResult,
   ProvisionTenantInput,
 } from './dto/provision-tenant.input';
+import { maskEmail } from './pii-mask.util';
 
 /** Marcador gravado em Organization.settings pra idempotência do provisionamento. */
 export const PROVISION_MARKER = 'provision-tenant-script';
@@ -55,7 +56,7 @@ export class TenantProvisioningService {
     const adminRole = input.adminRole ?? OrgRole.OWNER;
     const label = dryRun ? '[DRY-RUN] ' : '';
     this.logger.log(
-      `${label}Provisionando tenant "${input.tenantName}" (admin=${input.adminEmail}, role=${adminRole})`,
+      `${label}Provisionando tenant "${input.tenantName}" (admin=${maskEmail(input.adminEmail)}, role=${adminRole})`,
     );
 
     // AQUECIA: aqui entraria o gate de billing/plano (pode criar org? quota
@@ -99,8 +100,9 @@ export class TenantProvisioningService {
     // ── 4. WhatsApp — NÃO provisiona canal ──────────────────────
     const whatsapp = this.describeWhatsappStep(input.whatsappNumber ?? null);
     if (input.whatsappNumber) {
+      // Nunca logar o número (LGPD): setup manual do canal Zappfy pela UI.
       this.logger.log(
-        `${label}WhatsApp ${input.whatsappNumber}: setup manual do canal Zappfy pela UI (auto-registra webhook). Script NÃO cria instância.`,
+        `${label}WhatsApp informado: setup manual do canal Zappfy pela UI (auto-registra webhook). Script NÃO cria instância.`,
       );
     }
 
@@ -146,10 +148,23 @@ export class TenantProvisioningService {
       where: {
         deletedAt: null,
         name: tenantName.trim(),
-        settings: {
-          path: ['provisioning', 'for'],
-          equals: adminEmail,
-        },
+        // Só reusa org criada POR ESTE SCRIPT (via) E para ESTE admin (for) —
+        // ambos os predicados JSON juntos evitam reusar uma org homônima que
+        // não foi provisionada aqui.
+        AND: [
+          {
+            settings: {
+              path: ['provisioning', 'via'],
+              equals: PROVISION_MARKER,
+            },
+          },
+          {
+            settings: {
+              path: ['provisioning', 'for'],
+              equals: adminEmail,
+            },
+          },
+        ],
       },
       select: { id: true, slug: true },
     });
@@ -219,7 +234,7 @@ export class TenantProvisioningService {
     if (dryRun || !orgId) {
       const inviterHint = input.inviterUserId ?? `(owner de ${input.sourceOrgId ?? '—'})`;
       this.logger.log(
-        `[DRY-RUN] Convidaria ${input.adminEmail} como ${adminRole} (inviter=${inviterHint}). Admin define a própria senha pelo link.`,
+        `[DRY-RUN] Convidaria ${maskEmail(input.adminEmail)} como ${adminRole} (inviter=${inviterHint}). Admin define a própria senha pelo link.`,
       );
       return {
         email: input.adminEmail,
@@ -246,7 +261,7 @@ export class TenantProvisioningService {
           ? result.token
           : null;
       this.logger.log(
-        `Convite ${autoAccepted ? 'auto-aceito (user já existia)' : 'criado'} para ${input.adminEmail}`,
+        `Convite ${autoAccepted ? 'auto-aceito (user já existia)' : 'criado'} para ${maskEmail(input.adminEmail)}`,
       );
       return {
         email: input.adminEmail,
@@ -258,7 +273,7 @@ export class TenantProvisioningService {
       if (err instanceof ConflictException) {
         // Já é membro — re-execução idempotente.
         this.logger.log(
-          `${input.adminEmail} já é membro de ${orgId} — convite ignorado (idempotente)`,
+          `${maskEmail(input.adminEmail)} já é membro de ${orgId} — convite ignorado (idempotente)`,
         );
         return {
           email: input.adminEmail,
@@ -498,11 +513,13 @@ export class TenantProvisioningService {
   // ─── WhatsApp ───────────────────────────────────────────────
 
   private describeWhatsappStep(number: string | null): ProvisionResult['whatsapp'] {
+    // `number` fica no campo estruturado (uso programático/Aquecia), mas a
+    // `note` NÃO embute o valor — o resultado é logado e o número é PII.
     return {
       number,
       action: 'MANUAL_SETUP_REQUIRED',
       note: number
-        ? `Criar canal Zappfy para ${number} pela UI/config da org nova — a criação de canal auto-registra o webhook. Este script NÃO provisiona instância Zappfy.`
+        ? 'Criar canal Zappfy para o número informado pela UI/config da org nova — a criação de canal auto-registra o webhook. Este script NÃO provisiona instância Zappfy.'
         : 'Nenhum número informado — canal WhatsApp deve ser criado manualmente pela UI quando houver.',
     };
   }

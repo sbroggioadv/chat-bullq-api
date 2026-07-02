@@ -62,8 +62,9 @@ function buildMocks(sourceRows: Array<Record<string, unknown>>, existingTarget: 
   const prismaMock = {
     organization: {
       findFirst: jest.fn(async ({ where }: { where: Record<string, unknown> }) => {
-        if ('settings' in where) return null; // idempotency lookup → nova org
-        if (where.id === 'source-org') return { id: 'source-org' }; // source exists
+        // Lookup da org-fonte (só tem where.id). A busca de idempotência usa
+        // name + AND[via, for] e deve retornar null (org ainda não existe).
+        if (where.id === 'source-org') return { id: 'source-org' };
         return null;
       }),
     },
@@ -130,8 +131,8 @@ describe('TenantProvisioningService (clone + remap com Prisma mockado)', () => {
 
     const result = await service.provision(
       {
-        tenantName: 'Marcela Advocacia',
-        adminEmail: 'marcela@sbroggio.com.br',
+        tenantName: 'Acme Advocacia',
+        adminEmail: 'admin@example.com',
         adminRole: OrgRole.OWNER,
         inviterUserId: 'inviter-user',
         sourceOrgId: 'source-org',
@@ -166,8 +167,8 @@ describe('TenantProvisioningService (clone + remap com Prisma mockado)', () => {
 
     const result = await service.provision(
       {
-        tenantName: 'Marcela Advocacia',
-        adminEmail: 'marcela@sbroggio.com.br',
+        tenantName: 'Acme Advocacia',
+        adminEmail: 'admin@example.com',
         inviterUserId: 'inviter-user',
         sourceOrgId: 'source-org',
       },
@@ -189,8 +190,8 @@ describe('TenantProvisioningService (clone + remap com Prisma mockado)', () => {
 
     const result = await service.provision(
       {
-        tenantName: 'Marcela Advocacia',
-        adminEmail: 'marcela@sbroggio.com.br',
+        tenantName: 'Acme Advocacia',
+        adminEmail: 'admin@example.com',
         inviterUserId: 'inviter-user',
         sourceOrgId: 'source-org',
       },
@@ -210,8 +211,8 @@ describe('TenantProvisioningService (clone + remap com Prisma mockado)', () => {
 
     const result = await service.provision(
       {
-        tenantName: 'Marcela Advocacia',
-        adminEmail: 'marcela@sbroggio.com.br',
+        tenantName: 'Acme Advocacia',
+        adminEmail: 'admin@example.com',
         inviterUserId: 'inviter-user',
         sourceOrgId: 'source-org',
         agentFilter: { selectors: [{ kind: AiAgentKind.ORCHESTRATOR }] },

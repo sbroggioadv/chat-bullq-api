@@ -19,13 +19,14 @@
  * em settings) e não duplica agentes (dedupe por nome).
  *
  * COMO RODAR (nunca contra produção sem CONFIRMO do Doc)
+ *   Dados reais entram SÓ via args na execução — NUNCA versionados aqui.
  *   DATABASE_URL="postgres://..." yarn ts-node -P tsconfig.json --transpile-only \
  *     scripts/provision-tenant.ts \
- *     --name "Marcela Advocacia" \
- *     --email marcela@sbroggio.com.br \
- *     --admin-name "Marcela" \
+ *     --name "Acme Advocacia" \
+ *     --email admin@example.com \
+ *     --admin-name "Admin" \
  *     --role OWNER \
- *     --whatsapp 5517988101808 \
+ *     --whatsapp 5511999999999 \
  *     --source-org <SOURCE_ORG_ID> \
  *     --kinds ORCHESTRATOR \
  *     --departments JURIDICO \
@@ -55,15 +56,19 @@
  *   íntegra porque os pais orquestradores entram junto). Sem filtro = clona
  *   todos os agentes vivos da org-fonte.
  *
- * PRESET MARCELA (advogada do escritório) — NÃO executar sem CONFIRMO do Doc
- *   --name "Marcela Advocacia" --email marcela@sbroggio.com.br
- *   --admin-name "Marcela" --role OWNER --whatsapp 5517988101808
- *   --source-org <ORG_DO_DOC> --kinds ORCHESTRATOR --departments JURIDICO
- *   Pendências antes de rodar: definir SOURCE_ORG_ID real (org do Doc) e o
- *   canal WhatsApp 5517988101808 é criado manualmente na UI depois.
+ * PRESET "advogada isolada" — onboarding de um usuário com org própria.
+ *   Placeholders fictícios (dados reais entram por args na execução):
+ *   --name "Acme Advocacia" --email admin@example.com
+ *   --admin-name "Admin" --role OWNER --whatsapp 5511999999999
+ *   --source-org <ORG_FONTE> --kinds ORCHESTRATOR --departments JURIDICO
+ *   Pendências antes de rodar: definir SOURCE_ORG_ID real (org-fonte) e o
+ *   canal WhatsApp é criado manualmente na UI depois do provisionamento.
  */
 
 import 'reflect-metadata';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { Logger } from '@nestjs/common';
 import { AiAgentKind, OrgRole } from '@prisma/client';
 import { PrismaService } from '../src/database/prisma.service';
@@ -73,18 +78,22 @@ import { TenantProvisioningService } from '../src/modules/provisioning/tenant-pr
 import {
   AgentSelector,
 } from '../src/modules/provisioning/agent-clone.planner';
-import { ProvisionTenantInput } from '../src/modules/provisioning/dto/provision-tenant.input';
+import {
+  ProvisionResult,
+  ProvisionTenantInput,
+} from '../src/modules/provisioning/dto/provision-tenant.input';
+import { maskEmail, maskPhone } from '../src/modules/provisioning/pii-mask.util';
 
 const logger = new Logger('ProvisionTenant');
 
 // ─── Parse de argumentos (sem dependência externa) ────────────
 
-type ParsedArgs = {
+export type ParsedArgs = {
   flags: Set<string>;
   values: Map<string, string>;
 };
 
-function parseArgs(argv: string[]): ParsedArgs {
+export function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Set<string>();
   const values = new Map<string, string>();
   const booleanFlags = new Set([
@@ -93,12 +102,24 @@ function parseArgs(argv: string[]): ParsedArgs {
     'help',
   ]);
 
+  // Trata `--flag=true`/`--flag=false` como booleano (senão `--dry-run=true`
+  // cairia no ramo de valores e o dry-run NUNCA seria aplicado → escreveria
+  // no banco de verdade). "" / true / 1 / yes = ligado; false / 0 / no = desligado.
+  const truthy = (v: string): boolean =>
+    v === '' || /^(true|1|yes)$/i.test(v);
+
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (!token.startsWith('--')) continue;
     const eq = token.indexOf('=');
     if (eq !== -1) {
-      values.set(token.slice(2, eq), token.slice(eq + 1));
+      const key = token.slice(2, eq);
+      const val = token.slice(eq + 1);
+      if (booleanFlags.has(key)) {
+        if (truthy(val)) flags.add(key);
+        continue;
+      }
+      values.set(key, val);
       continue;
     }
     const key = token.slice(2);
@@ -168,9 +189,43 @@ function parseRole(raw: string | undefined): OrgRole {
 const HELP = `Uso: DATABASE_URL=... yarn ts-node -P tsconfig.json --transpile-only \\
   scripts/provision-tenant.ts --name "..." --email "..." [opções]
 
-Rode com --help pra ver o cabeçalho do arquivo com todos os args e o preset Marcela.
+Rode com --help pra ver o cabeçalho do arquivo com todos os args e o preset de exemplo.
 Args principais: --name --email --admin-name --role --whatsapp --source-org
   --inviter --kinds --departments --squads --keep-pipeline-scope --dry-run`;
+
+/**
+ * Redige o resultado pra log: nunca despeja token/e-mail/telefone crus.
+ * O token de convite é credencial (permite definir a senha do admin) e não
+ * pode ir pro stdout/arquivo de log.
+ */
+function redactResult(result: ProvisionResult): ProvisionResult {
+  return {
+    ...result,
+    invitation: {
+      ...result.invitation,
+      email: maskEmail(result.invitation.email),
+      token: result.invitation.token ? '[gravado em arquivo seguro]' : null,
+    },
+    whatsapp: {
+      ...result.whatsapp,
+      number: result.whatsapp.number ? maskPhone(result.whatsapp.number) : null,
+    },
+  };
+}
+
+/** Grava o token de convite num arquivo 0600 (só o dono lê). Retorna o path. */
+function writeInviteTokenFile(email: string, token: string): string {
+  const file = path.join(os.tmpdir(), `provision-invite-${Date.now()}.txt`);
+  const body = [
+    '# Token de convite — CREDENCIAL (permite definir a senha do admin).',
+    '# Entregue por canal seguro e apague o arquivo após o uso.',
+    `email=${email}`,
+    `inviteToken=${token}`,
+    '',
+  ].join('\n');
+  fs.writeFileSync(file, body, { mode: 0o600 });
+  return file;
+}
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
@@ -190,48 +245,62 @@ async function main(): Promise<void> {
     return;
   }
 
-  const dryRun = args.flags.has('dry-run');
-  const input: ProvisionTenantInput = {
-    tenantName,
-    adminEmail,
-    adminName: pick(args, 'admin-name', 'ADMIN_NAME'),
-    adminRole: parseRole(pick(args, 'role', 'ADMIN_ROLE')),
-    whatsappNumber: pick(args, 'whatsapp', 'WHATSAPP_NUMBER'),
-    inviterUserId: pick(args, 'inviter', 'INVITER_USER_ID'),
-    sourceOrgId: pick(args, 'source-org', 'SOURCE_ORG_ID'),
-    agentFilter: {
-      selectors: buildSelectors(
-        csv(pick(args, 'kinds', 'AGENT_KINDS')),
-        csv(pick(args, 'departments', 'AGENT_DEPARTMENTS')),
-        csv(pick(args, 'squads', 'AGENT_SQUADS')),
-      ),
-    },
-    resetPipelineScope: !args.flags.has('keep-pipeline-scope'),
-  };
-
   if (!process.env.DATABASE_URL) {
     logger.error('DATABASE_URL ausente no ambiente — abortando.');
     process.exitCode = 1;
     return;
   }
 
-  const prisma = new PrismaService();
-  await prisma.onModuleInit();
+  const dryRun = args.flags.has('dry-run');
 
+  // prisma declarado fora do try só pra o finally poder desconectar; a
+  // instanciação/conexão e o parse que pode lançar (parseRole/buildSelectors)
+  // ficam DENTRO do try pra não virar unhandled rejection.
+  let prisma: PrismaService | null = null;
   try {
-    const orgRepo = new OrganizationsRepository(prisma);
-    const orgService = new OrganizationsService(orgRepo);
+    const input: ProvisionTenantInput = {
+      tenantName,
+      adminEmail,
+      adminName: pick(args, 'admin-name', 'ADMIN_NAME'),
+      adminRole: parseRole(pick(args, 'role', 'ADMIN_ROLE')),
+      whatsappNumber: pick(args, 'whatsapp', 'WHATSAPP_NUMBER'),
+      inviterUserId: pick(args, 'inviter', 'INVITER_USER_ID'),
+      sourceOrgId: pick(args, 'source-org', 'SOURCE_ORG_ID'),
+      agentFilter: {
+        selectors: buildSelectors(
+          csv(pick(args, 'kinds', 'AGENT_KINDS')),
+          csv(pick(args, 'departments', 'AGENT_DEPARTMENTS')),
+          csv(pick(args, 'squads', 'AGENT_SQUADS')),
+        ),
+      },
+      resetPipelineScope: !args.flags.has('keep-pipeline-scope'),
+    };
+
+    prisma = new PrismaService();
+    await prisma.onModuleInit();
+
+    const orgService = new OrganizationsService(
+      new OrganizationsRepository(prisma),
+    );
     const provisioning = new TenantProvisioningService(prisma, orgService);
 
     const result = await provisioning.provision(input, { dryRun });
 
     logger.log(
-      `${dryRun ? '[DRY-RUN] ' : ''}Resultado:\n${JSON.stringify(result, null, 2)}`,
+      `${dryRun ? '[DRY-RUN] ' : ''}Resultado:\n${JSON.stringify(redactResult(result), null, 2)}`,
     );
 
-    if (!dryRun && result.invitation.status === 'CREATED' && result.invitation.token) {
+    if (
+      !dryRun &&
+      result.invitation.status === 'CREATED' &&
+      result.invitation.token
+    ) {
+      const file = writeInviteTokenFile(
+        result.invitation.email,
+        result.invitation.token,
+      );
       logger.log(
-        `Link de aceite (admin define a senha): registrar com inviteToken=${result.invitation.token} (email=${result.invitation.email})`,
+        `Convite criado para ${maskEmail(result.invitation.email)}. Token gravado (0600) em: ${file} — entregue por canal seguro e apague após o uso.`,
       );
     }
   } catch (err) {
@@ -241,8 +310,11 @@ async function main(): Promise<void> {
     );
     process.exitCode = 1;
   } finally {
-    await prisma.onModuleDestroy();
+    if (prisma) await prisma.onModuleDestroy();
   }
 }
 
-void main();
+// Só executa quando rodado direto (não quando importado por um teste).
+if (require.main === module) {
+  void main();
+}

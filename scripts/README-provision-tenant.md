@@ -35,15 +35,18 @@ em `settings.provisioning`) e não duplica agentes (dedupe por nome).
 > Sempre rode com `--dry-run` primeiro. **Nunca** rode contra produção sem
 > `CONFIRMO` explícito do Doc.
 
+Dados reais (nome/e-mail/WhatsApp) entram **só via args na execução** — nunca
+versionados. Os exemplos usam placeholders fictícios.
+
 ```bash
 DATABASE_URL="postgres://user:pass@host:5432/db" \
   yarn ts-node -P tsconfig.json --transpile-only \
   scripts/provision-tenant.ts \
-  --name "Marcela Advocacia" \
-  --email marcela@sbroggio.com.br \
-  --admin-name "Marcela" \
+  --name "Acme Advocacia" \
+  --email admin@example.com \
+  --admin-name "Admin" \
   --role OWNER \
-  --whatsapp 5517988101808 \
+  --whatsapp 5511999999999 \
   --source-org <SOURCE_ORG_ID> \
   --kinds ORCHESTRATOR \
   --departments JURIDICO \
@@ -83,19 +86,21 @@ para a org nova. Por padrão o script **zera** esse campo (agente vira fallback
 genérico até o admin reconfigurar). Use `--keep-pipeline-scope` só se souber o
 que está fazendo.
 
-## Preset Marcela (caso concreto) — NÃO executar sem `CONFIRMO` do Doc
+## Preset "advogada isolada" (caso concreto) — NÃO executar sem `CONFIRMO` do Doc
 
-Dar acesso isolado à advogada do escritório (Marcela):
+Dar acesso isolado a um usuário com org própria (ex.: uma advogada do
+escritório). **Sem PII versionada:** os valores reais (nome/e-mail/WhatsApp)
+entram só via args na execução — os exemplos usam placeholders fictícios.
 
 ```bash
 DATABASE_URL="<DB_ALVO>" yarn ts-node -P tsconfig.json --transpile-only \
   scripts/provision-tenant.ts \
-  --name "Marcela Advocacia" \
-  --email marcela@sbroggio.com.br \
-  --admin-name "Marcela" \
+  --name "Acme Advocacia" \
+  --email admin@example.com \
+  --admin-name "Admin" \
   --role OWNER \
-  --whatsapp 5517988101808 \
-  --source-org <ORG_DO_DOC> \
+  --whatsapp 5511999999999 \
+  --source-org <ORG_FONTE> \
   --kinds ORCHESTRATOR \
   --departments JURIDICO \
   --dry-run
@@ -103,12 +108,12 @@ DATABASE_URL="<DB_ALVO>" yarn ts-node -P tsconfig.json --transpile-only \
 
 Pendências antes de rodar de verdade:
 
-1. **Definir `SOURCE_ORG_ID` real** — a org do Doc de onde clonar o
+1. **Definir `SOURCE_ORG_ID` real** — a org-fonte de onde clonar o
    orquestrador + agentes jurídicos.
 2. **Executar em produção** exige `CONFIRMO` explícito do Doc (o script não
    roda contra prod por conta própria).
-3. **WhatsApp `5517988101808`** — criar o canal Zappfy manualmente pela UI da
-   org da Marcela depois do provisionamento (auto-registra o webhook).
+3. **WhatsApp** — criar o canal Zappfy manualmente pela UI da org nova depois
+   do provisionamento (auto-registra o webhook).
 
 ## Reuso para o Aquecia (multi-tenant self-service)
 

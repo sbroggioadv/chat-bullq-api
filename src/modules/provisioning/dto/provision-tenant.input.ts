@@ -7,7 +7,7 @@ import { AgentCloneFilter } from '../agent-clone.planner';
  * endpoint self-service/admin do Aquecia.
  */
 export interface ProvisionTenantInput {
-  /** Nome da nova organização (tenant). Ex.: "Marcela Advocacia". */
+  /** Nome da nova organização (tenant). Ex.: "Acme Advocacia". */
   tenantName: string;
 
   /** E-mail do admin que receberá o convite. Ele define a própria senha. */
@@ -23,7 +23,7 @@ export interface ProvisionTenantInput {
   adminRole?: OrgRole;
 
   /**
-   * WhatsApp do tenant (E.164 sem +, ex.: 5517988101808). NÃO provisiona
+   * WhatsApp do tenant (E.164 sem +, ex.: 5511999999999). NÃO provisiona
    * canal — apenas registra na instrução final de próximos passos.
    */
   whatsappNumber?: string;
