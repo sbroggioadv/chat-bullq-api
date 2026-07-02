@@ -128,10 +128,13 @@ export class IntentClassifierService {
         // Modo estático (legado) — decisão de skip leva em conta tanto o
         // threshold quanto a categoria do intent — AMBIGUOUS/SPAM/ESCALATE/
         // SMALL_TALK SEMPRE caem no orchestrator, mesmo com confidence alta.
+        // suggestedAgent vem SÓ do mapa validado intent→agente — o nome
+        // bruto do LLM nunca propaga (nome inventado viraria lookup por
+        // nome no router).
         const route = this.intentRouter.routeIntent(intent);
         skippedOrchestrator =
           route.shouldSkipOrchestrator && confidence >= threshold;
-        suggestedAgent = suggestedAgentRaw ?? route.agentName ?? null;
+        suggestedAgent = route.agentName ?? null;
       }
 
       // Custo: prefere o `cost` do provider quando disponível, senão

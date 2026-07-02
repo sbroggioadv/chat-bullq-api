@@ -60,6 +60,21 @@ describe('IntentClassifierService — S23 catálogo dinâmico', () => {
     expect(r.skippedOrchestrator).toBe(true);
   });
 
+  it('sem catálogo → nome bruto do LLM NÃO propaga: suggestedAgent vem só do mapa validado', async () => {
+    llm.complete.mockResolvedValue(
+      llmResponse({
+        intent: 'SALES_GENERAL',
+        confidence: 0.95,
+        reasoning: 'quer tráfego pago',
+        suggestedAgent: 'Nome Inventado Pelo Modelo',
+      }),
+    );
+
+    const r = await svc.classify('quero anunciar no Instagram');
+    expect(r.suggestedAgent).toBe('Daniel Souza'); // mapa SALES_GENERAL, não o raw
+    expect(r.skippedOrchestrator).toBe(true);
+  });
+
   it('com catálogo → prompt dinâmico lista só os agentes do canal (sem personas hardcoded)', async () => {
     llm.complete.mockResolvedValue(
       llmResponse({
