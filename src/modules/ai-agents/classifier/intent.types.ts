@@ -29,12 +29,30 @@ export enum IntentType {
   SPAM_OR_NOISE = 'SPAM_OR_NOISE',
   /** Cliente irritado/ameaça/situação grave → transfere pra humano */
   ESCALATE_HUMAN = 'ESCALATE_HUMAN',
+  /**
+   * S23 — só existe no modo dinâmico (catálogo por canal): a mensagem casa
+   * claramente com a área de UM worker do canal, cujo nome vem em
+   * `suggestedAgent`. No modo estático (flag off) nunca é emitido.
+   */
+  AGENT_MATCH = 'AGENT_MATCH',
 }
 
 /** Mensagem do histórico recente passada como contexto ao classifier. */
 export interface ClassifierMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
+}
+
+/**
+ * S23 — Entrada do catálogo dinâmico: um worker AUTONOMOUS vinculado ao
+ * canal da conversa. É a única lista de nomes que o classifier pode sugerir
+ * quando o modo dinâmico está ligado (AI_CLASSIFIER_DYNAMIC_ENABLED=true).
+ */
+export interface ClassifierAgentCatalogEntry {
+  name: string;
+  description: string | null;
+  department: string | null;
+  capabilities: string[];
 }
 
 export interface ClassificationResult {
@@ -60,4 +78,11 @@ export interface ClassifierConfig {
   threshold: number;
   /** Default LATEST_MODELS.HAIKU ('claude-haiku-4-5'). Ver `llm/model-constants.ts`. */
   model: string;
+  /**
+   * S23 — Catálogo dinâmico dos workers do canal. Presente e não-vazio →
+   * o classifier monta o system prompt em runtime (sem personas hardcoded)
+   * e só aceita `suggestedAgent` que exista nesta lista. Ausente → prompt
+   * estático legado (comportamento pré-S23).
+   */
+  agentCatalog?: ClassifierAgentCatalogEntry[];
 }
