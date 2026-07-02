@@ -25,6 +25,10 @@ export class IntentRouterService {
     [IntentType.AMBIGUOUS]: { agentName: 'Augusto Mendes', skip: false },
     [IntentType.SPAM_OR_NOISE]: { agentName: 'Augusto Mendes', skip: false },
     [IntentType.ESCALATE_HUMAN]: { agentName: 'Augusto Mendes', skip: false },
+    // S23: AGENT_MATCH só é emitido no modo dinâmico, onde skip e nome vêm
+    // do catálogo do canal (IntentClassifierService), não deste mapa. Se
+    // vazar pro modo estático, cai no orchestrator por segurança.
+    [IntentType.AGENT_MATCH]: { agentName: 'Augusto Mendes', skip: false },
   };
 
   routeIntent(intent: IntentType): {

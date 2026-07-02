@@ -1,4 +1,7 @@
-import { ClassifierMessage } from './intent.types';
+import {
+  ClassifierAgentCatalogEntry,
+  ClassifierMessage,
+} from './intent.types';
 
 /**
  * System prompt do classifier. Bem enxuto de propósito — Haiku é rápido e
@@ -40,6 +43,55 @@ Campo suggestedAgent:
 - "Lívia Andrade" pra SUPPORT
 - "Sofia Almeida" pra IMPLEMENTATION
 - null pros demais intents`;
+
+/**
+ * S23 — System prompt montado em runtime a partir dos workers vinculados ao
+ * canal da conversa (sem personas hardcoded). Cada agente entra com 1-2
+ * linhas do que cobre (department + description + capabilities, quando
+ * existirem) e o modelo devolve o nome EXATO de um deles ou "NONE".
+ *
+ * O texto é determinístico pro mesmo catálogo — canais com o mesmo conjunto
+ * de agentes continuam aproveitando o prompt cache do provider.
+ */
+export function buildDynamicClassifierSystemPrompt(
+  catalog: ClassifierAgentCatalogEntry[],
+): string {
+  const agentLines = catalog
+    .map((a) => {
+      const details = [
+        a.department ? `setor ${a.department}` : null,
+        a.description?.trim() || null,
+        a.capabilities.length > 0 ? `cobre: ${a.capabilities.join(', ')}` : null,
+      ]
+        .filter(Boolean)
+        .join(' — ');
+      return `- ${a.name}${details ? `: ${details}` : ''}`;
+    })
+    .join('\n');
+
+  return `Você é um roteador de mensagens de WhatsApp. Estes são os agentes comerciais disponíveis NESTE canal:
+${agentLines}
+
+Classifique a mensagem em UM destes intents (use exatamente o código):
+- AGENT_MATCH: a mensagem casa claramente com a área de UM agente da lista acima
+- SMALL_TALK: oi, bom dia, agradecimento, conversa fiada sem pedido claro
+- AMBIGUOUS: não dá pra decidir qual agente deve atender — confidence baixa
+- SPAM_OR_NOISE: spam, áudio sem transcrição, link suspeito, mensagem sem sentido
+- ESCALATE_HUMAN: cliente irritado, ameaça, reclamação grave, processo, mídia
+
+Regras de confidence:
+- 0.95+ : sinal muito claro (palavra-chave inequívoca, contexto óbvio)
+- 0.85-0.94: sinal forte mas com alguma ambiguidade
+- 0.70-0.84: tem indício mas não dá pra ter certeza
+- <0.70: melhor marcar AMBIGUOUS
+
+Responda APENAS com JSON válido, sem markdown, sem explicação extra:
+{"intent":"...","confidence":0.0,"reasoning":"frase curta","suggestedAgent":"Nome exato de um agente da lista"|"NONE"}
+
+Campo suggestedAgent:
+- Com AGENT_MATCH: copie o nome EXATO de um agente da lista (não invente variações)
+- Pros demais intents: "NONE"`;
+}
 
 /**
  * Monta o user prompt: histórico recente (até 3 últimas msgs) + mensagem atual.

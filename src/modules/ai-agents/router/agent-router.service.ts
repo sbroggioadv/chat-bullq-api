@@ -5,6 +5,7 @@ import { IntentClassifierService } from '../classifier/intent-classifier.service
 import { IntentRouterService } from '../classifier/intent-router.service';
 import type {
   ClassificationResult,
+  ClassifierAgentCatalogEntry,
   ClassifierMessage,
 } from '../classifier/intent.types';
 import { IntentType } from '../classifier/intent.types';
@@ -54,8 +55,12 @@ export class AgentRouterService {
    *    usa ele direto, sem classificar (evita re-roteamento no meio do papo).
    * 2. Se for primeira mensagem (sem activeAgentId) → chama IntentClassifier
    *    (Haiku ~200ms, ~$0.0003). Se confidence >= threshold e o intent for
-   *    direcionável, pula o orchestrator e vai direto pro worker.
-   * 3. Fallback: cai no orchestrator AUTONOMOUS do canal (Augusto).
+   *    direcionável, pula o orchestrator e vai direto pro worker — desde que
+   *    o worker sugerido esteja VINCULADO AO CANAL da conversa (S23).
+   * 3. S23 (flag AI_CLASSIFIER_DYNAMIC_ENABLED=true): o classifier recebe o
+   *    catálogo dos workers do canal em runtime; canal sem worker pula o
+   *    classifier e vai direto pro fallback.
+   * 4. Fallback: cai no orchestrator AUTONOMOUS do canal.
    */
   async selectAgent(
     conversation: Conversation,
@@ -80,7 +85,27 @@ export class AgentRouterService {
       }
     }
 
-    // 2. Carrega threshold da org
+    // 2. S23 — Catálogo dinâmico (flag off = comportamento legado com
+    //    personas hardcoded no prompt). Com a flag on, o classifier só
+    //    conhece os workers AUTONOMOUS vinculados a ESTE canal; canal sem
+    //    worker nem chama o Haiku — vai direto pro orchestrator.
+    const dynamicCatalogEnabled =
+      process.env.AI_CLASSIFIER_DYNAMIC_ENABLED === 'true';
+    let agentCatalog: ClassifierAgentCatalogEntry[] | undefined;
+    if (dynamicCatalogEnabled) {
+      agentCatalog = await this.loadChannelWorkerCatalog(
+        conversation.channelId,
+      );
+      if (agentCatalog.length === 0) {
+        this.logger.log({
+          msg: 'classifier_skipped_no_channel_workers',
+          channelId: conversation.channelId,
+        });
+        return this.fallbackToOrchestrator(conversation);
+      }
+    }
+
+    // 3. Carrega threshold da org
     const org = await this.prisma.organization.findUnique({
       where: { id: conversation.organizationId },
       select: { aiClassifierThreshold: true },
@@ -89,13 +114,13 @@ export class AgentRouterService {
       ? Number(org.aiClassifierThreshold)
       : 0.85;
 
-    // 3. Classifica
+    // 4. Classifica
     let classification: ClassificationResult;
     try {
       classification = await this.classifier.classify(
         latestMessageText,
         recentMessages,
-        { threshold },
+        { threshold, agentCatalog },
       );
     } catch (err) {
       this.logger.warn({
@@ -105,22 +130,32 @@ export class AgentRouterService {
       return this.fallbackToOrchestrator(conversation);
     }
 
-    // 4. Se confidence alta e intent direcionável → vai direto pro worker
+    // 5. Se confidence alta e intent direcionável → vai direto pro worker.
+    //    S23 (fix cross-brand): a busca pelo nome sugerido é restrita aos
+    //    agentes vinculados ao CANAL da conversa — buscar na org inteira
+    //    deixava o SDR de outra marca (outro canal) capturar a mensagem
+    //    quando duas marcas convivem na mesma organização.
     if (
       classification.skippedOrchestrator &&
       classification.suggestedAgent &&
       classification.intent !== IntentType.AMBIGUOUS &&
       classification.intent !== IntentType.SMALL_TALK
     ) {
-      const agent = await this.prisma.aiAgent.findFirst({
+      const link = await this.prisma.aiAgentChannel.findFirst({
         where: {
-          organizationId: conversation.organizationId,
-          name: classification.suggestedAgent,
-          isActive: true,
-          deletedAt: null,
+          channelId: conversation.channelId,
+          mode: 'AUTONOMOUS',
+          agent: {
+            name: classification.suggestedAgent,
+            isActive: true,
+            deletedAt: null,
+          },
         },
-        select: { id: true, name: true },
+        include: {
+          agent: { select: { id: true, name: true } },
+        },
       });
+      const agent = link?.agent ?? null;
       if (agent) {
         this.logger.log({
           msg: 'agent_selected_via_classifier',
@@ -139,12 +174,13 @@ export class AgentRouterService {
         };
       }
       this.logger.warn({
-        msg: 'classifier_suggested_agent_not_found',
+        msg: 'classifier_suggested_agent_not_in_channel',
         suggested: classification.suggestedAgent,
+        channelId: conversation.channelId,
       });
     }
 
-    // 5. Fallback pro orchestrator
+    // 6. Fallback pro orchestrator
     const fallback = await this.fallbackToOrchestrator(conversation);
     if (fallback) {
       fallback.classifiedIntent = classification.intent;
@@ -199,6 +235,39 @@ export class AgentRouterService {
       skippedOrchestrator: false,
       classifierCostUsd: 0,
     };
+  }
+
+  /**
+   * S23 — Catálogo de workers pro classifier dinâmico: agentes WORKER
+   * ativos com vínculo AUTONOMOUS neste canal. É a única lista de nomes que
+   * o classifier pode sugerir — e que o selectAgent aceita resolver.
+   */
+  private async loadChannelWorkerCatalog(
+    channelId: string,
+  ): Promise<ClassifierAgentCatalogEntry[]> {
+    const links = await this.prisma.aiAgentChannel.findMany({
+      where: {
+        channelId,
+        mode: 'AUTONOMOUS',
+        agent: { isActive: true, deletedAt: null, kind: 'WORKER' },
+      },
+      include: {
+        agent: {
+          select: {
+            name: true,
+            description: true,
+            department: true,
+            capabilities: true,
+          },
+        },
+      },
+    });
+    return links.map((link) => ({
+      name: link.agent.name,
+      description: link.agent.description,
+      department: link.agent.department,
+      capabilities: link.agent.capabilities,
+    }));
   }
 
   /**

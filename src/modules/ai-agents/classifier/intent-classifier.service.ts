@@ -4,6 +4,7 @@ import { LlmMessage } from '../llm/llm.types';
 import {
   CLASSIFIER_SYSTEM_PROMPT,
   buildClassifierUserPrompt,
+  buildDynamicClassifierSystemPrompt,
 } from './classifier.prompt';
 import {
   ClassificationResult,
@@ -55,12 +56,20 @@ export class IntentClassifierService {
     const model = config?.model ?? this.DEFAULT_MODEL;
     const threshold = config?.threshold ?? this.DEFAULT_THRESHOLD;
 
+    // S23 — Modo dinâmico: com catálogo presente, o prompt é montado a
+    // partir dos workers do canal em vez das personas hardcoded.
+    const agentCatalog =
+      config?.agentCatalog && config.agentCatalog.length > 0
+        ? config.agentCatalog
+        : null;
+    const systemPrompt = agentCatalog
+      ? buildDynamicClassifierSystemPrompt(agentCatalog)
+      : CLASSIFIER_SYSTEM_PROMPT;
+
     const messages: LlmMessage[] = [
       {
         role: 'system',
-        content: [
-          { type: 'text', text: CLASSIFIER_SYSTEM_PROMPT, cache: true },
-        ],
+        content: [{ type: 'text', text: systemPrompt, cache: true }],
       },
       {
         role: 'user',
@@ -91,17 +100,39 @@ export class IntentClassifierService {
         typeof parsed?.reasoning === 'string'
           ? parsed.reasoning.slice(0, 300)
           : '';
-      const suggestedAgent =
+      const suggestedAgentRaw =
         typeof parsed?.suggestedAgent === 'string' && parsed.suggestedAgent
           ? parsed.suggestedAgent
           : null;
 
-      // Decisão final de skip leva em conta tanto o threshold quanto a
-      // categoria do intent — AMBIGUOUS/SPAM/ESCALATE/SMALL_TALK SEMPRE
-      // caem no orchestrator, mesmo com confidence alta.
-      const route = this.intentRouter.routeIntent(intent);
-      const skippedOrchestrator =
-        route.shouldSkipOrchestrator && confidence >= threshold;
+      let suggestedAgent: string | null;
+      let skippedOrchestrator: boolean;
+      if (agentCatalog) {
+        // S23 — Modo dinâmico: só aceita nome que exista no catálogo do
+        // canal. "NONE", nome inventado ou de agente de outra marca/canal
+        // → sem skip, fallback no orchestrator. O nome devolvido é o
+        // canônico do banco (match case-insensitive, resposta exata).
+        const normalized = suggestedAgentRaw?.trim();
+        const matched =
+          normalized && normalized.toUpperCase() !== 'NONE'
+            ? agentCatalog.find(
+                (a) => a.name.toLowerCase() === normalized.toLowerCase(),
+              )
+            : undefined;
+        suggestedAgent = matched?.name ?? null;
+        skippedOrchestrator =
+          intent === IntentType.AGENT_MATCH &&
+          !!matched &&
+          confidence >= threshold;
+      } else {
+        // Modo estático (legado) — decisão de skip leva em conta tanto o
+        // threshold quanto a categoria do intent — AMBIGUOUS/SPAM/ESCALATE/
+        // SMALL_TALK SEMPRE caem no orchestrator, mesmo com confidence alta.
+        const route = this.intentRouter.routeIntent(intent);
+        skippedOrchestrator =
+          route.shouldSkipOrchestrator && confidence >= threshold;
+        suggestedAgent = suggestedAgentRaw ?? route.agentName ?? null;
+      }
 
       // Custo: prefere o `cost` do provider quando disponível, senão
       // estima com a tabela de preço do Haiku.
@@ -117,7 +148,7 @@ export class IntentClassifierService {
         intent,
         confidence,
         reasoning,
-        suggestedAgent: suggestedAgent ?? route.agentName ?? null,
+        suggestedAgent,
         skippedOrchestrator,
         modelUsed: resp.rawModelId ?? model,
         costUsd,
