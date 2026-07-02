@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
+import { defaultBaseUrlFor } from '../../ai-agents/providers/provider-defaults';
 
 /**
  * Testa uma plaintext API key contra o provider correspondente.
@@ -7,7 +8,8 @@ import { AiProvider } from '@prisma/client';
  * Estratégia minimalista — endpoint mais barato e leve possível por provider:
  * - Anthropic: POST /v1/messages com max_tokens=1 (sem count_tokens público estável;
  *   1-token completion custa fração de centavo e valida key+model permission)
- * - OpenAI: GET /v1/models (lista — auth-only, sem custo)
+ * - OpenAI / Kimi / z.ai (OpenAI-compatible): GET {baseUrl}/models
+ *   (lista — auth-only, sem custo)
  * - Gemini: GET /v1beta/models?key=... (lista — auth-only, sem custo)
  *
  * Timeout agressivo (8s) pra não travar UI. Retorna `ok` ou `error.message`
@@ -24,6 +26,8 @@ export async function testProviderKey(
   provider: AiProvider,
   apiKey: string,
   logger: Logger,
+  /** Base URL custom da credencial (OpenAI-compat). Null => default do provider. */
+  baseUrl?: string,
 ): Promise<TestResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -32,7 +36,14 @@ export async function testProviderKey(
       case AiProvider.ANTHROPIC:
         return await testAnthropic(apiKey, controller.signal, logger);
       case AiProvider.OPENAI:
-        return await testOpenAI(apiKey, controller.signal, logger);
+      case AiProvider.KIMI:
+      case AiProvider.ZAI:
+        return await testOpenAiCompatible(
+          provider,
+          apiKey,
+          controller.signal,
+          baseUrl ?? defaultBaseUrlFor(provider) ?? undefined,
+        );
       case AiProvider.GEMINI:
         return await testGemini(apiKey, controller.signal, logger);
       default:
@@ -77,12 +88,24 @@ async function testAnthropic(
   return { ok: false, error: `Anthropic API returned HTTP ${res.status}` };
 }
 
-async function testOpenAI(
+/**
+ * Testa key contra qualquer endpoint OpenAI-compatible (OpenAI/Kimi/z.ai) via
+ * `GET {baseUrl}/models` com Bearer. `baseUrl` já resolvido (custom ou default).
+ */
+async function testOpenAiCompatible(
+  provider: AiProvider,
   apiKey: string,
   signal: AbortSignal,
-  logger: Logger,
+  baseUrl?: string,
 ): Promise<TestResult> {
-  const res = await fetch('https://api.openai.com/v1/models', {
+  // Fail explícito: sem baseUrl resolvido pra um provider não-OpenAI, testar
+  // contra api.openai.com validaria a chave contra o provider ERRADO. Só
+  // OpenAI tem endpoint default implícito seguro.
+  if (!baseUrl && provider !== AiProvider.OPENAI) {
+    return { ok: false, error: `Missing base URL configuration for ${provider}` };
+  }
+  const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const res = await fetch(`${base}/models`, {
     method: 'GET',
     signal,
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -94,7 +117,7 @@ async function testOpenAI(
   if (res.status === 403) {
     return { ok: false, error: 'Key valid but lacks permission to list models' };
   }
-  return { ok: false, error: `OpenAI API returned HTTP ${res.status}` };
+  return { ok: false, error: `${provider} API returned HTTP ${res.status}` };
 }
 
 async function testGemini(

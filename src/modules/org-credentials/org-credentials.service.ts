@@ -11,6 +11,7 @@ import {
   CredentialTestStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
+import { assertAllowedProviderBaseUrl } from '../ai-agents/providers/provider-baseurl-guard';
 import { CryptoService } from './crypto.service';
 import { CredentialAuditService, AuditContext } from './audit.service';
 import { testProviderKey } from './providers/credential-tester';
@@ -62,7 +63,19 @@ export class OrgCredentialsService {
     plaintextKey: string,
     actorUserId: string,
     auditMeta: Pick<AuditContext, 'ip' | 'userAgent'> = {},
+    /**
+     * Endpoint OpenAI-compatible custom (OpenAI/Kimi/z.ai). `undefined` =
+     * não mexe na coluna (preserva valor no update); string = seta;
+     * ausência de baseUrl => resolver usa o default do provider.
+     */
+    baseUrl?: string,
   ) {
+    // SSRF guard (defense-in-depth): valida mesmo se o request não passou pelo
+    // DTO (ex: chamada interna). Rejeita host fora da allowlist / privado / http.
+    if (baseUrl !== undefined) {
+      assertAllowedProviderBaseUrl(baseUrl);
+    }
+
     const encryptedKey = this.crypto.encrypt(plaintextKey);
     const keyHint = CryptoService.hint(plaintextKey);
 
@@ -83,6 +96,7 @@ export class OrgCredentialsService {
         keyHint,
         createdById: actorUserId,
         lastTestStatus: CredentialTestStatus.UNTESTED,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
       },
       update: {
         encryptedKey,
@@ -91,6 +105,9 @@ export class OrgCredentialsService {
         lastTestStatus: CredentialTestStatus.UNTESTED,
         lastTestAt: null,
         lastTestError: null,
+        // Só toca em baseUrl se veio no request (rotação de key preserva
+        // endpoint custom).
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
       },
       select: {
         id: true,
@@ -166,7 +183,12 @@ export class OrgCredentialsService {
     if (!row) throw new NotFoundException(`No credential for ${provider}`);
 
     const plaintext = this.crypto.decrypt(row.encryptedKey);
-    const result = await testProviderKey(provider, plaintext, this.logger);
+    const result = await testProviderKey(
+      provider,
+      plaintext,
+      this.logger,
+      row.baseUrl ?? undefined,
+    );
     // Limpar plaintext da memória ASAP (best-effort, GC will reclaim).
     (plaintext as unknown as { length: number }).length;
 
@@ -214,12 +236,27 @@ export class OrgCredentialsService {
     organizationId: string,
     provider: AiProvider,
   ): Promise<string | null> {
+    const cred = await this.getDecryptedCredential(organizationId, provider);
+    return cred?.apiKey ?? null;
+  }
+
+  /**
+   * USO INTERNO APENAS — chamado pelo ProviderResolverService.
+   * Retorna key decifrada + baseUrl custom (ou null se org não tem credential
+   * pra esse provider). `baseUrl` null => resolver aplica o default do provider.
+   *
+   * Nunca expor via HTTP. Não logar valor.
+   */
+  async getDecryptedCredential(
+    organizationId: string,
+    provider: AiProvider,
+  ): Promise<{ apiKey: string; baseUrl: string | null } | null> {
     const row = await this.prisma.organizationCredential.findUnique({
       where: { organizationId_provider: { organizationId, provider } },
-      select: { encryptedKey: true },
+      select: { encryptedKey: true, baseUrl: true },
     });
     if (!row) return null;
-    return this.crypto.decrypt(row.encryptedKey);
+    return { apiKey: this.crypto.decrypt(row.encryptedKey), baseUrl: row.baseUrl };
   }
 
   // ─── Capability routing ─────────────────────────────────────────
@@ -261,23 +298,28 @@ export class OrgCredentialsService {
     actorUserId: string,
     auditMeta: Pick<AuditContext, 'ip' | 'userAgent'> = {},
   ) {
-    // Validação semântica: EMBEDDINGS só permite OPENAI por enquanto
-    // (Anthropic não tem endpoint público, Gemini fica pra V2).
+    // Validação semântica — allowlist fail-closed (nunca blocklist): só permite
+    // providers com implementação REAL da capability. Provider novo no enum
+    // não "vaza" como suportado sem código por trás.
+    //   - EMBEDDINGS: só OPENAI (Anthropic sem endpoint público; Gemini fica p/ V2).
+    //   - TRANSCRIPTION: só OPENAI (Whisper). GEMINI é stub não-implementado
+    //     (transcription.service cai pro fallback OpenAI); KIMI/ZAI/ANTHROPIC
+    //     não fazem transcrição por este caminho.
     for (const entry of entries) {
       if (
         entry.capability === AiCapability.EMBEDDINGS &&
         entry.providerSelected !== AiProvider.OPENAI
       ) {
         throw new ConflictException(
-          'EMBEDDINGS capability currently only supports OPENAI',
+          `EMBEDDINGS capability currently only supports OPENAI (got ${entry.providerSelected})`,
         );
       }
       if (
         entry.capability === AiCapability.TRANSCRIPTION &&
-        entry.providerSelected === AiProvider.ANTHROPIC
+        entry.providerSelected !== AiProvider.OPENAI
       ) {
         throw new ConflictException(
-          'TRANSCRIPTION capability not supported on ANTHROPIC',
+          `TRANSCRIPTION capability currently only supports OPENAI (got ${entry.providerSelected})`,
         );
       }
     }

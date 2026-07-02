@@ -1,0 +1,13 @@
+-- Endpoint OpenAI-compatible custom por credencial
+--
+-- Adiciona coluna "base_url" (nullable) em "organization_credentials" pra
+-- permitir que uma org aponte a credencial pra um endpoint próprio (ex:
+-- endpoint China da Moonshot `api.moonshot.cn` / Zhipu `open.bigmodel.cn`, ou
+-- proxy self-hosted). NULL => ProviderResolverService aplica o default do
+-- provider.
+--
+-- Additive-only, zero-downtime: ADD COLUMN nullable não reescreve a tabela
+-- (sem DEFAULT volátil) e não bloqueia. IF NOT EXISTS => idempotente.
+--
+-- NÃO aplicada em produção por este commit (só o arquivo é gerado).
+ALTER TABLE "organization_credentials" ADD COLUMN IF NOT EXISTS "base_url" TEXT;
