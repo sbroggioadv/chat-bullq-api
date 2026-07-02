@@ -174,6 +174,18 @@ describe('OpenAiCompatibleAdapter', () => {
 
   it('lança quando não há choices na resposta', async () => {
     fetchMock.mockResolvedValueOnce(fakeResponse({ choices: [] }));
-    await expect(adapter.complete(req(), 'k', baseCfg)).rejects.toThrow(/Example returned no choices/);
+    await expect(adapter.complete(req(), 'k', baseCfg)).rejects.toThrow(
+      /Example returned no message in choice/,
+    );
+  });
+
+  it('lança (sem TypeError) quando o choice não tem message (ex: content_filter)', async () => {
+    // Provider pode devolver choice só com finish_reason, sem message.
+    fetchMock.mockResolvedValueOnce(
+      fakeResponse({ choices: [{ finish_reason: 'content_filter' }] }),
+    );
+    await expect(adapter.complete(req(), 'k', baseCfg)).rejects.toThrow(
+      /Example returned no message in choice/,
+    );
   });
 });

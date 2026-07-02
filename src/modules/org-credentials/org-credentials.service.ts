@@ -298,25 +298,28 @@ export class OrgCredentialsService {
     actorUserId: string,
     auditMeta: Pick<AuditContext, 'ip' | 'userAgent'> = {},
   ) {
-    // Validação semântica: EMBEDDINGS só permite OPENAI por enquanto
-    // (Anthropic não tem endpoint público, Gemini fica pra V2).
+    // Validação semântica — allowlist fail-closed (nunca blocklist): só permite
+    // providers com implementação REAL da capability. Provider novo no enum
+    // não "vaza" como suportado sem código por trás.
+    //   - EMBEDDINGS: só OPENAI (Anthropic sem endpoint público; Gemini fica p/ V2).
+    //   - TRANSCRIPTION: só OPENAI (Whisper). GEMINI é stub não-implementado
+    //     (transcription.service cai pro fallback OpenAI); KIMI/ZAI/ANTHROPIC
+    //     não fazem transcrição por este caminho.
     for (const entry of entries) {
       if (
         entry.capability === AiCapability.EMBEDDINGS &&
         entry.providerSelected !== AiProvider.OPENAI
       ) {
         throw new ConflictException(
-          'EMBEDDINGS capability currently only supports OPENAI',
+          `EMBEDDINGS capability currently only supports OPENAI (got ${entry.providerSelected})`,
         );
       }
       if (
         entry.capability === AiCapability.TRANSCRIPTION &&
-        (entry.providerSelected === AiProvider.ANTHROPIC ||
-          entry.providerSelected === AiProvider.KIMI ||
-          entry.providerSelected === AiProvider.ZAI)
+        entry.providerSelected !== AiProvider.OPENAI
       ) {
         throw new ConflictException(
-          `TRANSCRIPTION capability not supported on ${entry.providerSelected}`,
+          `TRANSCRIPTION capability currently only supports OPENAI (got ${entry.providerSelected})`,
         );
       }
     }

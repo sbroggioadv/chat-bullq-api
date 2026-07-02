@@ -98,6 +98,12 @@ async function testOpenAiCompatible(
   signal: AbortSignal,
   baseUrl?: string,
 ): Promise<TestResult> {
+  // Fail explícito: sem baseUrl resolvido pra um provider não-OpenAI, testar
+  // contra api.openai.com validaria a chave contra o provider ERRADO. Só
+  // OpenAI tem endpoint default implícito seguro.
+  if (!baseUrl && provider !== AiProvider.OPENAI) {
+    return { ok: false, error: `Missing base URL configuration for ${provider}` };
+  }
   const base = (baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
   const res = await fetch(`${base}/models`, {
     method: 'GET',

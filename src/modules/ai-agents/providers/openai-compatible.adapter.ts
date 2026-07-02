@@ -108,8 +108,13 @@ export class OpenAiCompatibleAdapter {
 
     const data = (await res.json()) as OpenAiChatResponse;
     const choice = data.choices?.[0];
-    if (!choice) {
-      throw new InternalServerErrorException(`${cfg.providerLabel} returned no choices`);
+    // Acesso defensivo: um provider pode devolver choice sem `message` (ex:
+    // finish_reason=content_filter). Sem o guard, ler choice.message.* dá
+    // TypeError → 500 opaco. KIMI/ZAI são novos e podem divergir do OpenAI.
+    if (!choice?.message) {
+      throw new InternalServerErrorException(
+        `${cfg.providerLabel} returned no message in choice`,
+      );
     }
 
     const toolCalls: LlmToolCall[] = (choice.message.tool_calls ?? []).map((tc) => ({
