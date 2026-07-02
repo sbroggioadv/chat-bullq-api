@@ -46,10 +46,14 @@ export class OrgCredentialsController {
     @Ip() ip: string,
     @Headers('user-agent') userAgent?: string,
   ) {
-    return this.service.upsert(organizationId, provider, dto.apiKey, userId, {
-      ip,
-      userAgent,
-    });
+    return this.service.upsert(
+      organizationId,
+      provider,
+      dto.apiKey,
+      userId,
+      { ip, userAgent },
+      dto.baseUrl,
+    );
   }
 
   @Delete(':provider')

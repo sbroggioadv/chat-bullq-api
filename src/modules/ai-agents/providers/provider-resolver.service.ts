@@ -4,6 +4,7 @@ import { AiCapability, AiProvider } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { CredentialEventsBus } from '../../org-credentials/credential-events';
 import { OrgCredentialsService } from '../../org-credentials/org-credentials.service';
+import { defaultBaseUrlFor } from './provider-defaults';
 
 /**
  * Source enum: identifica origem da credential resolvida pra observability/audit.
@@ -18,10 +19,18 @@ export interface ResolvedCredential {
   apiKey: string | null; // null quando source=NONE
   source: ResolvedSource;
   modelOverride?: string | null;
+  /**
+   * Base URL efetiva pra providers OpenAI-compatible (OpenAI/Kimi/z.ai).
+   * `null` quando o provider não é OpenAI-compatible (Anthropic/Gemini) ou
+   * quando não há key resolvida. Precedência: credencial custom → env override
+   * → default do provider.
+   */
+  baseUrl?: string | null;
 }
 
 interface CacheEntry {
   apiKey: string;
+  baseUrl: string | null;
   expiresAt: number;
 }
 
@@ -86,28 +95,42 @@ export class ProviderResolverService implements OnModuleInit {
     const cacheKey = this.cacheKey(organizationId, provider);
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-      return { provider, apiKey: cached.apiKey, source: 'ORG', modelOverride };
+      return {
+        provider,
+        apiKey: cached.apiKey,
+        source: 'ORG',
+        modelOverride,
+        baseUrl: cached.baseUrl,
+      };
     }
 
-    const orgKey = await this.credentials.getDecryptedKey(organizationId, provider);
-    if (orgKey) {
+    const orgCred = await this.credentials.getDecryptedCredential(
+      organizationId,
+      provider,
+    );
+    if (orgCred) {
+      // Precedência: baseUrl custom da credencial → default do provider.
+      const baseUrl = orgCred.baseUrl ?? this.defaultBaseUrl(provider);
       this.cache.set(cacheKey, {
-        apiKey: orgKey,
+        apiKey: orgCred.apiKey,
+        baseUrl,
         expiresAt: Date.now() + ProviderResolverService.CACHE_TTL_MS,
       });
-      return { provider, apiKey: orgKey, source: 'ORG', modelOverride };
+      return { provider, apiKey: orgCred.apiKey, source: 'ORG', modelOverride, baseUrl };
     }
 
     // 3. Fallback pra env
     const envKey = this.envKeyFor(provider);
     if (envKey) {
-      return { provider, apiKey: envKey, source: 'ENV', modelOverride };
+      // Precedência: env override (ex: KIMI_BASE_URL) → default do provider.
+      const baseUrl = this.envBaseUrl(provider) ?? this.defaultBaseUrl(provider);
+      return { provider, apiKey: envKey, source: 'ENV', modelOverride, baseUrl };
     }
 
     this.logger.warn(
       `No credential found for org=${organizationId} capability=${capability} provider=${provider} (org and env both empty)`,
     );
-    return { provider, apiKey: null, source: 'NONE', modelOverride };
+    return { provider, apiKey: null, source: 'NONE', modelOverride, baseUrl: null };
   }
 
   private envKeyFor(provider: AiProvider): string | null {
@@ -128,6 +151,66 @@ export class ProviderResolverService implements OnModuleInit {
         return (
           this.config.get<string>('GEMINI_API_KEY') ??
           process.env.GEMINI_API_KEY ??
+          null
+        );
+      case AiProvider.KIMI:
+        // Aceita KIMI_API_KEY ou o alias MOONSHOT_API_KEY.
+        return (
+          this.config.get<string>('KIMI_API_KEY') ??
+          process.env.KIMI_API_KEY ??
+          this.config.get<string>('MOONSHOT_API_KEY') ??
+          process.env.MOONSHOT_API_KEY ??
+          null
+        );
+      case AiProvider.ZAI:
+        // Aceita ZAI_API_KEY ou o alias ZHIPU_API_KEY.
+        return (
+          this.config.get<string>('ZAI_API_KEY') ??
+          process.env.ZAI_API_KEY ??
+          this.config.get<string>('ZHIPU_API_KEY') ??
+          process.env.ZHIPU_API_KEY ??
+          null
+        );
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Base URL default do provider (OpenAI/Kimi/z.ai). `null` pra providers que
+   * não são OpenAI-compatible — nesse caso o adapter usa URL própria.
+   */
+  private defaultBaseUrl(provider: AiProvider): string | null {
+    return defaultBaseUrlFor(provider);
+  }
+
+  /**
+   * Override de base URL via env (útil pra endpoints regionais/self-hosted sem
+   * precisar de credencial org-level). Ex: `KIMI_BASE_URL` apontando pro
+   * endpoint China. `null` = sem override.
+   */
+  private envBaseUrl(provider: AiProvider): string | null {
+    switch (provider) {
+      case AiProvider.OPENAI:
+        return (
+          this.config.get<string>('OPENAI_BASE_URL') ??
+          process.env.OPENAI_BASE_URL ??
+          null
+        );
+      case AiProvider.KIMI:
+        return (
+          this.config.get<string>('KIMI_BASE_URL') ??
+          process.env.KIMI_BASE_URL ??
+          this.config.get<string>('MOONSHOT_BASE_URL') ??
+          process.env.MOONSHOT_BASE_URL ??
+          null
+        );
+      case AiProvider.ZAI:
+        return (
+          this.config.get<string>('ZAI_BASE_URL') ??
+          process.env.ZAI_BASE_URL ??
+          this.config.get<string>('ZHIPU_BASE_URL') ??
+          process.env.ZHIPU_BASE_URL ??
           null
         );
       default:

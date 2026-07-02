@@ -4,6 +4,8 @@ import { LlmService } from '../llm/llm.service';
 import type { LlmCompletionRequest, LlmCompletionResponse } from '../llm/llm.types';
 import { OpenAiLlmAdapter } from './openai-llm.adapter';
 import { GeminiLlmAdapter } from './gemini-llm.adapter';
+import { KimiLlmAdapter } from './kimi-llm.adapter';
+import { ZaiLlmAdapter } from './zai-llm.adapter';
 import { ProviderResolverService } from './provider-resolver.service';
 
 /**
@@ -26,6 +28,8 @@ export class AiLlmRouterService {
     private readonly anthropic: LlmService,
     private readonly openai: OpenAiLlmAdapter,
     private readonly gemini: GeminiLlmAdapter,
+    private readonly kimi: KimiLlmAdapter,
+    private readonly zai: ZaiLlmAdapter,
   ) {}
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
@@ -56,10 +60,28 @@ export class AiLlmRouterService {
         } as LlmCompletionRequest & { apiKey?: string });
 
       case AiProvider.OPENAI:
-        return this.openai.complete(effectiveReq, resolved.apiKey!);
+        return this.openai.complete(
+          effectiveReq,
+          resolved.apiKey!,
+          resolved.baseUrl ?? undefined,
+        );
 
       case AiProvider.GEMINI:
         return this.gemini.complete(effectiveReq, resolved.apiKey!);
+
+      case AiProvider.KIMI:
+        return this.kimi.complete(
+          effectiveReq,
+          resolved.apiKey!,
+          resolved.baseUrl ?? undefined,
+        );
+
+      case AiProvider.ZAI:
+        return this.zai.complete(
+          effectiveReq,
+          resolved.apiKey!,
+          resolved.baseUrl ?? undefined,
+        );
 
       default:
         throw new InternalServerErrorException(
