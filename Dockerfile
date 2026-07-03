@@ -4,8 +4,11 @@ FROM node:20-alpine AS deps
 RUN apk add --no-cache openssl
 WORKDIR /app
 ENV NODE_ENV=development
+ENV YARN_CACHE_FOLDER=/yarn-cache
 COPY package.json yarn.lock ./
-RUN corepack enable && yarn install --frozen-lockfile --production=false
+RUN corepack enable \
+  && yarn config set registry https://registry.npmjs.org \
+  && yarn install --frozen-lockfile --production=false --network-timeout 600000
 
 FROM node:20-alpine AS builder
 RUN apk add --no-cache openssl
@@ -25,9 +28,14 @@ RUN apk add --no-cache openssl curl tini ffmpeg
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3001
+ENV YARN_CACHE_FOLDER=/yarn-cache
 
 COPY package.json yarn.lock ./
-RUN corepack enable && yarn install --frozen-lockfile --production=true && yarn cache clean
+COPY --from=deps /yarn-cache /yarn-cache
+RUN corepack enable \
+  && yarn config set registry https://registry.npmjs.org \
+  && yarn install --frozen-lockfile --production=true --prefer-offline --network-timeout 600000 \
+  && yarn cache clean
 
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
