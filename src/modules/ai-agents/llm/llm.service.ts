@@ -4,7 +4,6 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
 
 import {
   LlmCompletionRequest,
@@ -14,6 +13,81 @@ import {
   LlmToolDefinition,
   LlmUsage,
 } from './llm.types';
+
+type AnthropicTextBlockParam = {
+  type: 'text';
+  text: string;
+  cache_control?: { type: 'ephemeral' };
+};
+
+type AnthropicImageBlockParam = {
+  type: 'image';
+  source:
+    | { type: 'url'; url: string }
+    | { type: 'base64'; media_type: string; data: string };
+};
+
+type AnthropicToolResultBlockParam = {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+};
+
+type AnthropicToolUseBlockParam = {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+
+type AnthropicMessageParam = {
+  role: 'user' | 'assistant';
+  content:
+    | string
+    | Array<
+        | AnthropicTextBlockParam
+        | AnthropicImageBlockParam
+        | AnthropicToolResultBlockParam
+        | AnthropicToolUseBlockParam
+      >;
+};
+
+type AnthropicTool = {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  cache_control?: { type: 'ephemeral' };
+};
+
+type AnthropicUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
+type AnthropicContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input?: unknown }
+  | { type: string; [key: string]: unknown };
+
+type AnthropicMessage = {
+  content: AnthropicContentBlock[];
+  stop_reason?: string | null;
+  usage: AnthropicUsage;
+  model?: string;
+};
+
+class AnthropicHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = status === 400 ? 'BadRequestError' : 'AnthropicApiError';
+  }
+}
 
 /**
  * Cliente da Anthropic API (Claude).
@@ -29,15 +103,8 @@ import {
 @Injectable()
 export class LlmService {
   private readonly logger = new Logger(LlmService.name);
-  private readonly envClient: Anthropic;
   private readonly envApiKey: string | undefined;
   private readonly hasApiKey: boolean;
-  /**
-   * Cache de clients per-apiKey pra evitar instanciar `new Anthropic({apiKey})`
-   * em todo request (resolver retorna a mesma key por 60s, então cache aqui
-   * piggybacks no TTL do resolver de forma natural).
-   */
-  private readonly clientCache = new Map<string, Anthropic>();
 
   constructor(config: ConfigService) {
     const apiKey = config.get<string>('ANTHROPIC_API_KEY');
@@ -48,28 +115,6 @@ export class LlmService {
         'ANTHROPIC_API_KEY not set — AI agents will fail at runtime if no org credential provided',
       );
     }
-    this.envClient = new Anthropic({ apiKey: apiKey ?? 'missing' });
-  }
-
-  /**
-   * Resolve Anthropic client por API key. Quando `apiKey` é undefined,
-   * usa o env-based singleton (compat path pré-S18/W2). Quando presente
-   * (caller veio do ProviderResolverService com key org-level), reusa
-   * client cacheado ou cria novo + cacheia.
-   */
-  private clientFor(apiKey?: string): Anthropic {
-    if (!apiKey || apiKey === this.envApiKey) return this.envClient;
-    let client = this.clientCache.get(apiKey);
-    if (!client) {
-      client = new Anthropic({ apiKey });
-      this.clientCache.set(apiKey, client);
-      // Bound cache: max 50 distinct org keys cached (~30 orgs × 1.5 churn).
-      if (this.clientCache.size > 50) {
-        const firstKey = this.clientCache.keys().next().value;
-        if (firstKey) this.clientCache.delete(firstKey);
-      }
-    }
-    return client;
   }
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
@@ -87,11 +132,14 @@ export class LlmService {
     // Tipos: LlmCompletionRequest tem `apiKey?: string` agregado em runtime
     // pelo router. Mantemos backward compat: ausente = env.
     const apiKey = (req as LlmCompletionRequest & { apiKey?: string }).apiKey;
-    const client = this.clientFor(apiKey);
+    const resolvedApiKey = apiKey || this.envApiKey;
+    if (!resolvedApiKey) {
+      throw new InternalServerErrorException('ANTHROPIC_API_KEY not configured');
+    }
 
-    let response: Anthropic.Message;
+    let response: AnthropicMessage;
     try {
-      response = await client.messages.create({
+      response = await this.createMessage(resolvedApiKey, {
         model: modelId,
         max_tokens: req.maxTokens ?? 2048,
         ...(supportsTemperature
@@ -121,7 +169,49 @@ export class LlmService {
     };
   }
 
-  // ─── conversão: nossos tipos → Anthropic SDK ─────────────────────
+  private async createMessage(
+    apiKey: string,
+    payload: Record<string, unknown>,
+  ): Promise<AnthropicMessage> {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await this.readAnthropicBody(res);
+    if (!res.ok) {
+      const message =
+        this.extractAnthropicErrorMessage(body) ||
+        `Anthropic API returned HTTP ${res.status}`;
+      throw new AnthropicHttpError(res.status, message, body);
+    }
+    return body as AnthropicMessage;
+  }
+
+  private async readAnthropicBody(res: Response): Promise<unknown> {
+    const text = await res.text();
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+
+  private extractAnthropicErrorMessage(body: unknown): string | null {
+    if (!body || typeof body !== 'object') return null;
+    const maybe = body as { error?: { message?: unknown }; message?: unknown };
+    if (typeof maybe.error?.message === 'string') return maybe.error.message;
+    if (typeof maybe.message === 'string') return maybe.message;
+    return null;
+  }
+
+  // ─── conversão: nossos tipos → Anthropic Messages API ────────────
 
   /**
    * Aceita IDs com prefix `anthropic/` por retrocompat (formato antigo) e
@@ -143,12 +233,12 @@ export class LlmService {
    *     message com múltiplos tool_result blocks (formato canônico).
    */
   private toAnthropicMessages(input: LlmMessage[]): {
-    system?: Anthropic.TextBlockParam[];
-    messages: Anthropic.MessageParam[];
+    system?: AnthropicTextBlockParam[];
+    messages: AnthropicMessageParam[];
   } {
-    let system: Anthropic.TextBlockParam[] | undefined;
-    const out: Anthropic.MessageParam[] = [];
-    let pendingToolResults: Anthropic.ToolResultBlockParam[] = [];
+    let system: AnthropicTextBlockParam[] | undefined;
+    const out: AnthropicMessageParam[] = [];
+    let pendingToolResults: AnthropicToolResultBlockParam[] = [];
 
     const flushToolResults = () => {
       if (pendingToolResults.length === 0) return;
@@ -197,13 +287,13 @@ export class LlmService {
         const hasCache = blocks.some(
           (b) =>
             b.type === 'text' &&
-            (b as Anthropic.TextBlockParam).cache_control !== undefined,
+            (b as AnthropicTextBlockParam).cache_control !== undefined,
         );
         if (!hasNonText && !hasCache) {
           out.push({
             role: 'user',
             content: blocks.map((b) =>
-              b.type === 'text' ? (b as Anthropic.TextBlockParam).text : '',
+              b.type === 'text' ? (b as AnthropicTextBlockParam).text : '',
             ).join(''),
           });
         } else {
@@ -223,7 +313,7 @@ export class LlmService {
                 .map((b) => (b as { text: string }).text)
                 .join('');
         const contentBlocks: Array<
-          Anthropic.TextBlockParam | Anthropic.ToolUseBlockParam
+          AnthropicTextBlockParam | AnthropicToolUseBlockParam
         > = [];
         if (text && text.trim().length > 0) {
           contentBlocks.push({ type: 'text', text });
@@ -253,16 +343,16 @@ export class LlmService {
    */
   private toTextBlocks(
     content: LlmMessage['content'],
-  ): Anthropic.TextBlockParam[] {
+  ): AnthropicTextBlockParam[] {
     const raw =
       typeof content === 'string'
         ? [{ type: 'text' as const, text: content }]
         : content;
-    const blocks: Anthropic.TextBlockParam[] = [];
+    const blocks: AnthropicTextBlockParam[] = [];
     for (const part of raw) {
       if (part.type !== 'text') continue;
       if (!part.text || part.text.length === 0) continue;
-      const block: Anthropic.TextBlockParam = { type: 'text', text: part.text };
+      const block: AnthropicTextBlockParam = { type: 'text', text: part.text };
       if ('cache' in part && part.cache) {
         block.cache_control = { type: 'ephemeral' };
       }
@@ -280,17 +370,17 @@ export class LlmService {
    */
   private toUserContentBlocks(
     content: LlmMessage['content'],
-  ): Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> {
+  ): Array<AnthropicTextBlockParam | AnthropicImageBlockParam> {
     const raw =
       typeof content === 'string'
         ? [{ type: 'text' as const, text: content }]
         : content;
-    const blocks: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam> =
+    const blocks: Array<AnthropicTextBlockParam | AnthropicImageBlockParam> =
       [];
     for (const part of raw) {
       if (part.type === 'text') {
         if (!part.text || part.text.length === 0) continue;
-        const block: Anthropic.TextBlockParam = {
+        const block: AnthropicTextBlockParam = {
           type: 'text',
           text: part.text,
         };
@@ -311,8 +401,7 @@ export class LlmService {
             type: 'image',
             source: {
               type: 'base64',
-              media_type: part.base64
-                .mediaType as Anthropic.Base64ImageSource['media_type'],
+              media_type: part.base64.mediaType,
               data: part.base64.data,
             },
           });
@@ -366,11 +455,11 @@ export class LlmService {
    * o último basta pra cachear todas (95%+ economia em tools que
    * não mudam entre turns).
    */
-  private toAnthropicTools(tools: LlmToolDefinition[]): Anthropic.ToolUnion[] {
-    const result: Anthropic.Tool[] = tools.map((t) => ({
+  private toAnthropicTools(tools: LlmToolDefinition[]): AnthropicTool[] {
+    const result: AnthropicTool[] = tools.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: t.parameters as Anthropic.Tool.InputSchema,
+      input_schema: t.parameters,
     }));
     if (result.length > 0) {
       result[result.length - 1].cache_control = { type: 'ephemeral' };
@@ -412,9 +501,9 @@ export class LlmService {
     return out;
   }
 
-  // ─── conversão: Anthropic SDK → nossos tipos ─────────────────────
+  // ─── conversão: Anthropic API → nossos tipos ─────────────────────
 
-  private fromAnthropicMessage(response: Anthropic.Message): LlmMessage {
+  private fromAnthropicMessage(response: AnthropicMessage): LlmMessage {
     let textContent = '';
     const toolCalls: LlmToolCall[] = [];
 
@@ -422,10 +511,14 @@ export class LlmService {
       if (block.type === 'text') {
         textContent += block.text;
       } else if (block.type === 'tool_use') {
+        const toolUse = block as Extract<
+          AnthropicContentBlock,
+          { type: 'tool_use' }
+        >;
         toolCalls.push({
-          id: block.id,
-          name: block.name,
-          arguments: (block.input ?? {}) as Record<string, unknown>,
+          id: toolUse.id,
+          name: toolUse.name,
+          arguments: isRecord(toolUse.input) ? toolUse.input : {},
         });
       }
       // 'thinking' / 'redacted_thinking' / 'server_tool_use' / etc — ignora
@@ -439,7 +532,7 @@ export class LlmService {
   }
 
   private normalizeStopReason(
-    reason: Anthropic.Message['stop_reason'],
+    reason: AnthropicMessage['stop_reason'],
   ): LlmCompletionResponse['stopReason'] {
     switch (reason) {
       case 'end_turn':
@@ -458,7 +551,7 @@ export class LlmService {
   }
 
   private extractUsage(
-    usage: Anthropic.Usage,
+    usage: AnthropicUsage,
     modelId: string,
   ): LlmUsage {
     const input = usage.input_tokens ?? 0;
@@ -509,18 +602,18 @@ export class LlmService {
   private handleAnthropicError(
     err: unknown,
     modelId: string,
-    tools: Anthropic.ToolUnion[] | undefined,
-    messages: Anthropic.MessageParam[],
-    system: Anthropic.TextBlockParam[] | undefined,
+    tools: AnthropicTool[] | undefined,
+    messages: AnthropicMessageParam[],
+    system: AnthropicTextBlockParam[] | undefined,
   ): void {
     const status =
-      err instanceof Anthropic.APIError ? err.status : undefined;
+      err instanceof AnthropicHttpError ? err.status : undefined;
     const message = this.errorMessage(err);
-    const toolNames = tools?.map((t) => (t as Anthropic.Tool).name).join(',');
+    const toolNames = tools?.map((t) => t.name).join(',');
     this.logger.error(
       `LLM call failed [${modelId}] status=${status ?? '?'}: ${message} | tools=[${toolNames ?? ''}]`,
     );
-    if (err instanceof Anthropic.BadRequestError) {
+    if (err instanceof AnthropicHttpError && err.status === 400) {
       // 400 — dump prompt sample + tools pra ajudar a debugar
       this.logger.debug(`Messages count: ${messages.length}`);
       if (system && system.length > 0) {
@@ -536,7 +629,7 @@ export class LlmService {
   }
 
   private errorMessage(err: unknown): string {
-    if (err instanceof Anthropic.APIError) {
+    if (err instanceof AnthropicHttpError) {
       return `${err.name}(${err.status}): ${err.message}`;
     }
     if (err instanceof Error) return err.message;
@@ -574,4 +667,8 @@ function safeStringify(input: unknown): string {
   } catch (err) {
     return `[unstringifyable: ${(err as Error)?.message}]`;
   }
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return Boolean(input && typeof input === 'object' && !Array.isArray(input));
 }
