@@ -53,4 +53,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
   CMD curl -sf http://localhost:3001/api/v1/health || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main"]
+CMD ["sh", "-c", "DIRECT_URL=\"${DIRECT_URL:-$DATABASE_URL}\" npx prisma migrate deploy && node dist/src/main"]

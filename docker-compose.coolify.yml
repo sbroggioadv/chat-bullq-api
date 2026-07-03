@@ -77,8 +77,10 @@ services:
       NODE_ENV: production
       PORT: 3001
       DATABASE_URL: postgresql://${POSTGRES_USER:-bravy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chat_bullq}
+      DIRECT_URL: postgresql://${POSTGRES_USER:-bravy}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-chat_bullq}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (different from V1!)}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
       JWT_EXPIRATION: ${JWT_EXPIRATION:-15m}

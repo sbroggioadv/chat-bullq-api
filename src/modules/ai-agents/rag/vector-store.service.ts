@@ -5,46 +5,9 @@ import type { SearchResult, SearchScope, VectorEntry } from './types';
 /**
  * Postgres + pgvector backed store for RAG entries.
  *
- * The schema is NOT in `prisma.schema` yet — pgvector is a Postgres
- * extension that Prisma can't model natively (it would treat `vector(1536)`
- * as `Unsupported`). We talk to the table via raw SQL through Prisma.
- *
- * ─────────────────────────────────────────────────────────────────────
- *  MIGRATION SQL (run manually in Phase 2 — NOT executed by this code):
- * ─────────────────────────────────────────────────────────────────────
- *
- *  CREATE EXTENSION IF NOT EXISTS vector;
- *
- *  CREATE TABLE ai_vector_entries (
- *    id              text PRIMARY KEY,
- *    owner_type      text NOT NULL,           -- 'message' | 'fact' | 'memory_summary'
- *    owner_id        text NOT NULL,           -- FK in the source domain
- *    conversation_id text,
- *    agent_id        text,
- *    contact_id      text,
- *    content         text NOT NULL,           -- original text (returned at search time)
- *    embedding       vector(1536) NOT NULL,   -- text-embedding-3-small dims
- *    metadata        jsonb NOT NULL DEFAULT '{}'::jsonb,
- *    created_at      timestamptz NOT NULL DEFAULT now()
- *  );
- *
- *  -- Filter indexes for the scope predicates.
- *  CREATE INDEX ai_vector_entries_owner_idx        ON ai_vector_entries(owner_type, owner_id);
- *  CREATE INDEX ai_vector_entries_conversation_idx ON ai_vector_entries(conversation_id);
- *  CREATE INDEX ai_vector_entries_agent_idx        ON ai_vector_entries(agent_id);
- *  CREATE INDEX ai_vector_entries_contact_idx      ON ai_vector_entries(contact_id);
- *
- *  -- Approximate nearest neighbour index for cosine distance.
- *  -- `lists = 100` is fine for tens of thousands of rows; tune up for >1M.
- *  CREATE INDEX ai_vector_entries_embedding_idx
- *    ON ai_vector_entries
- *    USING ivfflat (embedding vector_cosine_ops)
- *    WITH (lists = 100);
- *
- *  -- After bulk inserts, run:  ANALYZE ai_vector_entries;
- *  -- ivfflat needs ANALYZE to build its centroids.
- *
- * ─────────────────────────────────────────────────────────────────────
+ * The schema is managed by the Prisma migration
+ * `20260703120000_pgvector_rag`. Prisma can't model `vector(1536)` natively,
+ * so this service talks to the table via raw SQL through Prisma.
  */
 @Injectable()
 export class VectorStoreService {

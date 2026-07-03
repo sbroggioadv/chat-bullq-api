@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'crypto';
+import { buildRedisConnectionOptions } from '../../../config/redis.config';
 import {
   CONTACT_LOCK_TTL_MS,
 } from '../automations.constants';
@@ -37,17 +38,14 @@ export class AutomationRedisService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    this.redis = new Redis({
-      host: this.config.get<string>('redis.host', 'localhost'),
-      port: this.config.get<number>('redis.port', 6379),
-      password: this.config.get<string>('redis.password') || undefined,
+    this.redis = new Redis(buildRedisConnectionOptions(this.config, {
       // Don't queue commands for an unreachable Redis — fail fast so the
       // executor falls back to "skip with redis_unavailable" and we don't
       // silently stall every event waiting for a dead Redis.
       enableOfflineQueue: false,
       maxRetriesPerRequest: 1,
       lazyConnect: false,
-    });
+    }));
     this.redis.on('error', (err) => {
       this.logger.error(`Redis error: ${err.message}`);
     });

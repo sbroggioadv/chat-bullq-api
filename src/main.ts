@@ -7,14 +7,25 @@ import * as express from 'express';
 import * as path from 'path';
 import * as fs from 'fs';
 import { AppModule } from './app.module';
+import { StorageService } from './modules/storage/storage.service';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
+import { RedisIoAdapter } from './modules/realtime/redis-io.adapter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
   const config = app.get(ConfigService);
+  const storage = app.get(StorageService);
   const logger = new Logger('Bootstrap');
+
+  if (RedisIoAdapter.isEnabled(config)) {
+    const redisIoAdapter = new RedisIoAdapter(app, config);
+    await redisIoAdapter.connectToRedis();
+    app.useWebSocketAdapter(redisIoAdapter);
+  } else {
+    logger.log('Socket.IO Redis adapter disabled; running in single-instance mode');
+  }
 
   // helmet blocks cross-origin media by default; relax that for <audio>/<img>
   // tags served by this API (same origin, but browsers enforce CORP).
@@ -47,7 +58,7 @@ async function bootstrap() {
   // Endpoint amigável para providers (Zappfy/Uazapi) baixarem mídia com o nome
   // original do arquivo no path. O provider extrai o filename do path da URL,
   // então servimos uma URL como /uploads/media/nome-original.zip?key=...hash...
-  app.getHttpAdapter().get('/api/v1/uploads/media/:filename', (req: any, res: any, next: any) => {
+  app.getHttpAdapter().get('/api/v1/uploads/media/:filename', async (req: any, res: any) => {
     const filename = req.params.filename;
     const key = String(req.query.key || '');
     if (!key || !/^(documents|images|videos|audio)\/[\w\-/.]+$/.test(key)) {
@@ -58,11 +69,29 @@ async function bootstrap() {
     }
     const filePath = path.join(uploadsDir, key);
     if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
-      return res.status(404).json({ message: 'File not found' });
+      return sendStoredUpload(storage, key, res, filename);
     }
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.setHeader('Cache-Control', 'public, max-age=2592000');
     return res.sendFile(filePath);
+  });
+
+  app.getHttpAdapter().get('/api/v1/uploads/:bucket/:date/:filename', async (req: any, res: any) => {
+    const { bucket, date, filename } = req.params;
+    const key = `${bucket}/${date}/${filename}`;
+    if (!/^(documents|images|videos|audio)\/\d{4}-\d{2}-\d{2}\/[\w.-]+$/.test(key)) {
+      return res.status(400).json({ message: 'Invalid upload key' });
+    }
+    return sendStoredUpload(storage, key, res, filename);
+  });
+
+  app.getHttpAdapter().get('/api/v1/uploads/inbound/:channel/:date/:filename', async (req: any, res: any) => {
+    const { channel, date, filename } = req.params;
+    const key = `inbound/${channel}/${date}/${filename}`;
+    if (!/^inbound\/[\w-]+\/\d{4}-\d{2}-\d{2}\/[\w.-]+$/.test(key)) {
+      return res.status(400).json({ message: 'Invalid upload key' });
+    }
+    return sendStoredUpload(storage, key, res, filename);
   });
   // CORS_ORIGIN aceita lista separada por virgula (ex: "https://web.com,http://localhost:3000").
   // Sem o split, NestJS envia a string toda como Access-Control-Allow-Origin, e o browser
@@ -103,3 +132,32 @@ async function bootstrap() {
 }
 
 bootstrap();
+
+async function sendStoredUpload(
+  storage: StorageService,
+  key: string,
+  res: any,
+  filename?: string,
+) {
+  if (key.includes('..') || !storage.isReady()) {
+    return res.status(404).json({ message: 'File not found' });
+  }
+
+  try {
+    const client = storage.getClient();
+    const stat = await client.statObject(storage.getBucket(), key);
+    const contentType =
+      stat.metaData?.['content-type'] ||
+      stat.metaData?.['Content-Type'] ||
+      'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=2592000');
+    if (filename) {
+      res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    }
+    const objectStream = await client.getObject(storage.getBucket(), key);
+    return objectStream.pipe(res);
+  } catch {
+    return res.status(404).json({ message: 'File not found' });
+  }
+}

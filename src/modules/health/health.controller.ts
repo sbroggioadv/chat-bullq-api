@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import Redis from 'ioredis';
+import { buildRedisConnectionOptions } from '../../config/redis.config';
 
 /**
  * Health endpoints — exigidos pelo Coolify (HTTP healthcheck) e por probes externos.
@@ -24,14 +25,11 @@ export class HealthController {
   ) {
     // Reuse same redis connection params as BullMQ. Lazy-connect so the controller
     // doesn't crash boot if redis is briefly unavailable.
-    this.redis = new Redis({
-      host: this.config.get<string>('REDIS_HOST', 'localhost'),
-      port: this.config.get<number>('REDIS_PORT', 6379),
-      password: this.config.get<string>('REDIS_PASSWORD') || undefined,
+    this.redis = new Redis(buildRedisConnectionOptions(this.config, {
       lazyConnect: true,
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,
-    });
+    }));
   }
 
   @Get()

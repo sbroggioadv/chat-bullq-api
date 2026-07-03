@@ -36,6 +36,7 @@ coverage/
 # Temp
 tmp/
 temp/
+supabase/.temp/
 
 # Local file storage
 uploads/

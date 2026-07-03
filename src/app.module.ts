@@ -32,7 +32,7 @@ import { OrgCredentialsModule } from './modules/org-credentials/org-credentials.
 // ProductsModule removido — catálogo agora vive no Trivapp e é consumido
 // via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
 // fica órfã no DB (cleanup futuro). Não importar aqui.
-import redisConfig from './config/redis.config';
+import redisConfig, { buildRedisConnectionOptions } from './config/redis.config';
 
 @Module({
   imports: [
@@ -41,11 +41,7 @@ import redisConfig from './config/redis.config';
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('redis.host', 'localhost'),
-          port: config.get<number>('redis.port', 6379),
-          password: config.get<string>('redis.password') || undefined,
-        },
+        connection: buildRedisConnectionOptions(config),
       }),
     }),
     PrismaModule,

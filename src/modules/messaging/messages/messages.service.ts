@@ -458,6 +458,7 @@ export class MessagesService {
     page: number,
     limit: number,
     access: ChannelAccess = 'ALL',
+    includeTotal = true,
   ) {
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
@@ -473,9 +474,19 @@ export class MessagesService {
     // outros números), deduplicando por messageid. Conversa normal segue o
     // caminho de conversa única.
     const siblingIds = await this.segmentRead.groupSiblingIds(conversationId);
-    const { messages, total } = siblingIds
-      ? await this.repository.findByConversationsUnioned(siblingIds, skip, limit)
-      : await this.repository.findByConversation(conversationId, skip, limit);
+    const { messages, total, hasMore } = siblingIds
+      ? await this.repository.findByConversationsUnioned(
+          siblingIds,
+          skip,
+          limit,
+          includeTotal,
+        )
+      : await this.repository.findByConversation(
+          conversationId,
+          skip,
+          limit,
+          includeTotal,
+        );
 
     return {
       messages,
@@ -483,7 +494,8 @@ export class MessagesService {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        totalPages: total == null ? null : Math.ceil(total / limit),
+        hasMore,
       },
     };
   }

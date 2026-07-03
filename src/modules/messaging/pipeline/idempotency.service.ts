@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { buildRedisConnectionOptions } from '../../../config/redis.config';
 
 /**
  * Atomic idempotency + distributed locks, backed by Redis.
@@ -20,13 +21,10 @@ export class IdempotencyService implements OnModuleDestroy {
   private static readonly LOCK_TTL_MS = 10_000;
 
   constructor(private readonly config: ConfigService) {
-    this.redis = new Redis({
-      host: this.config.get<string>('REDIS_HOST', 'localhost'),
-      port: this.config.get<number>('REDIS_PORT', 6379),
-      password: this.config.get<string>('REDIS_PASSWORD') || undefined,
+    this.redis = new Redis(buildRedisConnectionOptions(this.config, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
-    });
+    }));
   }
 
   async onModuleDestroy(): Promise<void> {

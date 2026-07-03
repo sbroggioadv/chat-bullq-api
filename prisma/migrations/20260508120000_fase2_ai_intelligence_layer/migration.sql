@@ -6,8 +6,8 @@
 --   2. Intent Classifier (org.ai_classifier_threshold + ai_agent_runs.classified_*)
 --   3. Confirmação destrutiva (ai_pending_actions)
 --
--- A parte do RAG (pgvector + ai_vector_entries) está em migration separada
--- (20260508120100_pgvector_rag) porque exige o package pgvector instalado
+-- A parte do RAG (pgvector + ai_vector_entries) esta em migration separada
+-- (20260703120000_pgvector_rag) porque exige o package pgvector instalado
 -- no Postgres — não disponível em todos os ambientes managed.
 -- ============================================================================
 

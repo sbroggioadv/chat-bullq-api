@@ -1,6 +1,7 @@
 import { FactoryProvider, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { buildRedisConnectionOptions } from '../../../../config/redis.config';
 
 /**
  * Local Redis client provider for the short-term memory service.
@@ -17,15 +18,12 @@ export const redisProvider: FactoryProvider<Redis> = {
   inject: [ConfigService],
   useFactory: (config: ConfigService): Redis => {
     const logger = new Logger('ShortTermRedisProvider');
-    const client = new Redis({
-      host: config.get<string>('REDIS_HOST', 'localhost'),
-      port: config.get<number>('REDIS_PORT', 6379),
-      password: config.get<string>('REDIS_PASSWORD') || undefined,
+    const client = new Redis(buildRedisConnectionOptions(config, {
       // Required for BullMQ / long-running blocking commands compatibility.
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       lazyConnect: false,
-    });
+    }));
 
     client.on('error', (err) => {
       logger.error(`Redis error: ${err.message}`);

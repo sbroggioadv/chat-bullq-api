@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { StorageService } from '../../storage/storage.service';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,9 +21,9 @@ export interface UploadResult {
  * mirror locally (e.g., WhatsApp Cloud requires a Bearer token to
  * download — browsers can't load it directly, so we re-host it here).
  *
- * Files are written under `uploads/` and served publicly through
- * `/api/v1/uploads/*`. Swap with S3/R2 when we go multi-instance — the
- * public URL contract stays the same.
+ * Files are served through `/api/v1/uploads/*`. When S3-compatible storage is
+ * configured, new files are written to the private bucket; otherwise we keep
+ * the legacy local filesystem fallback for dev/VPS continuity.
  */
 @Injectable()
 export class UploadsService {
@@ -158,12 +159,18 @@ export class UploadsService {
   private readonly rootDir: string;
   private readonly publicBaseUrl: string;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly storage: StorageService,
+  ) {
     this.rootDir = path.resolve(
       this.config.get<string>('UPLOADS_DIR') ||
         path.join(process.cwd(), 'uploads'),
     );
     const appUrl = this.config.get<string>('APP_URL') || '';
+    if (!appUrl && this.config.get<string>('NODE_ENV') === 'production') {
+      throw new Error('APP_URL is required in production for upload URLs');
+    }
     this.publicBaseUrl = `${appUrl.replace(/\/$/, '')}/api/v1/uploads`;
     if (!fs.existsSync(this.rootDir)) {
       fs.mkdirSync(this.rootDir, { recursive: true });
@@ -206,10 +213,16 @@ export class UploadsService {
     const ext = this.extFor(mime, input.originalFilename);
     const filename = `${id}${ext}`;
     const fullPath = path.join(dir, filename);
-    await fs.promises.writeFile(fullPath, input.buffer);
+    const key = `inbound/${safeChannel}/${dateFolder}/${filename}`;
+    await this.writeUpload({
+      key,
+      fullPath,
+      buffer: input.buffer,
+      mimeType: mime,
+    });
 
-    const url = `${this.publicBaseUrl}/inbound/${safeChannel}/${dateFolder}/${filename}`;
-    this.logger.log(`Inbound media saved: ${fullPath} -> ${url}`);
+    const url = `${this.publicBaseUrl}/${key}`;
+    this.logger.log(`Inbound media saved: ${key} -> ${url}`);
     return {
       url,
       mimeType: mime,
@@ -284,8 +297,16 @@ export class UploadsService {
 
     const finalSize = (await fs.promises.stat(finalPath)).size;
     const finalName = path.basename(finalPath);
-    const url = `${this.publicBaseUrl}/audio/${dateFolder}/${finalName}`;
-    this.logger.log(`Audio saved: ${finalPath} -> ${url}`);
+    const key = `audio/${dateFolder}/${finalName}`;
+    await this.writeUpload({
+      key,
+      fullPath: finalPath,
+      buffer: await fs.promises.readFile(finalPath),
+      mimeType: finalMime,
+      removeLocalWhenRemote: true,
+    });
+    const url = `${this.publicBaseUrl}/${key}`;
+    this.logger.log(`Audio saved: ${key} -> ${url}`);
     return { url, mimeType: finalMime, size: finalSize, filename: finalName };
   }
 
@@ -327,10 +348,16 @@ export class UploadsService {
     const ext = this.extFor(mime, file.originalname);
     const filename = `${id}${ext}`;
     const fullPath = path.join(dir, filename);
-    await fs.promises.writeFile(fullPath, file.buffer);
+    const key = `images/${dateFolder}/${filename}`;
+    await this.writeUpload({
+      key,
+      fullPath,
+      buffer: file.buffer,
+      mimeType: mime,
+    });
 
-    const url = `${this.publicBaseUrl}/images/${dateFolder}/${filename}`;
-    this.logger.log(`Image saved: ${fullPath} -> ${url}`);
+    const url = `${this.publicBaseUrl}/${key}`;
+    this.logger.log(`Image saved: ${key} -> ${url}`);
     return {
       url,
       mimeType: mime,
@@ -437,10 +464,16 @@ export class UploadsService {
     const ext = this.extFor(mime, file.originalname);
     const filename = `${id}${ext}`;
     const fullPath = path.join(dir, filename);
-    await fs.promises.writeFile(fullPath, file.buffer);
+    const key = `${subdir}/${dateFolder}/${filename}`;
+    await this.writeUpload({
+      key,
+      fullPath,
+      buffer: file.buffer,
+      mimeType: mime,
+    });
 
-    const url = `${this.publicBaseUrl}/${subdir}/${dateFolder}/${filename}`;
-    this.logger.log(`File saved (${bucket}): ${fullPath} -> ${url}`);
+    const url = `${this.publicBaseUrl}/${key}`;
+    this.logger.log(`File saved (${bucket}): ${key} -> ${url}`);
     return {
       url,
       mimeType: mime,
@@ -490,5 +523,35 @@ export class UploadsService {
     if (m === 'text/plain') return '.txt';
     if (m === 'text/csv') return '.csv';
     return '.bin';
+  }
+
+  private async writeUpload(input: {
+    key: string;
+    fullPath: string;
+    buffer: Buffer;
+    mimeType: string;
+    removeLocalWhenRemote?: boolean;
+  }): Promise<'s3' | 'local'> {
+    if (this.storage.isReady()) {
+      const client = this.storage.getClient();
+      await client.putObject(
+        this.storage.getBucket(),
+        input.key,
+        input.buffer,
+        input.buffer.byteLength,
+        {
+          'Content-Type': input.mimeType,
+          'Cache-Control': 'private, max-age=2592000',
+        },
+      );
+      if (input.removeLocalWhenRemote) {
+        await fs.promises.unlink(input.fullPath).catch(() => undefined);
+      }
+      return 's3';
+    }
+
+    await fs.promises.mkdir(path.dirname(input.fullPath), { recursive: true });
+    await fs.promises.writeFile(input.fullPath, input.buffer);
+    return 'local';
   }
 }

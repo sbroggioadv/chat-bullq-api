@@ -168,12 +168,14 @@ export class MessagesController {
   @ApiQuery({ name: 'conversationId', required: true })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'includeTotal', required: false })
   findByConversation(
     @Query('conversationId') conversationId: string,
     @CurrentOrg('id') orgId: string,
     @CurrentChannelAccess() access: ChannelAccess,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('includeTotal') includeTotal?: string,
   ) {
     return this.service.findByConversation(
       conversationId,
@@ -181,6 +183,7 @@ export class MessagesController {
       parseInt(page || '1', 10),
       parseInt(limit || '50', 10),
       access,
+      includeTotal === 'true' || includeTotal === '1',
     );
   }
 
