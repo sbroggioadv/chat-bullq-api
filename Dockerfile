@@ -8,7 +8,11 @@ ENV YARN_CACHE_FOLDER=/yarn-cache
 COPY package.json yarn.lock ./
 RUN corepack enable \
   && yarn config set registry https://registry.npmjs.org \
-  && yarn install --frozen-lockfile --production=false --network-timeout 600000
+  && for attempt in 1 2 3 4 5; do \
+    yarn install --frozen-lockfile --production=false --network-timeout 600000 && break; \
+    if [ "$attempt" = "5" ]; then exit 1; fi; \
+    sleep $((attempt * 15)); \
+  done
 
 FROM node:20-alpine AS builder
 RUN apk add --no-cache openssl
@@ -34,7 +38,11 @@ COPY package.json yarn.lock ./
 COPY --from=deps /yarn-cache /yarn-cache
 RUN corepack enable \
   && yarn config set registry https://registry.npmjs.org \
-  && yarn install --frozen-lockfile --production=true --prefer-offline --network-timeout 600000 \
+  && for attempt in 1 2 3 4 5; do \
+    yarn install --frozen-lockfile --production=true --prefer-offline --network-timeout 600000 && break; \
+    if [ "$attempt" = "5" ]; then exit 1; fi; \
+    sleep $((attempt * 15)); \
+  done \
   && yarn cache clean
 
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
