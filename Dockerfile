@@ -50,6 +50,8 @@ COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY scripts/prisma-deploy.sh ./scripts/prisma-deploy.sh
+COPY scripts/ensure-prisma-compat-roles.js ./scripts/ensure-prisma-compat-roles.js
 
 RUN mkdir -p /app/uploads
 
@@ -66,7 +68,11 @@ VOLUME ["/app/uploads"]
 EXPOSE 3001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
-  CMD curl -sf http://localhost:3001/api/v1/health || exit 1
+  CMD curl -sf http://localhost:3001/api/v1/health/ready || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["sh", "-c", "DIRECT_URL=\"${DIRECT_URL:-$DATABASE_URL}\" npx prisma migrate deploy && node dist/src/main"]
+# Migrations are intentionally not part of the default boot path. Run
+# `yarn prisma:deploy` as a controlled release step before starting/updating
+# the API container. `start:prod:migrate` remains available as an explicit
+# one-shot compatibility command when an operator chooses that behavior.
+CMD ["node", "dist/src/main"]
