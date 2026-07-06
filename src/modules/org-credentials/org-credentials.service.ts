@@ -270,7 +270,7 @@ export class OrgCredentialsService {
     // (defensive — não deveria acontecer pós-migration).
     const map = new Map(rows.map((r) => [r.capability, r]));
     const defaults: Record<AiCapability, AiProvider> = {
-      LLM_AGENT: AiProvider.ANTHROPIC,
+      LLM_AGENT: AiProvider.ZAI,
       TRANSCRIPTION: AiProvider.OPENAI,
       EMBEDDINGS: AiProvider.OPENAI,
     };

@@ -21,7 +21,7 @@ function makeAgent(overrides: Partial<CloneableAgent>): CloneableAgent {
     parentAgentId: null,
     department: null,
     squad: null,
-    modelId: 'anthropic/claude-sonnet-4-6',
+    modelId: 'zai/glm-5.2',
     modelParams: null,
     systemPrompt: 'prompt',
     operationalContext: null,

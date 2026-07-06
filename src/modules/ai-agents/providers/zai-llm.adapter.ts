@@ -13,8 +13,9 @@ import { defaultBaseUrlFor } from './provider-defaults';
  * sobrescrever via `OrganizationCredential.baseUrl` — ex: endpoint China
  * `https://open.bigmodel.cn/api/paas/v4`.
  *
- * Modelos válidos (jul/2026): `glm-4.6` (flagship barato), `glm-4.5-air`,
- * `glm-4.5-flash`/`glm-4.7-flash` (free), `glm-4.7`, `glm-5`, `glm-5.2`.
+ * Modelos válidos (jul/2026): `glm-5.2` (padrão), `glm-5.1`,
+ * `glm-5-turbo`, `glm-4.7`, `glm-4.7-flash`, `glm-4.7-flashx`,
+ * `glm-4.6`, `glm-4.5-air` e `glm-4.5-flash`.
  * A geração 2024 `glm-4`/`glm-4-plus`/`glm-4-flash` saiu do catálogo z.ai
  * (pode resolver por retrocompat no bigmodel.cn, mas não garantido).
  *
@@ -25,7 +26,7 @@ export class ZaiLlmAdapter {
   private readonly logger = new Logger(ZaiLlmAdapter.name);
   readonly provider = AiProvider.ZAI;
 
-  static readonly DEFAULT_MODEL = 'glm-4.6';
+  static readonly DEFAULT_MODEL = 'glm-5.2';
 
   /** Custo por token (USD) — pricing z.ai internacional, docs.z.ai (jul/2026). */
   private static readonly COST_TABLE: Record<string, { in: number; out: number }> = {
@@ -37,6 +38,8 @@ export class ZaiLlmAdapter {
     'glm-4.7-flash': { in: 0, out: 0 },
     'glm-4.5-flash': { in: 0, out: 0 },
     'glm-5': { in: 1.0 / 1e6, out: 3.2 / 1e6 },
+    'glm-5.1': { in: 1.0 / 1e6, out: 3.2 / 1e6 },
+    'glm-5-turbo': { in: 0.2 / 1e6, out: 1.1 / 1e6 },
     'glm-5.2': { in: 1.4 / 1e6, out: 4.4 / 1e6 },
   };
 
@@ -60,6 +63,7 @@ export class ZaiLlmAdapter {
     if (id.startsWith('zai/')) return id.slice('zai/'.length);
     if (id.startsWith('zhipu/')) return id.slice('zhipu/'.length);
     if (
+      id.startsWith('anthropic/claude-') ||
       id.startsWith('claude-') ||
       id.startsWith('gpt-') ||
       id.startsWith('gemini') ||

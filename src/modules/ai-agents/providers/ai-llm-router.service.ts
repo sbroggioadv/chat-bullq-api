@@ -42,7 +42,7 @@ export class AiLlmRouterService {
 
     if (resolved.source === 'NONE') {
       throw new InternalServerErrorException(
-        `No LLM credential available for org=${req.organizationId} (neither org-level nor env). Configure ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY env, or set org credential at /settings/ai-credentials`,
+        `No LLM credential available for org=${req.organizationId} (neither org-level nor env). Configure ZAI_API_KEY, ZHIPU_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY env, or set org credential at /settings/ai-credentials`,
       );
     }
 

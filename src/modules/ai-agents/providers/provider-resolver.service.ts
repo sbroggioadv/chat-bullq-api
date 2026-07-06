@@ -256,7 +256,7 @@ export class ProviderResolverService implements OnModuleInit {
   private defaultProvider(capability: AiCapability): AiProvider {
     switch (capability) {
       case AiCapability.LLM_AGENT:
-        return AiProvider.ANTHROPIC;
+        return AiProvider.ZAI;
       case AiCapability.TRANSCRIPTION:
         return AiProvider.OPENAI;
       case AiCapability.EMBEDDINGS:

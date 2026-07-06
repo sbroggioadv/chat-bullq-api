@@ -23,7 +23,7 @@ export class CreateChannelDto {
   @IsString()
   webhookSecret?: string;
 
-  @ApiPropertyOptional({ enum: ['ORG', 'PRIVATE'] })
+  @ApiPropertyOptional({ enum: ['ORG', 'PRIVATE'], default: 'PRIVATE' })
   @IsOptional()
   @IsIn(['ORG', 'PRIVATE'])
   visibility?: 'ORG' | 'PRIVATE';

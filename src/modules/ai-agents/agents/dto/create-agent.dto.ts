@@ -53,7 +53,7 @@ export class CreateAgentDto {
   @IsString({ each: true })
   capabilities?: string[];
 
-  @ApiProperty({ example: 'anthropic/claude-sonnet-4-6' })
+  @ApiProperty({ example: 'zai/glm-5.2' })
   @IsString()
   modelId!: string;
 

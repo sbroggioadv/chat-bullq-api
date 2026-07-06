@@ -27,7 +27,7 @@ function row(partial: Partial<SourceRow> & { id: string; name: string }): Record
     parentAgentId: partial.parentAgentId ?? null,
     department: partial.department ?? null,
     squad: partial.squad ?? null,
-    modelId: 'anthropic/claude-sonnet-4-6',
+    modelId: 'zai/glm-5.2',
     modelParams: null,
     systemPrompt: 'prompt',
     operationalContext: null,

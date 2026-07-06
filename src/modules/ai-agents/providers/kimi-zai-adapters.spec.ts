@@ -74,13 +74,13 @@ describe('ZaiLlmAdapter', () => {
     expect(new ZaiLlmAdapter(compat).provider).toBe(AiProvider.ZAI);
   });
 
-  it('delega com base URL default z.ai v4 e modelo default glm-4.6', async () => {
+  it('delega com base URL default z.ai v4 e modelo default glm-5.2', async () => {
     const { compat, lastCfg } = makeCompat();
-    await new ZaiLlmAdapter(compat).complete(req('glm-4.6'), 'sk-zai');
+    await new ZaiLlmAdapter(compat).complete(req('glm-5.2'), 'sk-zai');
     const cfg = lastCfg();
     expect(cfg.baseUrl).toBe('https://api.z.ai/api/paas/v4');
     expect(cfg.providerLabel).toBe('z.ai');
-    expect(cfg.defaultModel).toBe('glm-4.6');
+    expect(cfg.defaultModel).toBe('glm-5.2');
   });
 
   it('respeita baseUrl custom (endpoint bigmodel.cn)', async () => {
@@ -99,8 +99,9 @@ describe('ZaiLlmAdapter', () => {
     const norm = lastCfg().normalizeModelId;
     expect(norm('zai/glm-4.5-air')).toBe('glm-4.5-air');
     expect(norm('zhipu/glm-4.6')).toBe('glm-4.6');
-    expect(norm('claude-3-5')).toBe('glm-4.6');
-    expect(norm('kimi-k2.6')).toBe('glm-4.6');
+    expect(norm('anthropic/claude-sonnet-4-6')).toBe('glm-5.2');
+    expect(norm('claude-3-5')).toBe('glm-5.2');
+    expect(norm('kimi-k2.6')).toBe('glm-5.2');
     expect(norm('glm-4.6')).toBe('glm-4.6');
   });
 });

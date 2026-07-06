@@ -28,7 +28,7 @@ enum ChannelType {
   INSTAGRAM
 }
 
-// ORG    = todos os membros da org enxergam (default — preserva o comportamento legado)
+// ORG    = todos os membros da org enxergam
 // PRIVATE = só membros com grant explícito em ChannelAgent enxergam, mesmo OWNER/ADMIN
 enum ChannelVisibility {
   ORG
@@ -369,7 +369,7 @@ model OrganizationCapabilityRouting {
   organizationId   String       @map("organization_id")
   capability       AiCapability
   providerSelected AiProvider   @map("provider_selected")
-  /// Override opcional do model padrão do provider. Ex: "claude-3-5-sonnet-20241022"
+  /// Override opcional do model padrão do provider. Ex: "glm-5.2"
   /// pra forçar versão específica. NULL = usa default do código.
   modelOverride    String?      @map("model_override")
   updatedAt        DateTime     @updatedAt @map("updated_at")
@@ -459,7 +459,7 @@ model Channel {
   config         Json
   webhookSecret  String?           @map("webhook_secret")
   isActive       Boolean           @default(true) @map("is_active")
-  visibility     ChannelVisibility @default(ORG)
+  visibility     ChannelVisibility @default(PRIVATE)
   // Tri-state override: NULL=segue org.aiEnabled, true=força ON, false=força OFF.
   // Permite o operador desligar a IA num canal específico (ex: 1581 produção)
   // sem precisar mexer no toggle global da org.

@@ -102,6 +102,18 @@ export class HealthController {
       gemini: Boolean(
         this.config.get<string>('GEMINI_API_KEY') ?? process.env.GEMINI_API_KEY,
       ),
+      kimi: Boolean(
+        this.config.get<string>('KIMI_API_KEY') ??
+          process.env.KIMI_API_KEY ??
+          this.config.get<string>('MOONSHOT_API_KEY') ??
+          process.env.MOONSHOT_API_KEY,
+      ),
+      zai: Boolean(
+        this.config.get<string>('ZAI_API_KEY') ??
+          process.env.ZAI_API_KEY ??
+          this.config.get<string>('ZHIPU_API_KEY') ??
+          process.env.ZHIPU_API_KEY,
+      ),
     };
 
     let orgsWithCustomCredentials = 0;

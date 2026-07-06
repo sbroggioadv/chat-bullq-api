@@ -40,13 +40,14 @@ export class ChannelsService {
     dto: CreateChannelDto,
     creator?: { userOrganizationId: string; role: OrgRole },
   ) {
+    const effectiveVisibility = dto.visibility ?? 'PRIVATE';
     let channel = await this.repository.create({
       organizationId,
       type: dto.type,
       name: dto.name,
       config: dto.config,
       webhookSecret: dto.webhookSecret,
-      ...(dto.visibility ? { visibility: dto.visibility } : {}),
+      visibility: effectiveVisibility,
     });
 
     // Deny-by-default: a brand new channel has no agents, so AGENT users in the
@@ -59,7 +60,7 @@ export class ChannelsService {
     // que o criador se tranque fora do próprio canal recém-criado.
     const needsAgentGrant =
       (creator && creator.role === OrgRole.AGENT) ||
-      (creator && dto.visibility === 'PRIVATE');
+      (creator && effectiveVisibility === 'PRIVATE');
     if (needsAgentGrant && creator) {
       await this.prisma.channelAgent.create({
         data: {
