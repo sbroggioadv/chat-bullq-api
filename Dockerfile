@@ -51,6 +51,7 @@ COPY --from=builder /app/node_modules/prisma ./node_modules/prisma
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY scripts/prisma-deploy.sh ./scripts/prisma-deploy.sh
+COPY scripts/start-prod-migrate.sh ./scripts/start-prod-migrate.sh
 COPY scripts/ensure-prisma-compat-roles.js ./scripts/ensure-prisma-compat-roles.js
 
 RUN mkdir -p /app/uploads
@@ -74,5 +75,5 @@ ENTRYPOINT ["/sbin/tini", "--"]
 # Migrations are intentionally not part of the default boot path. Run
 # `yarn prisma:deploy` as a controlled release step before starting/updating
 # the API container. `start:prod:migrate` remains available as an explicit
-# one-shot compatibility command when an operator chooses that behavior.
+# one-shot command that loads the same runtime env for migrations and Node.
 CMD ["node", "dist/src/main"]

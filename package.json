@@ -14,7 +14,7 @@
     "prisma:migrate:deploy": "sh scripts/prisma-deploy.sh",
     "prisma:studio": "prisma studio",
     "prisma:seed": "ts-node prisma/seed.ts",
-    "start:prod:migrate": "yarn prisma:deploy && yarn start:prod",
+    "start:prod:migrate": "sh scripts/start-prod-migrate.sh",
     "test": "jest",
     "test:watch": "jest --watch",
     "typecheck": "tsc --noEmit",
