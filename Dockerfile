@@ -72,8 +72,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=5 \
   CMD curl -sf http://localhost:3001/api/v1/health/ready || exit 1
 
 ENTRYPOINT ["/sbin/tini", "--"]
-# Migrations are intentionally not part of the default boot path. Run
-# `yarn prisma:deploy` as a controlled release step before starting/updating
-# the API container. `start:prod:migrate` remains available as an explicit
-# one-shot command that loads the same runtime env for migrations and Node.
-CMD ["node", "dist/src/main"]
+# Coolify's Dockerfile resource does not reliably apply `start_command` to the
+# generated compose service, so the image boots through the release script. The
+# script runs idempotent Prisma migrations, then `exec`s the Nest process.
+CMD ["sh", "scripts/start-prod-migrate.sh"]
