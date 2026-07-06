@@ -136,6 +136,14 @@ export class OrganizationsService {
     if (!invitation) {
       throw new NotFoundException('Invitation not found');
     }
+    if (invitation.status === 'ACCEPTED') {
+      return {
+        email: invitation.email,
+        role: invitation.role,
+        status: invitation.status,
+        organization: invitation.organization,
+      };
+    }
     if (invitation.status !== 'PENDING') {
       throw new BadRequestException(`Invitation has already been ${invitation.status.toLowerCase()}`);
     }
@@ -145,6 +153,7 @@ export class OrganizationsService {
     return {
       email: invitation.email,
       role: invitation.role,
+      status: invitation.status,
       organization: invitation.organization,
     };
   }

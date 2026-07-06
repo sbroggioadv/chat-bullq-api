@@ -23,5 +23,9 @@ if [ -z "${DIRECT_URL:-}" ] && [ -n "${DATABASE_URL:-}" ]; then
   export DIRECT_URL="$DATABASE_URL"
 fi
 
+if [ -z "${ZAI_API_KEY:-}" ] && [ -z "${ZHIPU_API_KEY:-}" ]; then
+  echo "WARN: ZAI_API_KEY/ZHIPU_API_KEY is not set. LLM_AGENT now defaults to ZAI; make sure org-level ZAI credentials exist before routing production AI traffic." >&2
+fi
+
 node scripts/ensure-prisma-compat-roles.js
 exec npx prisma migrate deploy
