@@ -123,18 +123,19 @@ export class RealtimeGateway
     userOrganizationId: string,
     role: OrgRole,
   ): Promise<string[]> {
-    if (this.channelAccess.isBypassRole(role)) {
+    const access = await this.channelAccess.getAccessibleChannelIds(
+      userOrganizationId,
+      role,
+      organizationId,
+    );
+    if (access === 'ALL') {
       const channels = await this.prisma.channel.findMany({
         where: { organizationId, deletedAt: null },
         select: { id: true },
       });
       return channels.map((c) => c.id);
     }
-    const grants = await this.prisma.channelAgent.findMany({
-      where: { userOrganizationId },
-      select: { channelId: true },
-    });
-    return grants.map((g) => g.channelId);
+    return [...access];
   }
 
   async handleDisconnect(client: Socket) {
@@ -172,32 +173,30 @@ export class RealtimeGateway
       }
     }
 
-    if (!this.channelAccess.isBypassRole(client.data.role)) {
-      const conv = await this.prisma.conversation.findUnique({
-        where: { id: data.conversationId },
-        select: { channelId: true, organizationId: true },
+    const conv = await this.prisma.conversation.findUnique({
+      where: { id: data.conversationId },
+      select: { channelId: true, organizationId: true },
+    });
+    if (!conv || conv.organizationId !== client.data.organizationId) {
+      this.logger.warn(
+        `join:conversation rejected: conv ${data.conversationId} not in org ${client.data.organizationId}`,
+      );
+      client.emit('join:conversation:error', {
+        conversationId: data.conversationId,
+        reason: 'org-mismatch',
       });
-      if (!conv || conv.organizationId !== client.data.organizationId) {
-        this.logger.warn(
-          `join:conversation rejected: conv ${data.conversationId} not in org ${client.data.organizationId}`,
-        );
-        client.emit('join:conversation:error', {
-          conversationId: data.conversationId,
-          reason: 'org-mismatch',
-        });
-        return;
-      }
-      const channelIds = (client.data.channelIds as string[] | undefined) ?? [];
-      if (!channelIds.includes(conv.channelId)) {
-        this.logger.warn(
-          `join:conversation rejected: user ${client.data.userId} has no grant on channel ${conv.channelId}`,
-        );
-        client.emit('join:conversation:error', {
-          conversationId: data.conversationId,
-          reason: 'no-channel-grant',
-        });
-        return;
-      }
+      return;
+    }
+    const channelIds = (client.data.channelIds as string[] | undefined) ?? [];
+    if (!channelIds.includes(conv.channelId)) {
+      this.logger.warn(
+        `join:conversation rejected: user ${client.data.userId} has no grant on channel ${conv.channelId}`,
+      );
+      client.emit('join:conversation:error', {
+        conversationId: data.conversationId,
+        reason: 'no-channel-grant',
+      });
+      return;
     }
     client.join(`conv:${data.conversationId}`);
     client.data.activeConversationId = data.conversationId;

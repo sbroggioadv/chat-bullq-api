@@ -37,7 +37,7 @@ export class MemberChannelsController {
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({
     summary:
-      'Replace the full set of channels a member can access. OWNER/ADMIN bypass — they always see all channels.',
+      'Replace explicit channel grants for a member. OWNER/ADMIN inherit ORG channels but still need grants for PRIVATE channels.',
   })
   async set(
     @CurrentOrg('id') orgId: string,

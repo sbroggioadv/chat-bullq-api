@@ -127,19 +127,12 @@ export class ChannelAccessService {
 
   async listMemberChannels(organizationId: string, userId: string) {
     const membership = await this.getMembership(organizationId, userId);
-    if (this.isBypassRole(membership.role)) {
-      return {
-        bypass: true as const,
-        role: membership.role,
-        channelIds: [] as string[],
-      };
-    }
     const grants = await this.prisma.channelAgent.findMany({
       where: { userOrganizationId: membership.id },
       select: { channelId: true },
     });
     return {
-      bypass: false as const,
+      bypass: this.isBypassRole(membership.role),
       role: membership.role,
       channelIds: grants.map((g) => g.channelId),
     };

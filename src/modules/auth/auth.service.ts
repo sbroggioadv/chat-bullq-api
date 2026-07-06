@@ -12,6 +12,10 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../database/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import {
+  ChannelAccessService,
+  type ChannelAccess,
+} from '../iam/channel-access/channel-access.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -23,6 +27,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly channelAccess: ChannelAccessService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -189,7 +194,7 @@ export class AuthService {
         data: { status: 'EXPIRED' },
       });
 
-      return { user, organization: invitation.organization };
+      return { user, organization: invitation.organization, membership };
     });
 
     const tokens = await this.generateTokens(result.user.id, result.user.email);
@@ -205,12 +210,13 @@ export class AuthService {
         // Brand é herdado da org existente (não-OWNERs entrando via convite veem
         // a identidade visual já escolhida pela banca; default visual = A se null).
         brand: result.organization.brand as 'A' | 'B' | 'C' | null,
-        // New invited members start with no channel grants (deny-by-default).
-        // OWNER/ADMIN bypass; AGENT must be explicitly granted by an admin.
-        accessibleChannelIds:
-          invitation.role === 'OWNER' || invitation.role === 'ADMIN'
-            ? ('ALL' as const)
-            : ([] as string[]),
+        accessibleChannelIds: this.serializeChannelAccess(
+          await this.channelAccess.getAccessibleChannelIds(
+            result.membership.id,
+            result.membership.role,
+            result.organization.id,
+          ),
+        ),
       }],
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -247,9 +253,8 @@ export class AuthService {
 
     this.logger.log(`User logged in: ${user.email}`);
 
-    return {
-      user: this.sanitizeUser(user),
-      organizations: memberships.map((m) => ({
+    const organizations = await Promise.all(
+      memberships.map(async (m) => ({
         id: m.organization.id,
         name: m.organization.name,
         slug: m.organization.slug,
@@ -263,11 +268,19 @@ export class AuthService {
         // BrandThemeBridge perde a customização no F5 e reverte pro brand
         // base. Mesmo bug do logoUrl (S19 W1.1).
         themeTokens: m.organization.themeTokens ?? null,
-        accessibleChannelIds:
-          m.role === 'OWNER' || m.role === 'ADMIN'
-            ? ('ALL' as const)
-            : m.channelAgents.map((c) => c.channelId),
+        accessibleChannelIds: this.serializeChannelAccess(
+          await this.channelAccess.getAccessibleChannelIds(
+            m.id,
+            m.role,
+            m.organizationId,
+          ),
+        ),
       })),
+    );
+
+    return {
+      user: this.sanitizeUser(user),
+      organizations,
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
     };
@@ -308,9 +321,8 @@ export class AuthService {
       },
     });
 
-    return {
-      user: this.sanitizeUser(user),
-      organizations: memberships.map((m) => ({
+    const organizations = await Promise.all(
+      memberships.map(async (m) => ({
         id: m.organization.id,
         name: m.organization.name,
         slug: m.organization.slug,
@@ -326,13 +338,24 @@ export class AuthService {
         // BrandThemeBridge perde a customização no F5 e reverte pro brand
         // base. Mesmo bug do logoUrl (S19 W1.1).
         themeTokens: m.organization.themeTokens ?? null,
-        // 'ALL' for OWNER/ADMIN — they bypass the per-channel allowlist.
-        accessibleChannelIds:
-          m.role === 'OWNER' || m.role === 'ADMIN'
-            ? ('ALL' as const)
-            : m.channelAgents.map((c) => c.channelId),
+        accessibleChannelIds: this.serializeChannelAccess(
+          await this.channelAccess.getAccessibleChannelIds(
+            m.id,
+            m.role,
+            m.organizationId,
+          ),
+        ),
       })),
+    );
+
+    return {
+      user: this.sanitizeUser(user),
+      organizations,
     };
+  }
+
+  private serializeChannelAccess(access: ChannelAccess): 'ALL' | string[] {
+    return access === 'ALL' ? 'ALL' : [...access];
   }
 
   private async generateTokens(userId: string, email: string) {
