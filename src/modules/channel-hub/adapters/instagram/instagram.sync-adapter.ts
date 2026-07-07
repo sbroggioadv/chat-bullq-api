@@ -47,16 +47,32 @@ export class InstagramSyncAdapter implements HistorySyncPort {
     );
 
     const conversations: NormalizedHistoricalConversation[] = [];
+    let reachedLookbackLimit = false;
     for (const conv of data) {
       const normalized = this.normalizeConversation(conv, businessId);
       if (!normalized) continue;
-      if (filters.sinceTimestamp && normalized.lastMessageAt) {
-        if (normalized.lastMessageAt < filters.sinceTimestamp) continue;
+      if (
+        filters.sinceTimestamp &&
+        normalized.lastMessageAt &&
+        normalized.lastMessageAt < filters.sinceTimestamp
+      ) {
+        // A Graph API devolve conversas ordenadas por `updated_time` DESC: a
+        // primeira abaixo do corte de lookback significa que TODAS as próximas
+        // (nesta página e nas seguintes) são mais antigas. Paramos aqui — mesmo
+        // padrão de `fetchMessages`. Sem isso o loop de `collectConversations`
+        // varre o histórico inteiro da conta e a Graph API corta com
+        // `[#1] An unknown error has occurred` (que o retry de rate-limit não
+        // reconhece), derrubando o sync inteiro em contas com muitas conversas.
+        reachedLookbackLimit = true;
+        break;
       }
       conversations.push(normalized);
     }
 
-    return { conversations, nextCursor };
+    return {
+      conversations,
+      nextCursor: reachedLookbackLimit ? undefined : nextCursor,
+    };
   }
 
   async fetchMessages(
