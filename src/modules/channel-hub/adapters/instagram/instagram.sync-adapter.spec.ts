@@ -72,3 +72,33 @@ describe('InstagramSyncAdapter.fetchConversations lookback early-stop', () => {
     expect(result.nextCursor).toBe('CURSOR_NEXT_PAGE');
   });
 });
+
+describe('InstagramSyncAdapter.fetchMessages content extraction', () => {
+  function buildAdapterWithMessages(messages: any[]) {
+    const httpClient = {
+      resolveBusinessId: jest.fn(async () => BUSINESS_ID),
+      listConversationMessages: jest.fn(async () => ({ data: messages, nextCursor: undefined })),
+    } as unknown as InstagramHttpClient;
+    return new InstagramSyncAdapter(httpClient);
+  }
+
+  it('extracts the shared post/reel/story link instead of "[Unsupported message]"', async () => {
+    const link = 'https://www.instagram.com/reel/ABC123/';
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm1',
+        created_time: '2026-07-05T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: '', // share vem com message vazio
+        shares: { data: [{ link }] },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0].content.text).toBe(link);
+    expect(res.messages[0].content.text).not.toBe('[Unsupported message]');
+  });
+});

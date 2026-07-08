@@ -242,6 +242,15 @@ export class InstagramSyncAdapter implements HistorySyncPort {
       return { text: '[Story mention]', mediaUrl: raw.story.mention.link };
     }
 
+    // Posts / reels / stories COMPARTILHADOS: no histórico da Graph API o link
+    // vem em `shares.data[].link` (com `message` vazio) — formato diferente do
+    // webhook, que usa attachments[type=share].payload.url. Sem tratar isto, todo
+    // compartilhamento caía em "[Unsupported message]" (maioria dos casos reais).
+    const sharedLink = raw.shares?.data?.[0]?.link;
+    if (sharedLink) {
+      return { text: sharedLink };
+    }
+
     return { text: '[Unsupported message]' };
   }
 }
