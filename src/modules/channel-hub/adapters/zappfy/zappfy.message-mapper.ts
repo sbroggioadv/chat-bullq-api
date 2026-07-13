@@ -325,6 +325,17 @@ export class ZappfyMessageMapper {
     if (type.includes('location')) return MessageContentType.LOCATION;
     if (type.includes('reaction')) return MessageContentType.REACTION;
     if (type.includes('button') || type.includes('list')) return MessageContentType.INTERACTIVE;
+    // viewOnce: embrulha outra mensagem em `content.message`. Classifica
+    // pelo tipo interno pra frontend renderizar mídia em vez de texto.
+    if (type.includes('viewonce')) {
+      const inner = msg?.content?.message || msg?.content || {};
+      if (inner.imageMessage || inner.image) return MessageContentType.IMAGE;
+      if (inner.videoMessage || inner.video) return MessageContentType.VIDEO;
+      if (inner.audioMessage || inner.ptvMessage || inner.audio) return MessageContentType.AUDIO;
+      if (inner.documentMessage || inner.document) return MessageContentType.DOCUMENT;
+      if (inner.stickerMessage || inner.sticker) return MessageContentType.STICKER;
+      return MessageContentType.TEXT;
+    }
     return MessageContentType.TEXT;
   }
 
@@ -380,6 +391,43 @@ export class ZappfyMessageMapper {
         mimeType: content.mimetype,
       };
     }
+
+    // viewOnceMessage / viewOnceMessageV2 envolvem outra mensagem em
+    // `content.message`. Desembrulhamos o tipo interno de mídia aqui para
+    // preservar a classificação (IMAGE/VIDEO/AUDIO) e a URL — sem isso,
+ // a mídia efêmera caía no fallback e virava "[Unsupported message type]".
+    if (type.includes('viewonce')) {
+      return this.extractViewOnceContent(msg);
+    }
+
+    // Chatbot/automações: botões, listas, templates, interactive, nativeFlow.
+    // Extrai texto legível (cabeçalho + botões/itens) pra `content.text`.
+    // A UI não renderiza botões clicáveis ainda — texto é a degradação.
+    if (
+      type.includes('button') ||
+      type.includes('list') ||
+      type.includes('interactive') ||
+      type.includes('nativeflow') ||
+      type.includes('template')
+    ) {
+      return this.extractInteractiveContent(content);
+    }
+
+    // vCard / contato: nome + telefones.
+    if (type.includes('contact')) {
+      return this.extractContactContent(content);
+    }
+
+    // orderMessage: catálogo/pedido. Texto curto com título e total.
+    if (type.includes('order')) {
+      return this.extractOrderContent(content);
+    }
+
+    // systemMessage / protocolMessage: normalmente texto puro.
+    if (type.includes('system') || type.includes('protocol')) {
+      return { text: content.text || content.system || content.conversation || '' };
+    }
+
     if (type.includes('location')) {
       return {
         latitude: content.degreesLatitude,
@@ -395,6 +443,142 @@ export class ZappfyMessageMapper {
         },
       };
     }
-    return { text: content.text || '[Unsupported message type]' };
+    // Fallback final: preserva o messageType real em vez de "Unsupported".
+    // O operador vê o tipo e devs conseguem localizar na doc quando surgir
+    // novo formato. Nunca perde informação.
+    const rawType = msg.messageType || 'desconhecido';
+    return { text: content.text || `[Tipo: ${rawType}]` };
+  }
+
+  /**
+   * Desembrulha `viewOnceMessage[V2]`: o conteúdo real vive em
+   * `content.message.<tipo>Message` (image/video/audio/etc.). Retorna a
+   * mesma estrutura que o handler do tipo específico produziria.
+   */
+  private extractViewOnceContent(msg: any): NormalizedInboundMessage['content'] {
+    const content = (typeof msg.content === 'object' && msg.content) || {};
+    const inner = content.message || content;
+
+    const pick = (m: any): NormalizedInboundMessage['content'] => ({
+      mediaUrl: m?.url || m?.mediaUrl,
+      mimeType: m?.mimetype,
+      fileSize: m?.fileLength,
+      caption: m?.caption,
+    });
+
+    if (inner?.imageMessage || inner?.image) return pick(inner.imageMessage || inner.image);
+    if (inner?.videoMessage || inner?.video) return pick(inner.videoMessage || inner.video);
+    if (inner?.audioMessage || inner?.ptvMessage || inner?.audio) {
+      return pick(inner.audioMessage || inner.ptvMessage || inner.audio);
+    }
+    if (inner?.documentMessage || inner?.document) {
+      const d = inner.documentMessage || inner.document;
+      return { ...pick(d), fileName: d?.fileName };
+    }
+    if (inner?.stickerMessage || inner?.sticker) {
+      return pick(inner.stickerMessage || inner.sticker);
+    }
+
+    // View-once de texto (raro, mas existe): apenas desembrulha.
+    const text = inner?.text || inner?.conversation || inner?.caption || content.text || '';
+    return { text: text || '[Tipo: viewOnceMessage]' };
+  }
+
+  /**
+   * Botões, listas, templates, interactive, nativeFlow. A Uazapi/Zappfy
+   * entrega `content` em pelo menos dois shapes:
+   *   (a) achatado: `content.caption`, `content.buttons`, `content.sections`
+   *   (b) baileys-shape: `content.contentText.{caption,title,buttons,sections}`
+   * Cobrimos ambos pra não acoplar a uma versão específica do provider.
+   */
+  private extractInteractiveContent(content: any): NormalizedInboundMessage['content'] {
+    const ctx = content?.contentText || content || {};
+    const header =
+      ctx.caption || ctx.text || ctx.title || ctx.header || ctx.heading || '';
+    const description =
+      ctx.description || ctx.subtitle || ctx.footerText || ctx.footer || '';
+
+    const buttonLabels: string[] = (ctx.buttons || [])
+      .map((b: any) =>
+        b?.buttonText?.displayText || b?.displayText || b?.title || b?.text || '',
+      )
+      .filter((s: string) => !!s);
+
+    const itemLabels: string[] = [];
+    const sections = ctx.sections || ctx.list || [];
+    if (Array.isArray(sections)) {
+      for (const sec of sections) {
+        if (Array.isArray(sec?.rows)) {
+          for (const row of sec.rows) {
+            if (row?.title) itemLabels.push(String(row.title));
+          }
+        } else if (sec?.title) {
+          itemLabels.push(String(sec.title));
+        }
+      }
+    }
+
+    const parts: string[] = [];
+    if (header) parts.push(String(header));
+    if (description) parts.push(String(description));
+    if (buttonLabels.length) parts.push(`Opções: ${buttonLabels.join(' | ')}`);
+    if (itemLabels.length) parts.push(`Itens: ${itemLabels.join(' | ')}`);
+
+    return { text: parts.join('\n') || content?.text || '' };
+  }
+
+  /**
+   * contactMessage: vCard. Extrai nome (FN) + telefones (TEL) por parse
+   * simples — vCard é texto com linhas `FN:`/`TEL;...:+5511...`.
+   */
+  private extractContactContent(content: any): NormalizedInboundMessage['content'] {
+    const displayName =
+      content?.displayName || content?.name || content?.contactName || '';
+    const vcard = content?.vcard || content?.vCard || '';
+    const tels: string[] = [];
+
+    if (typeof vcard === 'string') {
+      for (const line of vcard.split(/\r?\n/)) {
+        const m = line.match(/^TEL[^:]*:(.+)$/i);
+        if (m) {
+          const num = m[1].trim();
+          if (num) tels.push(num);
+        }
+      }
+    }
+
+    const parts: string[] = [];
+    parts.push(displayName ? `Contato: ${displayName}` : 'Contato');
+    if (tels.length) parts.push(`Tel: ${tels.join(', ')}`);
+    return {
+      text: parts.join('\n'),
+      fileName: `${displayName || 'contato'}.vcf`,
+    };
+  }
+
+  /**
+   * orderMessage: pedido de catálogo do WhatsApp. Traz título, itens,
+   * total e mensagem opcional. Sinalizamos como texto curto.
+   */
+  private extractOrderContent(content: any): NormalizedInboundMessage['content'] {
+    const orderTitle = content?.orderTitle || content?.title || '';
+    const message = content?.message || '';
+    const items = Array.isArray(content?.items) ? content.items : [];
+    const itemCount = items.length;
+    const totalRaw =
+      content?.total_amount ?? content?.totalAmount ?? content?.total ?? 0;
+    const total = Number(totalRaw) || 0;
+
+    const parts: string[] = [];
+    parts.push(orderTitle ? `Pedido: ${orderTitle}` : 'Pedido');
+    if (itemCount) parts.push(`${itemCount} item(ns)`);
+    if (total > 0) {
+      // WhatsApp envia total em centavos (integer). Se vier pequeno, mostramos
+      // cru pra não inventar casa decimal errada.
+      const formatted = total >= 100 ? (total / 100).toFixed(2) : String(total);
+      parts.push(`Total: ${formatted}`);
+    }
+    if (message) parts.push(String(message));
+    return { text: parts.join('\n') };
   }
 }

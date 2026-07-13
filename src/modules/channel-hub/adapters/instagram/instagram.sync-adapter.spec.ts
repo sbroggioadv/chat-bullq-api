@@ -102,3 +102,149 @@ describe('InstagramSyncAdapter.fetchMessages content extraction', () => {
     expect(res.messages[0].content.text).not.toBe('[Unsupported message]');
   });
 });
+
+describe('InstagramSyncAdapter.fetchMessages — mídia direta (W2 SPEC-002)', () => {
+  function buildAdapterWithMessages(messages: any[]) {
+    const httpClient = {
+      resolveBusinessId: jest.fn(async () => BUSINESS_ID),
+      listConversationMessages: jest.fn(async () => ({ data: messages, nextCursor: undefined })),
+    } as unknown as InstagramHttpClient;
+    return new InstagramSyncAdapter(httpClient);
+  }
+
+  it('extrai imagem direta com mediaUrl do attachments{image_data.url}', async () => {
+    // Shape real após fields expandido: attachments.data[0].image_data.url
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm_img',
+        created_time: '2026-07-10T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: '',
+        attachments: {
+          data: [
+            {
+              type: 'image',
+              mime_type: 'image/jpeg',
+              image_data: { url: 'https://lookaside.instagram.com/dummy/img.jpg' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0].type).toBe('IMAGE');
+    expect(res.messages[0].content.mediaUrl).toBe(
+      'https://lookaside.instagram.com/dummy/img.jpg',
+    );
+    expect(res.messages[0].content.mimeType).toBe('image/jpeg');
+  });
+
+  it('extrai vídeo direto com mediaUrl do attachments{video_data.url}', async () => {
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm_vid',
+        created_time: '2026-07-10T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: '',
+        attachments: {
+          data: [
+            {
+              type: 'video',
+              mime_type: 'video/mp4',
+              video_data: { url: 'https://lookaside.instagram.com/dummy/v.mp4' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0].type).toBe('VIDEO');
+    expect(res.messages[0].content.mediaUrl).toBe(
+      'https://lookaside.instagram.com/dummy/v.mp4',
+    );
+  });
+
+  it('extrai áudio direto com mediaUrl do attachments{file_url}', async () => {
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm_aud',
+        created_time: '2026-07-10T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: '',
+        attachments: {
+          data: [
+            {
+              type: 'audio',
+              mime_type: 'audio/mp4',
+              file_url: 'https://lookaside.instagram.com/dummy/a.mp4',
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0].type).toBe('AUDIO');
+    expect(res.messages[0].content.mediaUrl).toBe(
+      'https://lookaside.instagram.com/dummy/a.mp4',
+    );
+  });
+
+  it('preserva caption quando mensagem chega com texto + mídia', async () => {
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm_cap',
+        created_time: '2026-07-10T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: 'Olha que legal',
+        attachments: {
+          data: [
+            {
+              type: 'image',
+              mime_type: 'image/jpeg',
+              image_data: { url: 'https://lookaside.instagram.com/dummy/c.jpg' },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+
+    expect(res.messages[0].content.mediaUrl).toBe(
+      'https://lookaside.instagram.com/dummy/c.jpg',
+    );
+    expect(res.messages[0].content.caption).toBe('Olha que legal');
+    expect(res.messages[0].content.text).toBe('Olha que legal');
+  });
+
+  it('regressão: share de post/reel/story continua extraindo link', async () => {
+    const link = 'https://www.instagram.com/p/XYZ/';
+    const adapter = buildAdapterWithMessages([
+      {
+        id: 'm_share',
+        created_time: '2026-07-10T10:00:00.000Z',
+        from: { id: 'contact_x', username: 'someone' },
+        to: { data: [{ id: BUSINESS_ID }] },
+        message: '',
+        shares: { data: [{ link }] },
+      },
+    ]);
+
+    const res = await adapter.fetchMessages(channel, 'conv1', {}, undefined, 50);
+    expect(res.messages[0].content.text).toBe(link);
+    expect(res.messages[0].content.text).not.toBe('[Unsupported message]');
+  });
+});

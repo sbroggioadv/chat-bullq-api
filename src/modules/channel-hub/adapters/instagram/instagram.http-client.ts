@@ -109,7 +109,13 @@ export class InstagramHttpClient {
   ): Promise<{ data: any[]; nextCursor?: string }> {
     const client = this.createClient(channel);
     const params: Record<string, any> = {
-      fields: 'id,created_time,from,to,message,attachments,shares,story,reactions',
+      // Expansão de `attachments{...}` é obrigatória: sem o subcampo, a
+      // Graph API devolve apenas IDs sem URLs de mídia — mensagens de
+      // imagem/vídeo/áudio no histórico importavam sem `mediaUrl` e a UI
+      // não renderizava nada útil. `image_data`/`video_data` carregam a
+      // URL pública na sub-chave `.url`.
+      fields:
+        'id,created_time,from,to,message,attachments{image_data,video_data,file_url,mime_type,name,title},shares,story,reactions',
       limit,
     };
     if (cursor) params.after = cursor;
@@ -195,7 +201,7 @@ export class InstagramHttpClient {
     const client = this.createClient(channel);
     try {
       const { data } = await client.get(`/${messageId}`, {
-        params: { fields: 'id,created_time,from,to,message,attachments,shares,story' },
+        params: { fields: 'id,created_time,from,to,message,attachments{image_data,video_data,file_url,mime_type,name,title},shares,story' },
       });
       return data;
     } catch (err: any) {
