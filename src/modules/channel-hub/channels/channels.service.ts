@@ -12,8 +12,10 @@ import { CreateChannelDto } from './dto/create-channel.dto';
 import { UpdateChannelDto } from './dto/update-channel.dto';
 import { ChannelAdapterRegistry } from '../channel-adapter.registry';
 import { ZappfyHttpClient } from '../adapters/zappfy/zappfy.http-client';
+import { ZappfyMessageMapper } from '../adapters/zappfy/zappfy.message-mapper';
 import { WhatsAppOfficialHttpClient } from '../adapters/whatsapp-official/whatsapp-official.http-client';
 import { InstagramHttpClient } from '../adapters/instagram/instagram.http-client';
+import { InstagramMessageMapper } from '../adapters/instagram/instagram.message-mapper';
 import { ChannelSyncOrchestrator } from '../sync/channel-sync.orchestrator';
 import {
   ChannelAccessService,
@@ -30,6 +32,8 @@ export class ChannelsService {
     private readonly zappfyHttpClient: ZappfyHttpClient,
     private readonly waOfficialHttpClient: WhatsAppOfficialHttpClient,
     private readonly instagramHttpClient: InstagramHttpClient,
+    private readonly zappfyMapper: ZappfyMessageMapper,
+    private readonly instagramMapper: InstagramMessageMapper,
     private readonly syncOrchestrator: ChannelSyncOrchestrator,
     private readonly prisma: PrismaService,
     private readonly channelAccess: ChannelAccessService,
@@ -359,5 +363,116 @@ export class ChannelsService {
         error: error.response?.data?.error?.message || error.message,
       };
     }
+  }
+
+  /**
+   * Backfill: re-processa o rawPayload de mensagens problemáticas pelos
+   * mappers atualizados. Corrige `[ig reel]`, `[Unsupported message]`,
+   * `[Tipo: ...]` e afins que foram persistidos antes dos fixes dos mappers.
+   *
+   * Escopo: um canal por vez. Só reprocessa mensagens cujo content.text
+   * corresponde a um placeholder entre colchetes (sinal de fallback cego).
+   */
+  async backfillMessageContent(
+    channelId: string,
+    orgId: string,
+  ): Promise<{ scanned: number; updated: number; unchanged: number; errors: number }> {
+    const channel = await this.findOne(channelId, orgId);
+    if (!channel) throw new NotFoundException('Channel not found');
+
+    const mapper =
+      channel.type === ChannelType.INSTAGRAM
+        ? this.instagramMapper
+        : channel.type === ChannelType.WHATSAPP_ZAPPFY
+          ? this.zappfyMapper
+          : null;
+
+    if (!mapper) {
+      throw new BadRequestException(`Backfill not supported for channel type: ${channel.type}`);
+    }
+
+    // Placeholder pattern: texto que é SÓ algo entre colchetes.
+    const placeholderRe = /^\[.+\]$/;
+
+    // Busca mensagens desse canal em lotes. Filtra em memória porque
+    // filtrar dentro de JSON content->>'text' é mais frágil no Prisma.
+    const BATCH = 500;
+    let cursor: string | undefined;
+    let scanned = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let errors = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const messages: any[] = await this.prisma.message.findMany({
+        where: {
+          conversation: { channelId },
+        },
+        select: {
+          id: true,
+          type: true,
+          content: true,
+          metadata: true,
+        },
+        take: BATCH,
+        ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        orderBy: { id: 'asc' },
+      });
+
+      if (messages.length === 0) break;
+
+      for (const msg of messages) {
+        scanned++;
+        const text = msg.content?.text;
+        if (typeof text !== 'string' || !placeholderRe.test(text)) {
+          continue;
+        }
+
+        const rawPayload = msg.metadata?.rawPayload;
+        if (!rawPayload) {
+          unchanged++;
+          continue;
+        }
+
+        try {
+          const reprocessed = mapper.normalizeInbound(rawPayload);
+          if (!reprocessed) {
+            unchanged++;
+            continue;
+          }
+
+          const newText = reprocessed.content.text;
+          // Só atualiza se o conteúdo mudou (evita writes desnecessários).
+          if (newText === text && reprocessed.type === msg.type) {
+            unchanged++;
+            continue;
+          }
+
+          await this.prisma.message.update({
+            where: { id: msg.id },
+            data: {
+              type: reprocessed.type as any,
+              content: reprocessed.content as any,
+            },
+          });
+          updated++;
+        } catch (err: any) {
+          this.logger.warn(
+            `Backfill error on message ${msg.id}: ${err.message}`,
+          );
+          errors++;
+        }
+      }
+
+      if (messages.length < BATCH) break;
+      cursor = messages[messages.length - 1].id;
+    }
+
+    this.logger.log(
+      `Backfill channel=${channelId} (${channel.type}): scanned=${scanned} updated=${updated} unchanged=${unchanged} errors=${errors}`,
+    );
+
+    return { scanned, updated, unchanged, errors };
   }
 }

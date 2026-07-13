@@ -21,6 +21,7 @@ import { ZappfyContactEnricherService } from './zappfy-contact-enricher.service'
     ZappfyHttpClient,
     ZappfySyncAdapter,
     ZappfyContactEnricherService,
+    ZappfyMessageMapper,
   ],
 })
 export class ZappfyModule {}

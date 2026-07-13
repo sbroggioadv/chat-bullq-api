@@ -111,4 +111,14 @@ export class ChannelsController {
   testConnection(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
     return this.service.testConnection(id, orgId);
   }
+
+  @Post(':id/backfill-content')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Re-process rawPayload of messages with placeholder content ([ig reel], [Unsupported], etc.) through updated mappers. Corrects legacy imported messages after mapper fixes.',
+  })
+  backfillContent(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
+    return this.service.backfillMessageContent(id, orgId);
+  }
 }

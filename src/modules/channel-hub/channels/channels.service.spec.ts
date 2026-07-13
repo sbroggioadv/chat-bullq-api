@@ -24,6 +24,8 @@ function buildService() {
     {} as any,
     {} as any,
     { getMe: jest.fn() } as any,
+    {} as any,
+    {} as any,
     { start: jest.fn() } as any,
     prisma as any,
     {} as any,

@@ -21,6 +21,7 @@ import { InstagramContactEnricherService } from './instagram-contact-enricher.se
     InstagramHttpClient,
     InstagramSyncAdapter,
     InstagramContactEnricherService,
+    InstagramMessageMapper,
   ],
 })
 export class InstagramModule {}
