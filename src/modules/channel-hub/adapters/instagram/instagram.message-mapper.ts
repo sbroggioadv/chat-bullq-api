@@ -197,6 +197,20 @@ export class InstagramMessageMapper {
         story_mention: MessageContentType.TEXT,
         reel: MessageContentType.VIDEO,
         template: MessageContentType.TEMPLATE,
+        // Graph API usa 'ig reel', 'ig_reel', 'ig_media', 'ig_post',
+        // 'ig_story', 'media' e 'fall_back' pra conteúdo do Instagram
+        // compartilhado em DM. Sem isso, caíam no default e viravam
+        // texto cru '[ig reel]' no inbox.
+        'ig reel': MessageContentType.VIDEO,
+        ig_reel: MessageContentType.VIDEO,
+        ig_media: MessageContentType.TEXT,
+        'ig media': MessageContentType.TEXT,
+        ig_post: MessageContentType.TEXT,
+        'ig post': MessageContentType.TEXT,
+        ig_story: MessageContentType.TEXT,
+        'ig story': MessageContentType.TEXT,
+        media: MessageContentType.TEXT,
+        fall_back: MessageContentType.TEXT,
       };
       return map[type] || MessageContentType.TEXT;
     }
@@ -220,15 +234,34 @@ export class InstagramMessageMapper {
         case 'video':
         case 'reel':
           return { mediaUrl: payload.url, mimeType: 'video/mp4' };
+        case 'ig reel':
+        case 'ig_reel':
+          // Reel COMPARTILHADO: a Graph API entrega a URL do post em
+          // payload.url (link público, não mp4 reproduzível). Entregar
+          // como text — mesmo padrão do 'share'.
+          return { text: payload.url || payload.title || '[Reel compartilhado]' };
         case 'file':
           return { mediaUrl: payload.url };
         case 'share':
-          return { text: payload.url || '[Shared content]' };
+        case 'ig_media':
+        case 'ig media':
+        case 'ig_post':
+        case 'ig post':
+        case 'ig_story':
+        case 'ig story':
+        case 'media':
+          return { text: payload.url || payload.title || '[Conteúdo compartilhado]' };
         case 'story_mention':
           return { text: '[Story mention]', mediaUrl: payload.url };
+        case 'fall_back':
+          return { text: payload.title || payload.text || '[Mensagem não suportada pelo Instagram]' };
         case 'template':
           return this.extractTemplateContent(payload);
         default:
+          // Última barreira: tentar extrair URL ou título do payload antes
+          // de mostrar o tipo cru. Evita '[ig reel]' e similares.
+          if (payload.url) return { text: payload.url };
+          if (payload.title) return { text: payload.title };
           return { text: `[${att.type}]` };
       }
     }

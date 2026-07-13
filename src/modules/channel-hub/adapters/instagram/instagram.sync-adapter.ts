@@ -182,6 +182,14 @@ export class InstagramSyncAdapter implements HistorySyncPort {
   }
 
   private resolveContentType(raw: Record<string, any>): MessageContentType {
+    // Shares (posts/reels/stories compartilhados) e story mentions são TEXT
+    // com link — verificamos ANTES de attachments, porque a Graph API às vezes
+    // entrega attachments genéricos (type=share/ig_reel sem mime_type) junto
+    // com shares.data[].link. Sem essa ordem, o attachment genérico cai em
+    // DOCUMENT com mediaUrl vazia e o link do share é ignorado.
+    if (raw.shares?.data?.length) return MessageContentType.TEXT;
+    if (raw.story) return MessageContentType.TEXT;
+
     const attachments = raw.attachments?.data || [];
     if (attachments.length > 0) {
       const first = attachments[0];
@@ -190,10 +198,13 @@ export class InstagramSyncAdapter implements HistorySyncPort {
       if (mime.startsWith('image/') || rawType === 'image' || first?.image_data) return MessageContentType.IMAGE;
       if (mime.startsWith('video/') || rawType === 'video' || first?.video_data) return MessageContentType.VIDEO;
       if (mime.startsWith('audio/') || rawType === 'audio') return MessageContentType.AUDIO;
+      // Attachment sem mime reconhecido (share/ig_reel/fall_back sem mídia
+      // direta) — tenta extrair link do próprio attachment.url como TEXT.
+      if (first?.url && !first?.image_data && !first?.video_data && !first?.file_url) {
+        return MessageContentType.TEXT;
+      }
       return MessageContentType.DOCUMENT;
     }
-    if (raw.story) return MessageContentType.TEXT;
-    if (raw.shares?.data?.length) return MessageContentType.TEXT;
     return MessageContentType.TEXT;
   }
 
@@ -231,6 +242,14 @@ export class InstagramSyncAdapter implements HistorySyncPort {
         first?.file_url ||
         first?.url ||
         '';
+
+      // Quando o type foi resolvido como TEXT (share/ig_reel/fall_back sem
+      // mídia direta), a URL do attachment é um link de post/reel/story —
+      // entregar como text pra UI renderizar, não como mediaUrl.
+      if (type === MessageContentType.TEXT && url) {
+        return { text: url };
+      }
+
       return {
         mediaUrl: url,
         mimeType: first?.mime_type,
