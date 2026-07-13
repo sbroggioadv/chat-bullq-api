@@ -842,6 +842,9 @@ model Message {
   failedReason   String?            @map("failed_reason")
   metadata       Json               @default("{}")
   createdAt      DateTime           @default(now()) @map("created_at")
+  // Hora em que a BullQ persistiu a mensagem. Diferente de createdAt, que
+  // preserva a data histórica do provider durante importações.
+  ingestedAt     DateTime           @default(now()) @map("ingested_at")
 
   // ─── Revoke state (delete for everyone) ─────────
   /// Quando setado, a mensagem foi marcada como deletada. UI renderiza
@@ -864,6 +867,7 @@ model Message {
   @@index([conversationId, createdAt], name: "idx_msg_conv_time")
   @@index([conversationId, providerTimestamp], name: "idx_msg_conv_provider_ts")
   @@index([externalId], name: "idx_msg_external_id")
+  @@index([ingestedAt, id], name: "idx_msg_ingested_cursor")
   @@map("messages")
 }
 
