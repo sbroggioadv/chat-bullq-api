@@ -1,18 +1,15 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../../../database/prisma.service';
 import { ZappfyContactEnricherService } from '../../channel-hub/adapters/zappfy/zappfy-contact-enricher.service';
+import { ContactsService } from './contacts.service';
 
 /**
- * SPEC-003 W4 / S20 W2: daily re-enrich of WhatsApp profile pictures.
+ * SPEC-003 W4 / S20 W2: re-enrich + rehost WhatsApp profile pictures.
  *
- * WhatsApp CDN avatar URLs expire ~14 days. Inbound enrich only fills
- * empty avatarUrl; stale non-null URLs stay broken forever without this.
+ * WhatsApp CDN avatar URLs expire ~14 days and often fail in the browser.
+ * After fetch from Zappfy we rehost onto BullQ /uploads (stable URL).
  *
- * Feature flag: CONTACT_AVATAR_CRON_ENABLED=true (default false).
- * Interval: CONTACT_AVATAR_CRON_MS (default 24h) for tests; production
- * uses daily wall-clock via first run + 24h interval.
- *
- * Uses setInterval (same pattern as PendingActionCron) — no new queue.
+ * Feature flag: CONTACT_AVATAR_CRON_ENABLED=true
  */
 @Injectable()
 export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
@@ -23,6 +20,7 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly zappfyEnricher: ZappfyContactEnricherService,
+    private readonly contactsService: ContactsService,
   ) {}
 
   onModuleInit(): void {
@@ -35,9 +33,11 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const intervalMs = Number(process.env.CONTACT_AVATAR_CRON_MS) || 24 * 60 * 60 * 1000;
-    // First pass after 2 min so boot/migrations settle; then interval.
-    const firstDelayMs = Number(process.env.CONTACT_AVATAR_CRON_FIRST_DELAY_MS) || 2 * 60 * 1000;
+    const intervalMs =
+      Number(process.env.CONTACT_AVATAR_CRON_MS) || 24 * 60 * 60 * 1000;
+    // First pass soon after boot so redeploy actually refreshes avatars.
+    const firstDelayMs =
+      Number(process.env.CONTACT_AVATAR_CRON_FIRST_DELAY_MS) || 45_000;
 
     this.logger.log({
       msg: 'contact_avatar_cron_registered',
@@ -57,24 +57,21 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
     this.timer = null;
   }
 
-  /**
-   * Re-enrich contact-channels that have no avatar OR were last updated
-   * more than 7 days ago (URL may have expired).
-   */
   async scanAndEnrich(): Promise<{
     scanned: number;
     enriched: number;
+    rehosted: number;
     skipped: number;
     failed: number;
   }> {
     if (this.running) {
       this.logger.warn('contact_avatar_cron already running — skip tick');
-      return { scanned: 0, enriched: 0, skipped: 0, failed: 0 };
+      return { scanned: 0, enriched: 0, rehosted: 0, skipped: 0, failed: 0 };
     }
     this.running = true;
     const start = Date.now();
     try {
-      const staleBefore = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // All active WA contact-channels (cap 800/tick). Force-enrich + rehost.
       const targets = await this.prisma.contactChannel.findMany({
         where: {
           contact: { deletedAt: null },
@@ -84,48 +81,70 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
             isActive: true,
           },
           externalId: { not: '' },
-          OR: [
-            { contact: { avatarUrl: null } },
-            { contact: { updatedAt: { lt: staleBefore } } },
-          ],
         },
         include: { channel: true },
-        take: 500,
+        take: 800,
       });
 
       let enriched = 0;
+      let rehosted = 0;
       let skipped = 0;
       let failed = 0;
       const CONCURRENCY = 5;
 
       for (let i = 0; i < targets.length; i += CONCURRENCY) {
         const batch = targets.slice(i, i + CONCURRENCY);
-        const results = await Promise.all(
-          batch.map((cc) =>
-            this.zappfyEnricher.enrich(cc.channel, cc.externalId, { force: true }),
-          ),
+        await Promise.all(
+          batch.map(async (cc) => {
+            try {
+              const r = await this.zappfyEnricher.enrich(
+                cc.channel as any,
+                cc.externalId,
+                { force: true },
+              );
+              if (r.enriched) enriched++;
+              else if (r.reason === 'error') failed++;
+              else skipped++;
+
+              const contact = await this.prisma.contact.findUnique({
+                where: { id: cc.contactId },
+                select: { id: true, avatarUrl: true },
+              });
+              if (contact?.avatarUrl) {
+                const ok = await this.contactsService.rehostAvatarToBullq(
+                  contact.id,
+                  contact.avatarUrl,
+                );
+                if (ok) rehosted++;
+              }
+            } catch {
+              failed++;
+            }
+          }),
         );
-        for (const r of results) {
-          if (r.enriched) enriched++;
-          else if (r.reason === 'error') failed++;
-          else skipped++;
-        }
       }
 
       this.logger.log({
         msg: 'contact_avatar_cron_done',
         scanned: targets.length,
         enriched,
+        rehosted,
         skipped,
         failed,
         durationMs: Date.now() - start,
       });
 
-      return { scanned: targets.length, enriched, skipped, failed };
+      return {
+        scanned: targets.length,
+        enriched,
+        rehosted,
+        skipped,
+        failed,
+      };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`contact_avatar_cron failed: ${msg}`);
-      return { scanned: 0, enriched: 0, skipped: 0, failed: 1 };
+      return { scanned: 0, enriched: 0, rehosted: 0, skipped: 0, failed: 1 };
     } finally {
       this.running = false;
     }

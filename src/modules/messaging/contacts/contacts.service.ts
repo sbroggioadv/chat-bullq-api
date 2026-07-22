@@ -1,8 +1,10 @@
 import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import axios from 'axios';
 import { ContactsRepository } from './contacts.repository';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { PrismaService } from '../../../database/prisma.service';
 import { ZappfyContactEnricherService } from '../../channel-hub/adapters/zappfy/zappfy-contact-enricher.service';
+import { UploadsService } from '../messages/uploads.service';
 
 /**
  * S20 Wave 1: stats devolvidas pelo backfill de fotos do WhatsApp.
@@ -13,6 +15,7 @@ export interface SyncAvatarsResult {
   enriched: number;
   skipped: number;
   failed: number;
+  rehosted: number;
   durationMs: number;
 }
 
@@ -24,6 +27,7 @@ export class ContactsService {
     private readonly repository: ContactsRepository,
     private readonly prisma: PrismaService,
     private readonly zappfyEnricher: ZappfyContactEnricherService,
+    private readonly uploads: UploadsService,
   ) {}
 
   async findAll(
@@ -168,7 +172,7 @@ export class ContactsService {
         },
         externalId: { not: '' },
       },
-      include: { channel: true },
+      include: { channel: true, contact: { select: { id: true, avatarUrl: true } } },
     });
 
     this.logger.log(
@@ -178,6 +182,7 @@ export class ContactsService {
     let enriched = 0;
     let skipped = 0;
     let failed = 0;
+    let rehosted = 0;
 
     // Concorrencia limitada via chunks paralelos. Simples e suficiente
     // pra ~hundreds de contatos. Pra escala maior (10k+), migrar pra fila
@@ -186,9 +191,22 @@ export class ContactsService {
     for (let i = 0; i < targets.length; i += CONCURRENCY) {
       const batch = targets.slice(i, i + CONCURRENCY);
       const results = await Promise.all(
-        batch.map((cc) =>
-          this.zappfyEnricher.enrich(cc.channel, cc.externalId, { force: true }),
-        ),
+        batch.map(async (cc) => {
+          const r = await this.zappfyEnricher.enrich(cc.channel, cc.externalId, {
+            force: true,
+          });
+          // Always try rehost after force-enrich: WhatsApp CDN URLs expire ~14d
+          // and the browser often can't load them (hotlink/expiry).
+          const contact = await this.prisma.contact.findUnique({
+            where: { id: cc.contactId },
+            select: { id: true, avatarUrl: true },
+          });
+          if (contact?.avatarUrl) {
+            const ok = await this.rehostAvatarToBullq(contact.id, contact.avatarUrl);
+            if (ok) rehosted++;
+          }
+          return r;
+        }),
       );
       for (const r of results) {
         if (r.enriched) enriched++;
@@ -199,7 +217,7 @@ export class ContactsService {
 
     const durationMs = Date.now() - startMs;
     this.logger.log(
-      `[sync-avatars] org=${organizationId} done — total=${targets.length} enriched=${enriched} skipped=${skipped} failed=${failed} duration=${durationMs}ms`,
+      `[sync-avatars] org=${organizationId} done — total=${targets.length} enriched=${enriched} rehosted=${rehosted} skipped=${skipped} failed=${failed} duration=${durationMs}ms`,
     );
 
     return {
@@ -207,7 +225,58 @@ export class ContactsService {
       enriched,
       skipped,
       failed,
+      rehosted,
       durationMs,
     };
+  }
+
+  /**
+   * Download a remote WhatsApp/Zappfy profile pic and store it on BullQ
+   * uploads so the URL never expires. No-op if already a BullQ /uploads URL.
+   */
+  async rehostAvatarToBullq(
+    contactId: string,
+    avatarUrl: string,
+  ): Promise<boolean> {
+    if (!avatarUrl || !avatarUrl.startsWith('http')) return false;
+    if (avatarUrl.includes('/api/v1/uploads/')) return false;
+    try {
+      const resp = await axios.get(avatarUrl, {
+        responseType: 'arraybuffer',
+        timeout: 25_000,
+        headers: {
+          // Some CDNs reject empty UA
+          'User-Agent': 'BullQ-AvatarSync/1.0',
+        },
+        maxRedirects: 5,
+        validateStatus: (s) => s >= 200 && s < 400,
+      });
+      const buffer = Buffer.from(resp.data);
+      if (buffer.length < 100) return false;
+      const headerMime = resp.headers['content-type'];
+      const mime =
+        typeof headerMime === 'string' && headerMime.startsWith('image/')
+          ? headerMime.split(';')[0].trim()
+          : 'image/jpeg';
+      const saved = await this.uploads.saveInboundMedia({
+        buffer,
+        mimeType: mime,
+        channelId: 'avatars',
+        originalFilename: `avatar-${contactId}.jpg`,
+      });
+      await this.prisma.contact.update({
+        where: { id: contactId },
+        data: { avatarUrl: saved.url },
+      });
+      this.logger.log(
+        `Avatar rehosted contact=${contactId} -> ${saved.url} (${buffer.length}b)`,
+      );
+      return true;
+    } catch (err: any) {
+      this.logger.warn(
+        `Avatar rehost failed contact=${contactId}: ${err.message}`,
+      );
+      return false;
+    }
   }
 }
