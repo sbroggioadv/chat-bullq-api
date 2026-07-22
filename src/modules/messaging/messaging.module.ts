@@ -26,6 +26,7 @@ import { MediaResolverService } from './messages/media-resolver.service';
 import { ContactsController } from './contacts/contacts.controller';
 import { ContactsService } from './contacts/contacts.service';
 import { ContactsRepository } from './contacts/contacts.repository';
+import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { ContactsRepository } from './contacts/contacts.repository';
     MediaResolverService,
     ContactsService,
     ContactsRepository,
+    ContactAvatarCronService,
   ],
   exports: [ConversationsService, MessagesService, ConversationFsmService, ContactsService, HistoryImportService, UploadsService],
 })

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ChannelType, Channel } from '@prisma/client';
+import axios from 'axios';
 import { OutboundChannelPort } from '../../ports/outbound-channel.port';
 import {
   NormalizedOutboundMessage,
@@ -24,16 +25,42 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
     contactExternalId: string,
     message: NormalizedOutboundMessage,
   ): Promise<SendResult> {
-    const { endpoint, payload } = this.mapper.denormalize(
-      message,
-      contactExternalId,
-    );
+    const denormalized = this.mapper.denormalize(message, contactExternalId);
 
-    const response = await this.httpClient.sendRequest(
-      channel,
-      endpoint,
-      payload,
-    );
+    let response: any;
+    if (denormalized.fileUpload) {
+      try {
+        response = await this.sendMultipart(
+          channel,
+          denormalized.endpoint,
+          denormalized.payload,
+          denormalized.fileUpload,
+        );
+      } catch (error: any) {
+        // SPEC-003 W2: never lose the send — fall back to JSON + friendly URL.
+        this.logger.warn(
+          `Multipart upload failed (${error.message}); falling back to JSON media URL for ${contactExternalId}`,
+        );
+        const fallbackPayload = {
+          ...denormalized.payload,
+          file:
+            denormalized.fileUpload.friendlyUrl ||
+            denormalized.fileUpload.url ||
+            denormalized.payload.file,
+        };
+        response = await this.httpClient.sendRequest(
+          channel,
+          denormalized.endpoint,
+          fallbackPayload,
+        );
+      }
+    } else {
+      response = await this.httpClient.sendRequest(
+        channel,
+        denormalized.endpoint,
+        denormalized.payload,
+      );
+    }
 
     return {
       // Prefer `messageid` — the send response returns `id` as `<owner>:<msgid>`
@@ -47,6 +74,43 @@ export class ZappfyOutboundAdapter implements OutboundChannelPort {
         '',
       providerResponse: response,
     };
+  }
+
+  private async sendMultipart(
+    channel: Channel,
+    endpoint: string,
+    payload: Record<string, any>,
+    fileUpload: { url: string; name: string; mimeType?: string; friendlyUrl?: string },
+  ): Promise<any> {
+    this.logger.log(
+      `Downloading file for multipart upload: ${fileUpload.url} (name: ${fileUpload.name})`,
+    );
+    const fileResponse = await axios.get(fileUpload.url, {
+      responseType: 'arraybuffer',
+      timeout: 60000,
+    });
+    const buffer = Buffer.from(fileResponse.data);
+    const headerMime = fileResponse.headers['content-type'];
+    const mimeType =
+      fileUpload.mimeType ||
+      (typeof headerMime === 'string' ? headerMime : undefined) ||
+      'application/octet-stream';
+
+    this.logger.log(
+      `File downloaded: ${fileUpload.name}, size: ${buffer.length}, mime: ${mimeType}`,
+    );
+
+    // Payload fields for multipart must not include the remote `file` URL —
+    // the binary goes in the form file field with the original filename.
+    const { file: _omitFile, ...fields } = payload;
+    return this.httpClient.sendMultipartRequest(
+      channel,
+      endpoint,
+      fields,
+      buffer,
+      fileUpload.name,
+      mimeType,
+    );
   }
 
   async sendTypingIndicator(

@@ -110,10 +110,12 @@ describe('ZappfyMessageMapper — chatbot/automação inbound', () => {
         vcard,
       });
       const res = mapper.normalizeInbound(event);
+      expect(res!.type).toBe(MessageContentType.CONTACT);
       expect(res!.content.text).toContain('João da Silva');
       expect(res!.content.text).toContain('+55 11 99999-8888');
       expect(res!.content.text).toContain('+55 11 3333-2222');
       expect(res!.content.fileName).toBe('João da Silva.vcf');
+      expect(res!.content.contact?.fullName).toBe('João da Silva');
     });
 
     it('lida com vCard ausente mostrando só o nome', () => {
@@ -121,8 +123,51 @@ describe('ZappfyMessageMapper — chatbot/automação inbound', () => {
         displayName: 'Maria',
       });
       const res = mapper.normalizeInbound(event);
+      expect(res!.type).toBe(MessageContentType.CONTACT);
       expect(res!.content.text).toContain('Maria');
       expect(res!.content.text).not.toContain('Tel:');
+    });
+
+    it('contactsArrayMessage extrai múltiplos contatos', () => {
+      const event = buildEvent('contactsArrayMessage', {
+        contacts: [
+          {
+            displayName: 'Alice',
+            vcard: 'BEGIN:VCARD\nFN:Alice\nTEL:+5511999000111\nEND:VCARD',
+          },
+          {
+            displayName: 'Bob',
+            vcard: 'BEGIN:VCARD\nFN:Bob\nTEL:+5511888000222\nEND:VCARD',
+          },
+        ],
+      });
+      const res = mapper.normalizeInbound(event);
+      expect(res!.type).toBe(MessageContentType.CONTACT);
+      expect(res!.content.text).toContain('Contatos (2)');
+      expect(res!.content.text).toContain('Alice');
+      expect(res!.content.text).toContain('Bob');
+      expect(res!.content.text).toContain('+5511999000111');
+    });
+  });
+
+  describe('denormalize DOCUMENT multipart', () => {
+    it('retorna fileUpload com nome original', () => {
+      const result = mapper.denormalize(
+        {
+          type: MessageContentType.DOCUMENT,
+          content: {
+            mediaUrl: 'https://api.example.com/api/v1/uploads/documents/2026-07-22/abc123.pdf',
+            fileName: 'Contrato-Cliente.pdf',
+            mimeType: 'application/pdf',
+          },
+        },
+        '5511999998888@s.whatsapp.net',
+      );
+      expect(result.endpoint).toBe('/send/media');
+      expect(result.fileUpload?.name).toBe('Contrato-Cliente.pdf');
+      expect(result.fileUpload?.url).toContain('uploads/documents');
+      expect(result.payload.type).toBe('document');
+      expect(result.payload.filename).toBe('Contrato-Cliente.pdf');
     });
   });
 

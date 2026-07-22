@@ -198,7 +198,16 @@ export class ZappfyMessageMapper {
   denormalize(
     message: NormalizedOutboundMessage,
     contactExternalId: string,
-  ): { endpoint: string; payload: Record<string, any> } {
+  ): {
+    endpoint: string;
+    payload: Record<string, any>;
+    fileUpload?: {
+      url: string;
+      name: string;
+      mimeType?: string;
+      friendlyUrl?: string;
+    };
+  } {
     const number = contactExternalId.replace(/@s\.whatsapp\.net|@g\.us/g, '');
     // Uazapi/Zappfy aceita `replyid` (id da mensagem citada) em
     // /send/text e /send/media. Quando o cliente recebe, o WhatsApp
@@ -218,12 +227,26 @@ export class ZappfyMessageMapper {
       case MessageContentType.IMAGE: {
         const imageUrl = message.content.mediaUrl || '';
         const imageName = message.content.fileName || this.inferFilenameFromUrl(imageUrl) || 'image.jpg';
+        const friendlyUrl = this.buildFriendlyMediaUrl(imageUrl, imageName);
         const imagePayload = withReply({
           number,
-          file: this.buildFriendlyMediaUrl(imageUrl, imageName),
+          file: friendlyUrl,
           type: 'image',
           caption: message.content.caption || '',
         });
+        // Prefer multipart when we have an original name so WA keeps it.
+        if (message.content.fileName && imageUrl) {
+          return {
+            endpoint: '/send/media',
+            payload: imagePayload,
+            fileUpload: {
+              url: imageUrl,
+              name: imageName,
+              mimeType: message.content.mimeType,
+              friendlyUrl,
+            },
+          };
+        }
         return { endpoint: '/send/media', payload: imagePayload };
       }
 
@@ -243,32 +266,98 @@ export class ZappfyMessageMapper {
       case MessageContentType.VIDEO: {
         const videoUrl = message.content.mediaUrl || '';
         const videoName = message.content.fileName || this.inferFilenameFromUrl(videoUrl) || 'video.mp4';
+        const friendlyUrl = this.buildFriendlyMediaUrl(videoUrl, videoName);
         const videoPayload = withReply({
           number,
-          file: this.buildFriendlyMediaUrl(videoUrl, videoName),
+          file: friendlyUrl,
           type: 'video',
           caption: message.content.caption || '',
         });
+        if (message.content.fileName && videoUrl) {
+          return {
+            endpoint: '/send/media',
+            payload: videoPayload,
+            fileUpload: {
+              url: videoUrl,
+              name: videoName,
+              mimeType: message.content.mimeType,
+              friendlyUrl,
+            },
+          };
+        }
         return { endpoint: '/send/media', payload: videoPayload };
       }
 
       case MessageContentType.DOCUMENT: {
-        // O Zappfy/Uazapi extrai o nome do arquivo do path da URL publica,
-        // ignorando o parametro `filename`. Para preservar o nome original,
-        // usamos uma URL amigavel (/uploads/media/<nome-original>?key=<hash>).
+        // SPEC-003 W2: Zappfy ignores "filename" on JSON URL sends and often
+        // uses the storage hash. Send multipart with the original name; keep
+        // friendly URL as fallback in the outbound adapter.
         const originalUrl = message.content.mediaUrl || '';
-        const fileName = message.content.fileName || this.inferFilenameFromUrl(originalUrl) || 'document.bin';
+        const fileName =
+          message.content.fileName ||
+          this.inferFilenameFromUrl(originalUrl) ||
+          'document.bin';
         const friendlyUrl = this.buildFriendlyMediaUrl(originalUrl, fileName);
         const docPayload = withReply({
           number,
           file: friendlyUrl,
           type: 'document',
           caption: message.content.caption || '',
+          // Extra hints some Uazapi builds honor when present:
+          filename: fileName,
+          docName: fileName,
         });
         this.logger.log(
-          `DOCUMENT payload to Zappfy for ${number}: ${JSON.stringify(docPayload)}`,
+          `DOCUMENT payload to Zappfy for ${number}: ${JSON.stringify({
+            ...docPayload,
+            mode: originalUrl ? 'multipart+friendly-fallback' : 'json-only',
+            fileName,
+          })}`,
         );
-        return { endpoint: '/send/media', payload: docPayload };
+        return {
+          endpoint: '/send/media',
+          payload: docPayload,
+          fileUpload: originalUrl
+            ? {
+                url: originalUrl,
+                name: fileName,
+                mimeType: message.content.mimeType,
+                friendlyUrl,
+              }
+            : undefined,
+        };
+      }
+
+      case MessageContentType.CONTACT: {
+        // S21 W3 / SPEC-003: share vCard. Uazapi/Zappfy typically accept
+        // /send/contact with number + fullName + phone (or vcard string).
+        const contact = message.content.contact;
+        const fullName =
+          contact?.fullName || message.content.text || 'Contato';
+        const phone =
+          contact?.phones?.[0]?.replace(/\D/g, '') ||
+          number;
+        const vcard =
+          contact?.vcard ||
+          [
+            'BEGIN:VCARD',
+            'VERSION:3.0',
+            `FN:${fullName}`,
+            phone ? `TEL;type=CELL;type=VOICE;waid=${phone}:+${phone}` : '',
+            'END:VCARD',
+          ]
+            .filter(Boolean)
+            .join('\n');
+        return {
+          endpoint: '/send/contact',
+          payload: withReply({
+            number,
+            fullName,
+            phoneName: fullName,
+            phone,
+            vcard,
+          }),
+        };
       }
 
       case MessageContentType.STICKER:
@@ -325,6 +414,16 @@ export class ZappfyMessageMapper {
     if (type.includes('location')) return MessageContentType.LOCATION;
     if (type.includes('reaction')) return MessageContentType.REACTION;
     if (type.includes('button') || type.includes('list')) return MessageContentType.INTERACTIVE;
+    if (
+      type.includes('interactive') ||
+      type.includes('nativeflow') ||
+      type.includes('template')
+    ) {
+      return MessageContentType.INTERACTIVE;
+    }
+    if (type.includes('contact') || type.includes('vcard')) {
+      return MessageContentType.CONTACT;
+    }
     // viewOnce: embrulha outra mensagem em `content.message`. Classifica
     // pelo tipo interno pra frontend renderizar mídia em vez de texto.
     if (type.includes('viewonce')) {
@@ -528,16 +627,94 @@ export class ZappfyMessageMapper {
   }
 
   /**
-   * contactMessage: vCard. Extrai nome (FN) + telefones (TEL) por parse
-   * simples — vCard é texto com linhas `FN:`/`TEL;...:+5511...`.
+   * contactMessage / contactsArrayMessage: vCard(s). Extrai nome (FN) +
+   * telefones (TEL). Cobre shape flat e array multi-contato (Baileys /
+   * Uazapi: content.contacts[] ou content.message.contacts).
    */
   private extractContactContent(content: any): NormalizedInboundMessage['content'] {
-    const displayName =
-      content?.displayName || content?.name || content?.contactName || '';
-    const vcard = content?.vcard || content?.vCard || '';
-    const tels: string[] = [];
+    const entries = this.collectContactEntries(content);
+    if (entries.length === 0) {
+      return { text: 'Contato' };
+    }
 
-    if (typeof vcard === 'string') {
+    const lines: string[] = [];
+    const first = entries[0];
+    for (const e of entries) {
+      const label = e.fullName || 'Contato';
+      const telPart = e.phones.length ? ` (${e.phones.join(', ')})` : '';
+      lines.push(`${label}${telPart}`);
+    }
+
+    const text =
+      entries.length === 1
+        ? `Contato: ${lines[0]}`
+        : `Contatos (${entries.length}):\n${lines.map((l) => `• ${l}`).join('\n')}`;
+
+    return {
+      text,
+      fileName: `${first.fullName || 'contato'}.vcf`,
+      contact: {
+        fullName: first.fullName || 'Contato',
+        phones: first.phones,
+        vcard: first.vcard,
+      },
+    };
+  }
+
+  private collectContactEntries(
+    content: any,
+  ): Array<{ fullName: string; phones: string[]; vcard?: string }> {
+    const out: Array<{ fullName: string; phones: string[]; vcard?: string }> = [];
+    const pushFrom = (item: any) => {
+      if (!item || typeof item !== 'object') return;
+      const vcard =
+        (typeof item.vcard === 'string' && item.vcard) ||
+        (typeof item.vCard === 'string' && item.vCard) ||
+        (typeof item.vcardString === 'string' && item.vcardString) ||
+        '';
+      let fullName =
+        item.displayName ||
+        item.name ||
+        item.contactName ||
+        item.fullName ||
+        '';
+      if (!fullName && typeof item === 'object' && item.firstName) {
+        fullName = [item.firstName, item.lastName].filter(Boolean).join(' ');
+      }
+      const phones = this.extractPhonesFromVcardOrFields(vcard, item);
+      if (vcard && !fullName) {
+        const fn = vcard.match(/^FN:(.+)$/im);
+        if (fn) fullName = fn[1].trim();
+      }
+      if (fullName || phones.length || vcard) {
+        out.push({ fullName: fullName || '', phones, vcard: vcard || undefined });
+      }
+    };
+
+    // Multi-contato: contacts / contactsArray / message.contacts
+    const arrays = [
+      content?.contacts,
+      content?.contactsArray,
+      content?.contactArray,
+      content?.message?.contacts,
+      content?.contentText?.contacts,
+    ].filter(Array.isArray) as any[][];
+
+    for (const arr of arrays) {
+      for (const item of arr) pushFrom(item);
+    }
+
+    // Flat single contact
+    if (out.length === 0) {
+      pushFrom(content);
+    }
+
+    return out;
+  }
+
+  private extractPhonesFromVcardOrFields(vcard: string, item: any): string[] {
+    const tels: string[] = [];
+    if (typeof vcard === 'string' && vcard) {
       for (const line of vcard.split(/\r?\n/)) {
         const m = line.match(/^TEL[^:]*:(.+)$/i);
         if (m) {
@@ -546,14 +723,17 @@ export class ZappfyMessageMapper {
         }
       }
     }
-
-    const parts: string[] = [];
-    parts.push(displayName ? `Contato: ${displayName}` : 'Contato');
-    if (tels.length) parts.push(`Tel: ${tels.join(', ')}`);
-    return {
-      text: parts.join('\n'),
-      fileName: `${displayName || 'contato'}.vcf`,
-    };
+    const extras = [
+      item?.phone,
+      item?.number,
+      item?.waid,
+      ...(Array.isArray(item?.phones) ? item.phones : []),
+    ];
+    for (const p of extras) {
+      if (typeof p === 'string' && p.trim()) tels.push(p.trim());
+      if (typeof p === 'object' && p?.phone) tels.push(String(p.phone));
+    }
+    return [...new Set(tels)];
   }
 
   /**

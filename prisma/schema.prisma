@@ -60,6 +60,7 @@ enum MessageContentType {
   TEMPLATE
   INTERACTIVE
   SYSTEM
+  CONTACT
 }
 
 enum MessageStatus {

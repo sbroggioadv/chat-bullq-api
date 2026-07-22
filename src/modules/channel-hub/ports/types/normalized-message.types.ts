@@ -12,6 +12,8 @@ export enum MessageContentType {
   TEMPLATE = 'TEMPLATE',
   INTERACTIVE = 'INTERACTIVE',
   SYSTEM = 'SYSTEM',
+  /** Shared vCard / contact card (S21 W3 / SPEC-003). */
+  CONTACT = 'CONTACT',
 }
 
 export interface TemplateButton {
@@ -41,6 +43,12 @@ export interface NormalizedMessageContent {
   longitude?: number;
   reaction?: { emoji: string; targetMessageId: string };
   interactive?: { type: string; buttonId?: string; listRowId?: string };
+  /** Shared contact (inbound extract / outbound share). */
+  contact?: {
+    fullName: string;
+    phones: string[];
+    vcard?: string;
+  };
   template?: {
     templateType?: string;
     text?: string;
