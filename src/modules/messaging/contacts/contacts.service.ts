@@ -26,13 +26,84 @@ export class ContactsService {
     private readonly zappfyEnricher: ZappfyContactEnricherService,
   ) {}
 
-  async findAll(organizationId: string, search: string | undefined, page: number, limit: number) {
+  async findAll(
+    organizationId: string,
+    search: string | undefined,
+    page: number,
+    limit: number,
+    opts?: { shareableOnly?: boolean },
+  ) {
     const skip = (page - 1) * limit;
-    const { contacts, total } = await this.repository.findByOrg(organizationId, search, skip, limit);
+    const { contacts, total } = await this.repository.findByOrg(
+      organizationId,
+      search,
+      skip,
+      limit,
+      opts,
+    );
+
+    // Post-filter for shareable: real E.164-ish phone + human-readable name.
+    // Prisma can't easily express "digits only" — do it here for share picker.
+    let list = contacts;
+    if (opts?.shareableOnly) {
+      list = contacts.filter((c) => this.isShareableContact(c));
+    }
+
+    // Enrich displayName for the UI (name → channel profileName → cleaned phone)
+    const enriched = list.map((c) => ({
+      ...c,
+      displayName: this.resolveDisplayName(c),
+    }));
+
     return {
-      contacts,
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      contacts: enriched,
+      pagination: {
+        page,
+        limit,
+        total: opts?.shareableOnly ? enriched.length : total,
+        totalPages: Math.ceil(
+          (opts?.shareableOnly ? enriched.length : total) / limit,
+        ),
+      },
     };
+  }
+
+  /** Real phone (digits, 10–15) and not a WhatsApp @lid / junk id. */
+  private isShareableContact(c: {
+    name?: string | null;
+    phone?: string | null;
+    channels?: Array<{ profileName?: string | null; externalId?: string | null }>;
+  }): boolean {
+    const phone = (c.phone || '').trim();
+    if (!phone || phone.includes('@') || /lid/i.test(phone)) return false;
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) return false;
+    // Must have some human label somewhere
+    const label = this.resolveDisplayName(c);
+    if (!label || label.includes('@') || /lid/i.test(label)) return false;
+    // Reject pure-digit "names" that are just the phone or LID fragment
+    if (/^\d{10,}$/.test(label.replace(/\D/g, '')) && !c.name?.trim()) {
+      // allow if profileName exists
+      const hasProfile = c.channels?.some((ch) => !!ch.profileName?.trim());
+      if (!hasProfile) return false;
+    }
+    return true;
+  }
+
+  private resolveDisplayName(c: {
+    name?: string | null;
+    phone?: string | null;
+    channels?: Array<{ profileName?: string | null }>;
+  }): string {
+    const name = c.name?.trim();
+    if (name && !name.includes('@') && !/lid/i.test(name)) return name;
+    const profile = c.channels
+      ?.map((ch) => ch.profileName?.trim())
+      .find((p) => p && !p.includes('@') && !/lid/i.test(p));
+    if (profile) return profile;
+    const phone = (c.phone || '').trim();
+    if (phone && !phone.includes('@')) return phone;
+    return 'Sem nome';
   }
 
   async findOne(id: string, organizationId: string) {

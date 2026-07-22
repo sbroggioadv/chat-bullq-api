@@ -373,6 +373,87 @@ export class ChannelsService {
    * Escopo: um canal por vez. Só reprocessa mensagens cujo content.text
    * corresponde a um placeholder entre colchetes (sinal de fallback cego).
    */
+  /**
+   * Org-wide backfill for every Instagram + Zappfy channel. Used after
+   * mapper fixes so Fireflies / chatbot history with [Unsupported…] is
+   * rewritten without calling one channel at a time.
+   */
+  async backfillMessageContentAll(orgId: string): Promise<{
+    channels: number;
+    scanned: number;
+    updated: number;
+    unchanged: number;
+    errors: number;
+    perChannel: Array<{
+      channelId: string;
+      name: string;
+      scanned: number;
+      updated: number;
+      unchanged: number;
+      errors: number;
+    }>;
+  }> {
+    const channels = await this.prisma.channel.findMany({
+      where: {
+        organizationId: orgId,
+        deletedAt: null,
+        type: {
+          in: [ChannelType.WHATSAPP_ZAPPFY, ChannelType.INSTAGRAM],
+        },
+      },
+      select: { id: true, name: true },
+    });
+
+    const perChannel: Array<{
+      channelId: string;
+      name: string;
+      scanned: number;
+      updated: number;
+      unchanged: number;
+      errors: number;
+    }> = [];
+    let scanned = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let errors = 0;
+
+    for (const ch of channels) {
+      try {
+        const r = await this.backfillMessageContent(ch.id, orgId);
+        perChannel.push({ channelId: ch.id, name: ch.name, ...r });
+        scanned += r.scanned;
+        updated += r.updated;
+        unchanged += r.unchanged;
+        errors += r.errors;
+      } catch (err: any) {
+        this.logger.warn(
+          `backfill-all skip channel ${ch.id}: ${err.message}`,
+        );
+        perChannel.push({
+          channelId: ch.id,
+          name: ch.name,
+          scanned: 0,
+          updated: 0,
+          unchanged: 0,
+          errors: 1,
+        });
+        errors++;
+      }
+    }
+
+    this.logger.log(
+      `Backfill ALL org=${orgId}: channels=${channels.length} scanned=${scanned} updated=${updated}`,
+    );
+    return {
+      channels: channels.length,
+      scanned,
+      updated,
+      unchanged,
+      errors,
+      perChannel,
+    };
+  }
+
   async backfillMessageContent(
     channelId: string,
     orgId: string,
@@ -391,8 +472,22 @@ export class ChannelsService {
       throw new BadRequestException(`Backfill not supported for channel type: ${channel.type}`);
     }
 
-    // Placeholder pattern: texto que é SÓ algo entre colchetes.
-    const placeholderRe = /^\[.+\]$/;
+    // Placeholder patterns from old mappers / provider failures:
+    //  - exact [Unsupported message type]
+    //  - [Tipo: xyz] / [ig reel]
+    //  - [Undecryptable] …
+    //  - text that is ONLY a bracketed token
+    const isPlaceholder = (text: string): boolean => {
+      const t = text.trim();
+      if (!t) return false;
+      if (/^\[Unsupported message type\]$/i.test(t)) return true;
+      if (/^\[Unsupported message\]$/i.test(t)) return true;
+      if (/^\[Tipo:\s*.+\]$/i.test(t)) return true;
+      if (/^\[.+\]$/.test(t)) return true;
+      if (/^\[Undecryptable\]/i.test(t)) return true;
+      if (/Unsupported message type/i.test(t) && t.length < 80) return true;
+      return false;
+    };
 
     // Busca mensagens desse canal em lotes. Filtra em memória porque
     // filtrar dentro de JSON content->>'text' é mais frágil no Prisma.
@@ -424,12 +519,21 @@ export class ChannelsService {
 
       for (const msg of messages) {
         scanned++;
-        const text = msg.content?.text;
-        if (typeof text !== 'string' || !placeholderRe.test(text)) {
+        const text =
+          typeof msg.content?.text === 'string' ? msg.content.text : '';
+        const looksBad =
+          isPlaceholder(text) ||
+          // Interactive with empty/placeholder body (botões sem texto legível)
+          (msg.type === 'INTERACTIVE' &&
+            (!text || isPlaceholder(text) || text.length < 2));
+        if (!looksBad) {
           continue;
         }
 
-        const rawPayload = msg.metadata?.rawPayload;
+        const rawPayload =
+          msg.metadata?.rawPayload ||
+          msg.metadata?.raw ||
+          msg.metadata?.payload;
         if (!rawPayload) {
           unchanged++;
           continue;

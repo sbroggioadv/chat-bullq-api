@@ -413,11 +413,16 @@ export class ZappfyMessageMapper {
     if (type.includes('sticker')) return MessageContentType.STICKER;
     if (type.includes('location')) return MessageContentType.LOCATION;
     if (type.includes('reaction')) return MessageContentType.REACTION;
-    if (type.includes('button') || type.includes('list')) return MessageContentType.INTERACTIVE;
     if (
+      type.includes('button') ||
+      type.includes('list') ||
       type.includes('interactive') ||
       type.includes('nativeflow') ||
-      type.includes('template')
+      type.includes('template') ||
+      type.includes('highlystructured') ||
+      type.includes('product') ||
+      type.includes('poll') ||
+      type.includes('event')
     ) {
       return MessageContentType.INTERACTIVE;
     }
@@ -507,10 +512,16 @@ export class ZappfyMessageMapper {
       type.includes('list') ||
       type.includes('interactive') ||
       type.includes('nativeflow') ||
-      type.includes('template')
+      type.includes('template') ||
+      type.includes('highlystructured') ||
+      type.includes('product') ||
+      type.includes('poll') ||
+      type.includes('event')
     ) {
       return this.extractInteractiveContent(content);
     }
+
+    // orderMessage stays on dedicated extractor (total/items)
 
     // vCard / contato: nome + telefones.
     if (type.includes('contact')) {
@@ -591,20 +602,67 @@ export class ZappfyMessageMapper {
    * Cobrimos ambos pra não acoplar a uma versão específica do provider.
    */
   private extractInteractiveContent(content: any): NormalizedInboundMessage['content'] {
-    const ctx = content?.contentText || content || {};
-    const header =
-      ctx.caption || ctx.text || ctx.title || ctx.header || ctx.heading || '';
-    const description =
-      ctx.description || ctx.subtitle || ctx.footerText || ctx.footer || '';
+    // Uazapi / Baileys nest interactive content in several shapes:
+    //  flat · contentText · interactiveMessage · hydratedTemplate · highlyStructuredMessage
+    const ctx =
+      content?.contentText ||
+      content?.interactiveMessage ||
+      content?.hydratedTemplate ||
+      content?.highlyStructuredMessage ||
+      content?.nativeFlowMessage ||
+      content?.templateMessage ||
+      content ||
+      {};
 
-    const buttonLabels: string[] = (ctx.buttons || [])
+    const nestedBody =
+      ctx?.body?.text ||
+      ctx?.hydratedContentText ||
+      ctx?.hydratedTemplate?.hydratedContentText ||
+      ctx?.content?.text;
+
+    const header =
+      ctx.caption ||
+      ctx.text ||
+      ctx.title ||
+      ctx.header ||
+      ctx.heading ||
+      nestedBody ||
+      ctx?.header?.title ||
+      '';
+    const description =
+      ctx.description ||
+      ctx.subtitle ||
+      ctx.footerText ||
+      ctx.footer ||
+      ctx?.footer?.text ||
+      '';
+
+    const rawButtons =
+      ctx.buttons ||
+      ctx.hydratedButtons ||
+      ctx?.hydratedTemplate?.hydratedButtons ||
+      ctx?.nativeFlowMessage?.buttons ||
+      ctx?.action?.buttons ||
+      [];
+    const buttonLabels: string[] = (Array.isArray(rawButtons) ? rawButtons : [])
       .map((b: any) =>
-        b?.buttonText?.displayText || b?.displayText || b?.title || b?.text || '',
+        b?.buttonText?.displayText ||
+        b?.displayText ||
+        b?.title ||
+        b?.text ||
+        b?.hydratedButton?.displayText ||
+        b?.name ||
+        '',
       )
       .filter((s: string) => !!s);
 
     const itemLabels: string[] = [];
-    const sections = ctx.sections || ctx.list || [];
+    const sections =
+      ctx.sections ||
+      ctx.list ||
+      ctx?.listMessage?.sections ||
+      ctx?.action?.sections ||
+      [];
     if (Array.isArray(sections)) {
       for (const sec of sections) {
         if (Array.isArray(sec?.rows)) {
@@ -617,13 +675,29 @@ export class ZappfyMessageMapper {
       }
     }
 
+    // product / catalog cards
+    if (ctx.product || ctx.businessOwnerJid || typeProductHint(content)) {
+      const title =
+        ctx.title ||
+        ctx.product?.title ||
+        ctx.product?.name ||
+        'Produto / catálogo';
+      const partsProd = [String(title)];
+      if (ctx.description || ctx.product?.description) {
+        partsProd.push(String(ctx.description || ctx.product.description));
+      }
+      if (buttonLabels.length) partsProd.push(`Opções: ${buttonLabels.join(' | ')}`);
+      return { text: partsProd.filter(Boolean).join('\n') };
+    }
+
     const parts: string[] = [];
     if (header) parts.push(String(header));
-    if (description) parts.push(String(description));
+    if (description && description !== header) parts.push(String(description));
     if (buttonLabels.length) parts.push(`Opções: ${buttonLabels.join(' | ')}`);
     if (itemLabels.length) parts.push(`Itens: ${itemLabels.join(' | ')}`);
 
-    return { text: parts.join('\n') || content?.text || '' };
+    const text = parts.join('\n') || content?.text || nestedBody || '';
+    return { text: String(text) };
   }
 
   /**
@@ -761,4 +835,8 @@ export class ZappfyMessageMapper {
     if (message) parts.push(String(message));
     return { text: parts.join('\n') };
   }
+}
+
+function typeProductHint(content: any): boolean {
+  return !!(content?.productMessage || content?.product);
 }

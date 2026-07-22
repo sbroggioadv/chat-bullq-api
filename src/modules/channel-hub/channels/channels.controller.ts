@@ -112,6 +112,16 @@ export class ChannelsController {
     return this.service.testConnection(id, orgId);
   }
 
+  @Post('backfill-content-all')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Backfill placeholder messages ([Unsupported message type], [ig reel], …) on ALL Instagram + Zappfy channels of the org',
+  })
+  backfillContentAll(@CurrentOrg('id') orgId: string) {
+    return this.service.backfillMessageContentAll(orgId);
+  }
+
   @Post(':id/backfill-content')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({

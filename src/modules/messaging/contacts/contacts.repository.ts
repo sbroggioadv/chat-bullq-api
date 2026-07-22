@@ -11,6 +11,7 @@ export class ContactsRepository {
     search: string | undefined,
     skip: number,
     take: number,
+    opts?: { shareableOnly?: boolean },
   ) {
     const where: Prisma.ContactWhereInput = { organizationId, deletedAt: null };
 
@@ -19,6 +20,27 @@ export class ContactsRepository {
         { name: { contains: search, mode: 'insensitive' } },
         { phone: { contains: search } },
         { email: { contains: search, mode: 'insensitive' } },
+        // WhatsApp pushName stored on contact-channel
+        {
+          channels: {
+            some: {
+              profileName: { contains: search, mode: 'insensitive' },
+            },
+          },
+        },
+      ];
+    }
+
+    // Share picker: only contacts with a real phone (digits), not WhatsApp @lid
+    // IDs. LID contacts look like "243864048775323@lid" and are useless to share.
+    if (opts?.shareableOnly) {
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+        { phone: { not: null } },
+        { NOT: { phone: { contains: '@' } } },
+        { NOT: { phone: { contains: 'lid' } } },
+        // At least 8 digits in phone field (E.164 without symbols still ok)
+        { phone: { not: '' } },
       ];
     }
 
@@ -26,11 +48,18 @@ export class ContactsRepository {
       this.prisma.contact.findMany({
         where,
         include: {
-          channels: { include: { channel: { select: { id: true, type: true, name: true } } } },
+          channels: {
+            include: {
+              channel: { select: { id: true, type: true, name: true } },
+            },
+          },
           tags: { include: { tag: true } },
           _count: { select: { conversations: true } },
         },
-        orderBy: { updatedAt: 'desc' },
+        // Prefer named contacts first for the share picker
+        orderBy: opts?.shareableOnly
+          ? [{ name: 'asc' }, { updatedAt: 'desc' }]
+          : { updatedAt: 'desc' },
         skip,
         take,
       }),

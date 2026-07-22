@@ -18,13 +18,28 @@ export class ContactsController {
   @ApiQuery({ name: 'search', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({
+    name: 'shareable',
+    required: false,
+    description:
+      'If true/1, only contacts with a real phone (not WhatsApp @lid) and a human-readable name — for the share-contact picker',
+  })
   findAll(
     @CurrentOrg('id') orgId: string,
     @Query('search') search?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('shareable') shareable?: string,
   ) {
-    return this.service.findAll(orgId, search, parseInt(page || '1', 10), parseInt(limit || '20', 10));
+    const shareableOnly =
+      shareable === '1' || shareable === 'true' || shareable === 'yes';
+    return this.service.findAll(
+      orgId,
+      search,
+      parseInt(page || '1', 10),
+      parseInt(limit || '20', 10),
+      { shareableOnly },
+    );
   }
 
   @Get(':id')
