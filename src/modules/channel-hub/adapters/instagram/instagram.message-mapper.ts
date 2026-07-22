@@ -176,6 +176,20 @@ export class InstagramMessageMapper {
           },
         };
 
+      case MessageContentType.CONTACT: {
+        // Instagram DM has no native contact card — send readable text.
+        const c = message.content.contact;
+        const body =
+          message.content.text ||
+          (c
+            ? `Contato: ${c.fullName}${c.phones?.length ? ` (${c.phones.join(', ')})` : ''}`
+            : 'Contato');
+        return {
+          ...base,
+          message: { text: applyQuoteToText(body) },
+        };
+      }
+
       default:
         return {
           ...base,

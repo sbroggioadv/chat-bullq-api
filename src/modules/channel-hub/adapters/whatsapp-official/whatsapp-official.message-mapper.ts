@@ -160,6 +160,18 @@ export class WhatsAppOfficialMessageMapper {
         };
       }
 
+      case MessageContentType.CONTACT: {
+        // Cloud API contacts send is a separate type; fall back to readable text
+        // so share-contact never ships an empty body on this channel.
+        const c = message.content.contact;
+        const body =
+          message.content.text ||
+          (c
+            ? `Contato: ${c.fullName}${c.phones?.length ? ` (${c.phones.join(', ')})` : ''}`
+            : 'Contato');
+        return { ...base, type: 'text', text: { body } };
+      }
+
       default:
         return { ...base, type: 'text', text: { body: message.content.text || '' } };
     }
@@ -179,6 +191,7 @@ export class WhatsAppOfficialMessageMapper {
       interactive: MessageContentType.INTERACTIVE,
       button: MessageContentType.INTERACTIVE,
       template: MessageContentType.TEMPLATE,
+      contacts: MessageContentType.CONTACT,
     };
     return map[type] || MessageContentType.TEXT;
   }
