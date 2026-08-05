@@ -111,7 +111,79 @@ export class ChannelsService {
         );
     }
 
+    // Gmail: pin a sidebar inbox view filtered to this channel so emails
+    // are discoverable without hunting the channel selector.
+    if (dto.type === ChannelType.GMAIL && creator) {
+      this.ensureGmailInboxView(channel, creator.userOrganizationId).catch((err) =>
+        this.logger.warn(
+          `Gmail inbox view not created for channel ${channel.id}: ${err.message}`,
+        ),
+      );
+    }
+
     return channel;
+  }
+
+  /**
+   * Creates (idempotently) a personal inbox view "Gmail · {channel.name}"
+   * filtered to this channel, so it appears in the left sidebar.
+   */
+  async ensureInboxViewForChannel(
+    id: string,
+    organizationId: string,
+    userOrganizationId: string,
+  ) {
+    const channel = await this.findOne(id, organizationId);
+    await this.ensureGmailInboxView(channel, userOrganizationId);
+    return { success: true, channelId: channel.id, name: channel.name };
+  }
+
+  private async ensureGmailInboxView(
+    channel: { id: string; organizationId: string; name: string },
+    userOrganizationId: string,
+  ): Promise<void> {
+    const uo = await this.prisma.userOrganization.findUnique({
+      where: { id: userOrganizationId },
+      select: { userId: true },
+    });
+    if (!uo?.userId) return;
+
+    const existing = await this.prisma.inboxView.findFirst({
+      where: {
+        organizationId: channel.organizationId,
+        userId: uo.userId,
+        metadata: { path: ['gmailChannelId'], equals: channel.id },
+      },
+    });
+    if (existing) return;
+
+    const max = await this.prisma.inboxView.findFirst({
+      where: { userId: uo.userId },
+      orderBy: { order: 'desc' },
+      select: { order: true },
+    });
+
+    const isGmail = (channel as any).type === ChannelType.GMAIL;
+    await this.prisma.inboxView.create({
+      data: {
+        organizationId: channel.organizationId,
+        userId: uo.userId,
+        name: isGmail
+          ? channel.name?.startsWith('Gmail')
+            ? channel.name
+            : `Gmail · ${channel.name}`
+          : channel.name,
+        icon: isGmail ? 'Mail' : 'Inbox',
+        color: isGmail ? '#ea4335' : '#6b7280',
+        filters: { channelIds: [channel.id] } as object,
+        metadata: {
+          gmailChannelId: channel.id,
+          channelId: channel.id,
+          auto: true,
+        } as object,
+        order: (max?.order ?? -1) + 1,
+      },
+    });
   }
 
   /**
@@ -266,7 +338,11 @@ export class ChannelsService {
     return candidates.find((c) => matches(c)) ?? null;
   }
 
-  async syncChannel(id: string, organizationId: string) {
+  async syncChannel(
+    id: string,
+    organizationId: string,
+    userOrganizationId?: string,
+  ) {
     const channel = await this.findOne(id, organizationId);
 
     if (!this.adapterRegistry.hasHistorySync(channel.type)) {
@@ -274,6 +350,12 @@ export class ChannelsService {
         success: false,
         error: `Sync not supported for channel type ${channel.type}`,
       };
+    }
+
+    if (channel.type === ChannelType.GMAIL && userOrganizationId) {
+      await this.ensureGmailInboxView(channel, userOrganizationId).catch((err) =>
+        this.logger.warn(`Gmail inbox view ensure failed: ${err.message}`),
+      );
     }
 
     const job = await this.syncOrchestrator.start(channel.id, {

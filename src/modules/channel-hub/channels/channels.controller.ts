@@ -88,8 +88,11 @@ export class ChannelsController {
   @Post(':id/sync')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({ summary: 'Sync channel — import chats, contacts, and messages from provider' })
-  syncChannel(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
-    return this.service.syncChannel(id, orgId);
+  syncChannel(
+    @Param('id') id: string,
+    @CurrentOrg() org: { id: string; userOrganizationId: string },
+  ) {
+    return this.service.syncChannel(id, org.id, org.userOrganizationId);
   }
 
   @Get(':id/sync/status')
@@ -110,6 +113,18 @@ export class ChannelsController {
   @ApiOperation({ summary: 'Test channel connection' })
   testConnection(@Param('id') id: string, @CurrentOrg('id') orgId: string) {
     return this.service.testConnection(id, orgId);
+  }
+
+  @Post(':id/ensure-inbox-view')
+  @ApiOperation({
+    summary:
+      'Garante uma visão na sidebar da inbox filtrada neste canal (Gmail e outros).',
+  })
+  ensureInboxView(
+    @Param('id') id: string,
+    @CurrentOrg() org: { id: string; userOrganizationId: string },
+  ) {
+    return this.service.ensureInboxViewForChannel(id, org.id, org.userOrganizationId);
   }
 
   @Post('backfill-content-all')

@@ -39,21 +39,52 @@ export class HistoryImportService {
   ): Promise<ConversationImportResult> {
     const contactId = await this.upsertContact(channel, normalized);
 
-    const existing = await this.prisma.conversation.findFirst({
-      where: {
-        organizationId: channel.organizationId,
-        channelId: channel.id,
-        contactId,
-        status: {
-          in: [
-            ConversationStatus.PENDING,
-            ConversationStatus.OPEN,
-            ConversationStatus.BOT,
-            ConversationStatus.WAITING,
-          ],
+    // 1) Match by provider thread id when present (Gmail: one thread = one conversation).
+    if (normalized.externalConversationId) {
+      const byThread = await this.prisma.conversation.findFirst({
+        where: {
+          organizationId: channel.organizationId,
+          channelId: channel.id,
+          metadata: {
+            path: ['externalConversationId'],
+            equals: normalized.externalConversationId,
+          },
         },
-      },
-    });
+      });
+      if (byThread) {
+        if (
+          normalized.lastMessageAt &&
+          (!byThread.lastMessageAt || normalized.lastMessageAt > byThread.lastMessageAt)
+        ) {
+          await this.prisma.conversation.update({
+            where: { id: byThread.id },
+            data: { lastMessageAt: normalized.lastMessageAt },
+          });
+        }
+        return { conversationId: byThread.id, contactId, isNew: false };
+      }
+    }
+
+    // 2) Legacy fallback: open conversation for same contact on channel
+    //    (WhatsApp/IG historical behavior). Skip when we have a thread id —
+    //    otherwise every Gmail thread from the same sender collapses into one.
+    const existing = normalized.externalConversationId
+      ? null
+      : await this.prisma.conversation.findFirst({
+          where: {
+            organizationId: channel.organizationId,
+            channelId: channel.id,
+            contactId,
+            status: {
+              in: [
+                ConversationStatus.PENDING,
+                ConversationStatus.OPEN,
+                ConversationStatus.BOT,
+                ConversationStatus.WAITING,
+              ],
+            },
+          },
+        });
 
     if (existing) {
       if (normalized.lastMessageAt && (!existing.lastMessageAt || normalized.lastMessageAt > existing.lastMessageAt)) {
