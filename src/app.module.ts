@@ -22,6 +22,7 @@ import { PublicApiModule } from './modules/public-api/public-api.module';
 import { ChannelAccessModule } from './modules/iam/channel-access/channel-access.module';
 import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
+import { EmailModule } from './modules/email/email.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { SegmentsModule } from './modules/segments/segments.module';
 import { ProjectsModule } from './modules/projects/projects.module';
@@ -74,6 +75,7 @@ import redisConfig, { buildRedisConnectionOptions } from './config/redis.config'
     PublicApiModule,
     AiAgentsModule,
     InboxViewsModule,
+    EmailModule,
     PipelinesModule,
     SegmentsModule,
     ProjectsModule,

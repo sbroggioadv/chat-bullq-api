@@ -19,6 +19,12 @@ interface CachedToken {
   expiresAt: number;
 }
 
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: 'system' | 'user';
+}
+
 /**
  * Gmail API client multi-tenant.
  *
@@ -108,23 +114,39 @@ export class GmailHttpClient {
     return data;
   }
 
+  async listLabels(channel: Channel): Promise<GmailLabel[]> {
+    const http = await this.client(channel);
+    const { data } = await http.get('/users/me/labels');
+    return (data.labels || []) as GmailLabel[];
+  }
+
   async listThreads(
     channel: Channel,
-    opts: { pageToken?: string; maxResults?: number; q?: string } = {},
+    opts: {
+      pageToken?: string;
+      maxResults?: number;
+      q?: string;
+      labelIds?: string[];
+      includeSpamTrash?: boolean;
+    } = {},
   ): Promise<{
     threads: Array<{ id: string; historyId?: string; snippet?: string }>;
     nextPageToken?: string;
   }> {
     const http = await this.client(channel);
     const c = this.cfg(channel);
-    const q = opts.q ?? c.query ?? 'in:inbox';
-    const { data } = await http.get('/users/me/threads', {
-      params: {
-        maxResults: opts.maxResults ?? 50,
-        pageToken: opts.pageToken,
-        q,
-      },
-    });
+    // URLSearchParams para suportar `labelIds` repetido (axios serializaria
+    // como labelIds[]=…, que a API do Google ignora).
+    const params = new URLSearchParams();
+    params.set('maxResults', String(opts.maxResults ?? 50));
+    if (opts.pageToken) params.set('pageToken', opts.pageToken);
+    if (opts.labelIds?.length) {
+      for (const id of opts.labelIds) params.append('labelIds', id);
+    } else {
+      params.set('q', opts.q ?? c.query ?? 'in:inbox');
+    }
+    if (opts.includeSpamTrash) params.set('includeSpamTrash', 'true');
+    const { data } = await http.get('/users/me/threads', { params });
     return {
       threads: data.threads || [],
       nextPageToken: data.nextPageToken,
@@ -136,6 +158,22 @@ export class GmailHttpClient {
     const { data } = await http.get(`/users/me/threads/${encodeURIComponent(threadId)}`, {
       params: { format: 'full' },
     });
+    return data;
+  }
+
+  /** Thread leve pra listagem: só headers Subject/From/Date + labelIds/snippet. */
+  async getThreadMetadata(
+    channel: Channel,
+    threadId: string,
+  ): Promise<Record<string, any>> {
+    const http = await this.client(channel);
+    const params = new URLSearchParams();
+    params.set('format', 'metadata');
+    for (const h of ['Subject', 'From', 'Date']) params.append('metadataHeaders', h);
+    const { data } = await http.get(
+      `/users/me/threads/${encodeURIComponent(threadId)}`,
+      { params },
+    );
     return data;
   }
 }

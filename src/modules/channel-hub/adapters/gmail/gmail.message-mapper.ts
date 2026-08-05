@@ -5,7 +5,7 @@ import {
   NormalizedMessageContent,
 } from '../../ports/types';
 
-function headerOf(msg: any, name: string): string {
+export function headerOf(msg: any, name: string): string {
   const headers: Array<{ name: string; value: string }> = msg?.payload?.headers || [];
   const h = headers.find((x) => x.name?.toLowerCase() === name.toLowerCase());
   return h?.value || '';
