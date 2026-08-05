@@ -428,6 +428,105 @@ export class EmailService {
     }
   }
 
+  /**
+   * Encaminha o thread (citação da última mensagem) para novos destinatários.
+   */
+  async forward(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      threadId: string;
+      to: string;
+      body?: string;
+      subject?: string;
+    },
+  ) {
+    const toRaw = (input.to || '').trim();
+    if (!toRaw) throw new BadRequestException('Informe o destinatário (To)');
+    const toList = toRaw
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter((s) => s.includes('@'));
+    if (!toList.length) {
+      throw new BadRequestException('Destinatário inválido');
+    }
+
+    const channel = await this.resolveChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+
+    let full: Record<string, any>;
+    try {
+      full = await this.gmail.getThread(channel, input.threadId);
+    } catch (err: any) {
+      if (err?.response?.status === 404) {
+        throw new NotFoundException('E-mail não encontrado');
+      }
+      this.gmailUnavailable(channel, err, 'carregar o e-mail para encaminhar');
+    }
+
+    const my = await this.myEmail(channel);
+    const msgs = (full.messages as any[]) || [];
+    if (!msgs.length) throw new BadRequestException('Thread sem mensagens');
+
+    const last = msgs[msgs.length - 1];
+    const lastFrom = headerOf(last, 'From') || '';
+    const lastDate = headerOf(last, 'Date') || '';
+    const lastBody = extractBody(last) || last.snippet || '';
+    const baseSubject =
+      input.subject?.trim() ||
+      headerOf(last, 'Subject') ||
+      msgs.map((m) => headerOf(m, 'Subject')).find(Boolean) ||
+      '(sem assunto)';
+    const subject = /^(fwd|enc|fw)\s*:/i.test(baseSubject)
+      ? baseSubject
+      : `Enc: ${baseSubject}`;
+
+    const userNote = (input.body || '').trim();
+    const parts: string[] = [];
+    if (userNote) {
+      parts.push(userNote, '');
+    }
+    parts.push(
+      '---------- Mensagem encaminhada ----------',
+      `De: ${lastFrom}`,
+    );
+    if (lastDate) parts.push(`Data: ${lastDate}`);
+    parts.push(`Assunto: ${baseSubject}`, '', lastBody);
+
+    const fromHeader = my || String(((channel.config as any) || {}).email || '');
+    const raw = this.buildRfc822({
+      from: fromHeader,
+      to: toList.join(', '),
+      subject,
+      body: parts.join('\n'),
+    });
+
+    try {
+      const sent = await this.gmail.sendRawMessage(channel, raw);
+      return {
+        success: true,
+        id: sent.id,
+        threadId: sent.threadId || '',
+      };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const gmsg = err?.response?.data?.error?.message || err?.message || '';
+      if (
+        status === 403 ||
+        /insufficient|scope|accessNotConfigured|PERMISSION/i.test(String(gmsg))
+      ) {
+        throw new BadRequestException(
+          'Sem permissão de envio no Google. Em Canais use Reconectar Google uma vez e autorize o Gmail.',
+        );
+      }
+      this.gmailUnavailable(channel, err, 'encaminhar o e-mail');
+    }
+  }
+
   private buildRfc822(input: {
     from: string;
     to: string;

@@ -42,6 +42,31 @@ class EmailReplyDto {
   subject?: string;
 }
 
+class EmailForwardDto {
+  @ApiProperty()
+  @IsString()
+  channelId!: string;
+
+  @ApiProperty()
+  @IsString()
+  threadId!: string;
+
+  @ApiProperty({ description: 'Destinatários separados por vírgula' })
+  @IsString()
+  @MinLength(3)
+  to!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  body?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  subject?: string;
+}
+
 @ApiTags('Email')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
@@ -118,5 +143,15 @@ export class EmailController {
     @Body() dto: EmailReplyDto,
   ) {
     return this.email.reply(orgId, access, dto);
+  }
+
+  @Post('forward')
+  @ApiOperation({ summary: 'Encaminha um thread Gmail para novos destinatários.' })
+  forward(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() dto: EmailForwardDto,
+  ) {
+    return this.email.forward(orgId, access, dto);
   }
 }
