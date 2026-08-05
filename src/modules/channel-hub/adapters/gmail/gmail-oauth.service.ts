@@ -39,8 +39,9 @@ interface OAuthStatePayload {
 const GMAIL_SCOPES = [
   // modify cobre leitura + envio + labels (necessário p/ reply estável)
   'https://www.googleapis.com/auth/gmail.modify',
-  // Agenda do produto (W3) — mesmo Google Connect progressivo da org
+  // Agenda: eventos + lista de calendários (cores por calendário, como no Google)
   'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
   'openid',
 ].join(' ');

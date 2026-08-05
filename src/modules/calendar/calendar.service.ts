@@ -18,6 +18,24 @@ import { GmailHttpClient } from '../channel-hub/adapters/gmail/gmail.http-client
 const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const DEFAULT_TZ = 'America/Sao_Paulo';
 
+/** Paleta oficial de colorId de evento do Google (fallback se /colors falhar). */
+const GOOGLE_EVENT_COLORS: Record<
+  string,
+  { background: string; foreground: string }
+> = {
+  '1': { background: '#a4bdfc', foreground: '#1d1d1d' }, // Lavanda
+  '2': { background: '#7ae7bf', foreground: '#1d1d1d' }, // Sálvia
+  '3': { background: '#dbadff', foreground: '#1d1d1d' }, // Uva
+  '4': { background: '#ff887c', foreground: '#1d1d1d' }, // Flamingo
+  '5': { background: '#fbd75b', foreground: '#1d1d1d' }, // Banana
+  '6': { background: '#ffb878', foreground: '#1d1d1d' }, // Tangerina
+  '7': { background: '#46d6db', foreground: '#1d1d1d' }, // Pavão
+  '8': { background: '#e1e1e1', foreground: '#1d1d1d' }, // Grafite
+  '9': { background: '#5484ed', foreground: '#1d1d1d' }, // Mirtilo
+  '10': { background: '#51b749', foreground: '#1d1d1d' }, // Manjericão
+  '11': { background: '#dc2127', foreground: '#ffffff' }, // Tomate
+};
+
 /**
  * Agenda produto (ADR-004 W3) — usa o refresh token do canal Gmail da org
  * (mesmo Google Connect). Nunca usa SOFIA_CALENDAR_ID / refresh global.
@@ -81,7 +99,9 @@ export class CalendarService {
     // Fonte da verdade: o que o Google concedeu no último consent
     const granted = String(cfg.scopeGranted || cfg.scope || '');
     if (!granted.trim()) return false; // desconhecido → pede Autorizar Agenda
-    return /calendar(\.events)?|calendar\.google\.com/i.test(granted);
+    return /calendar(\.events|\.readonly)?|calendar\.google\.com/i.test(
+      granted,
+    );
   }
 
   async status(organizationId: string, access: ChannelAccess) {
@@ -141,53 +161,95 @@ export class CalendarService {
 
     try {
       const http = await this.calClient(channel);
-      const [eventsResp, colorMap, calMeta] = await Promise.all([
-        http.get('/calendars/primary/events', {
-          params: {
-            timeMin,
-            timeMax,
-            singleEvents: true,
-            orderBy: 'startTime',
-            maxResults: 250,
-          },
-        }),
+      const [calendars, colorMap] = await Promise.all([
+        this.listSelectedCalendars(channel),
         this.getEventColorMap(channel),
-        this.getPrimaryCalendarMeta(channel).catch(() => null),
       ]);
-      const data = eventsResp.data;
-      const defaultBg = calMeta?.backgroundColor || '#3b82f6';
-      const defaultFg = calMeta?.foregroundColor || '#ffffff';
-      const items = (data.items || []).map((ev: any) => {
-        const colorId = ev.colorId ? String(ev.colorId) : null;
-        const palette = (colorId && colorMap[colorId]) || null;
-        return {
-          id: String(ev.id),
-          summary: ev.summary || '(sem título)',
-          description: ev.description || '',
-          htmlLink: ev.htmlLink || null,
-          meetLink:
-            ev.hangoutLink ||
-            ev.conferenceData?.entryPoints?.find(
-              (e: any) => e.entryPointType === 'video',
-            )?.uri ||
-            null,
-          start: ev.start?.dateTime || ev.start?.date || null,
-          end: ev.end?.dateTime || ev.end?.date || null,
-          allDay: !!ev.start?.date && !ev.start?.dateTime,
-          attendees: (ev.attendees || []).map((a: any) => ({
-            email: a.email,
-            displayName: a.displayName,
-            responseStatus: a.responseStatus,
-          })),
-          status: ev.status,
-          colorId,
-          backgroundColor: palette?.background || defaultBg,
-          foregroundColor: palette?.foreground || defaultFg,
-        };
+
+      // Busca eventos de cada calendário selecionado (cores diferentes no Google)
+      const pages = await Promise.all(
+        calendars.map(async (cal) => {
+          try {
+            const { data } = await http.get(
+              `/calendars/${encodeURIComponent(cal.id)}/events`,
+              {
+                params: {
+                  timeMin,
+                  timeMax,
+                  singleEvents: true,
+                  orderBy: 'startTime',
+                  maxResults: 150,
+                },
+              },
+            );
+            return { cal, items: (data.items || []) as any[] };
+          } catch (err: any) {
+            this.logger.warn(
+              `Calendar events ${cal.id}: ${err?.response?.status || err?.message}`,
+            );
+            return { cal, items: [] as any[] };
+          }
+        }),
+      );
+
+      const items = pages.flatMap(({ cal, items: evs }) =>
+        evs.map((ev) => {
+          const colorId = ev.colorId != null ? String(ev.colorId) : null;
+          const palette =
+            (colorId && (colorMap[colorId] || GOOGLE_EVENT_COLORS[colorId])) ||
+            null;
+          // Prioridade: cor do evento > cor do calendário (como no Google UI)
+          const backgroundColor =
+            palette?.background || cal.backgroundColor || '#5484ed';
+          const foregroundColor =
+            palette?.foreground || cal.foregroundColor || '#1d1d1d';
+          return {
+            id: `${cal.id}:${String(ev.id)}`,
+            eventId: String(ev.id),
+            calendarId: cal.id,
+            calendarSummary: cal.summary,
+            summary: ev.summary || '(sem título)',
+            description: ev.description || '',
+            htmlLink: ev.htmlLink || null,
+            meetLink:
+              ev.hangoutLink ||
+              ev.conferenceData?.entryPoints?.find(
+                (e: any) => e.entryPointType === 'video',
+              )?.uri ||
+              null,
+            start: ev.start?.dateTime || ev.start?.date || null,
+            end: ev.end?.dateTime || ev.end?.date || null,
+            allDay: !!ev.start?.date && !ev.start?.dateTime,
+            attendees: (ev.attendees || []).map((a: any) => ({
+              email: a.email,
+              displayName: a.displayName,
+              responseStatus: a.responseStatus,
+            })),
+            status: ev.status,
+            colorId,
+            backgroundColor,
+            foregroundColor,
+          };
+        }),
+      );
+
+      // Ordena por início
+      items.sort((a, b) => {
+        const ta = a.start ? new Date(a.start).getTime() : 0;
+        const tb = b.start ? new Date(b.start).getTime() : 0;
+        return ta - tb;
       });
+
       return {
         channelId: channel.id,
-        calendarId: 'primary',
+        calendarId: 'multi',
+        calendars: calendars.map((c) => ({
+          id: c.id,
+          summary: c.summary,
+          backgroundColor: c.backgroundColor,
+          foregroundColor: c.foregroundColor,
+          primary: c.primary,
+        })),
         timeMin,
         timeMax,
         events: items,
@@ -291,50 +353,78 @@ export class CalendarService {
     }
   }
 
-  /** Paleta oficial de cores de evento do Google Calendar. */
+  /** Paleta colorId de evento (API /colors + fallback oficial). */
   private async getEventColorMap(
     channel: Channel,
   ): Promise<Record<string, { background: string; foreground: string }>> {
     const cached = this.colorsCache.get(channel.id);
-    if (cached && Date.now() - cached.at < 6 * 60 * 60_000) return cached.event;
+    if (cached && Date.now() - cached.at < 6 * 60 * 60_000) {
+      return { ...GOOGLE_EVENT_COLORS, ...cached.event };
+    }
     try {
       const http = await this.calClient(channel);
       const { data } = await http.get('/colors');
       const event: Record<string, { background: string; foreground: string }> =
-        {};
-      for (const [id, val] of Object.entries((data.event || {}) as Record<string, any>)) {
+        { ...GOOGLE_EVENT_COLORS };
+      for (const [id, val] of Object.entries(
+        (data.event || {}) as Record<string, any>,
+      )) {
         event[id] = {
-          background: String(val.background || '#3b82f6'),
-          foreground: String(val.foreground || '#ffffff'),
+          background: String(val.background || event[id]?.background || '#5484ed'),
+          foreground: String(val.foreground || event[id]?.foreground || '#1d1d1d'),
         };
       }
       this.colorsCache.set(channel.id, { at: Date.now(), event });
       return event;
     } catch (err: any) {
       this.logger.warn(`Calendar colors: ${err?.message || err}`);
-      return cached?.event || {};
+      return { ...GOOGLE_EVENT_COLORS, ...(cached?.event || {}) };
     }
   }
 
-  /** Cor padrão do calendário primary (quando o evento não tem colorId). */
-  private async getPrimaryCalendarMeta(channel: Channel): Promise<{
-    backgroundColor?: string;
-    foregroundColor?: string;
-  } | null> {
+  /**
+   * Calendários marcados como visíveis no Google (selected).
+   * Cada um traz backgroundColor — é o que pinta a UI multi-cor.
+   */
+  private async listSelectedCalendars(channel: Channel): Promise<
+    Array<{
+      id: string;
+      summary: string;
+      backgroundColor: string;
+      foregroundColor: string;
+      primary: boolean;
+    }>
+  > {
     const http = await this.calClient(channel);
     try {
-      const { data } = await http.get('/calendars/primary');
-      return {
-        backgroundColor: data.backgroundColor,
-        foregroundColor: data.foregroundColor,
-      };
-    } catch {
-      // calendarList entry às vezes tem a cor
-      const { data } = await http.get('/users/me/calendarList/primary');
-      return {
-        backgroundColor: data.backgroundColor,
-        foregroundColor: data.foregroundColor,
-      };
+      const { data } = await http.get('/users/me/calendarList', {
+        params: { minAccessRole: 'reader', maxResults: 50 },
+      });
+      const items = (data.items || []) as any[];
+      const selected = items
+        .filter((c) => c.selected !== false && c.id)
+        .map((c) => ({
+          id: String(c.id),
+          summary: String(c.summary || c.id),
+          backgroundColor: String(c.backgroundColor || '#5484ed'),
+          foregroundColor: String(c.foregroundColor || '#1d1d1d'),
+          primary: !!c.primary,
+        }));
+      if (selected.length) return selected;
+    } catch (err: any) {
+      this.logger.warn(
+        `calendarList failed (precisa calendar.readonly): ${err?.response?.status || err?.message}`,
+      );
     }
+    // Fallback: só primary
+    return [
+      {
+        id: 'primary',
+        summary: 'Principal',
+        backgroundColor: '#039be5',
+        foregroundColor: '#ffffff',
+        primary: true,
+      },
+    ];
   }
 }
