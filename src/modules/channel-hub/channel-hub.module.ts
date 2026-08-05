@@ -16,6 +16,12 @@ import { InstagramModule } from './adapters/instagram/instagram.module';
 import { InstagramInboundAdapter } from './adapters/instagram/instagram.inbound-adapter';
 import { InstagramOutboundAdapter } from './adapters/instagram/instagram.outbound-adapter';
 import { InstagramSyncAdapter } from './adapters/instagram/instagram.sync-adapter';
+import { GmailModule } from './adapters/gmail/gmail.module';
+import { GmailInboundAdapter } from './adapters/gmail/gmail.inbound-adapter';
+import { GmailOutboundAdapter } from './adapters/gmail/gmail.outbound-adapter';
+import { GmailSyncAdapter } from './adapters/gmail/gmail.sync-adapter';
+import { GmailOAuthService } from './adapters/gmail/gmail-oauth.service';
+import { GmailOAuthController } from './adapters/gmail/gmail-oauth.controller';
 import { ChannelSyncOrchestrator } from './sync/channel-sync.orchestrator';
 import { ChannelSyncProcessor } from './sync/channel-sync.processor';
 import { CHANNEL_SYNC_QUEUE } from './sync/channel-sync.constants';
@@ -38,9 +44,10 @@ import { WebhookThrottleGuard } from './webhook-throttle.guard';
     ZappfyModule,
     WhatsAppOfficialModule,
     InstagramModule,
+    GmailModule,
     forwardRef(() => MessagingModule),
   ],
-  controllers: [WebhookGatewayController, ChannelsController],
+  controllers: [WebhookGatewayController, ChannelsController, GmailOAuthController],
   providers: [
     ChannelAdapterRegistry,
     ChannelsService,
@@ -49,6 +56,7 @@ import { WebhookThrottleGuard } from './webhook-throttle.guard';
     ChannelSyncProcessor,
     WebhookEventsService,
     WebhookThrottleGuard,
+    GmailOAuthService,
   ],
   exports: [
     ChannelAdapterRegistry,
@@ -56,6 +64,7 @@ import { WebhookThrottleGuard } from './webhook-throttle.guard';
     ChannelSyncOrchestrator,
     WebhookEventsService,
     InstagramModule,
+    GmailModule,
     ZappfyModule,
   ],
 })
@@ -70,6 +79,9 @@ export class ChannelHubModule implements OnModuleInit {
     private readonly instagramInbound: InstagramInboundAdapter,
     private readonly instagramOutbound: InstagramOutboundAdapter,
     private readonly instagramSync: InstagramSyncAdapter,
+    private readonly gmailInbound: GmailInboundAdapter,
+    private readonly gmailOutbound: GmailOutboundAdapter,
+    private readonly gmailSync: GmailSyncAdapter,
   ) {}
 
   onModuleInit() {
@@ -78,5 +90,7 @@ export class ChannelHubModule implements OnModuleInit {
     this.registry.register(this.instagramInbound, this.instagramOutbound);
     this.registry.registerHistorySync(this.zappfySync);
     this.registry.registerHistorySync(this.instagramSync);
+    this.registry.register(this.gmailInbound, this.gmailOutbound);
+    this.registry.registerHistorySync(this.gmailSync);
   }
 }

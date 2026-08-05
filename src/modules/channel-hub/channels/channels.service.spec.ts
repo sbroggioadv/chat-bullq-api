@@ -26,6 +26,7 @@ function buildService() {
     { getMe: jest.fn() } as any,
     {} as any,
     {} as any,
+    { getProfile: jest.fn() } as any, // gmailHttpClient
     { start: jest.fn() } as any,
     prisma as any,
     {} as any,

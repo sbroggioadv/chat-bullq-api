@@ -16,6 +16,7 @@ import { ZappfyMessageMapper } from '../adapters/zappfy/zappfy.message-mapper';
 import { WhatsAppOfficialHttpClient } from '../adapters/whatsapp-official/whatsapp-official.http-client';
 import { InstagramHttpClient } from '../adapters/instagram/instagram.http-client';
 import { InstagramMessageMapper } from '../adapters/instagram/instagram.message-mapper';
+import { GmailHttpClient } from '../adapters/gmail/gmail.http-client';
 import { ChannelSyncOrchestrator } from '../sync/channel-sync.orchestrator';
 import {
   ChannelAccessService,
@@ -34,6 +35,7 @@ export class ChannelsService {
     private readonly instagramHttpClient: InstagramHttpClient,
     private readonly zappfyMapper: ZappfyMessageMapper,
     private readonly instagramMapper: InstagramMessageMapper,
+    private readonly gmailHttpClient: GmailHttpClient,
     private readonly syncOrchestrator: ChannelSyncOrchestrator,
     private readonly prisma: PrismaService,
     private readonly channelAccess: ChannelAccessService,
@@ -141,6 +143,15 @@ export class ChannelsService {
         this.logger.warn(
           `WA Official channel ${channelId} created without config.phoneNumberId — webhooks will be dropped as unknown locator`,
         );
+      }
+
+      if (type === ChannelType.GMAIL && !config.email) {
+        const profile = await this.gmailHttpClient.getProfile(channel);
+        if (profile?.emailAddress) {
+          return this.repository.update(channelId, {
+            config: { ...config, email: String(profile.emailAddress).toLowerCase() },
+          });
+        }
       }
 
       return channel;
@@ -350,6 +361,19 @@ export class ChannelsService {
               igUserId: info.user_id || info.id,
               accountType: info.account_type,
               name: info.name,
+            },
+          };
+        }
+
+        case ChannelType.GMAIL: {
+          const profile = await this.gmailHttpClient.getProfile(channel);
+          return {
+            success: true,
+            status: 'connected',
+            data: {
+              email: profile.emailAddress,
+              messagesTotal: profile.messagesTotal,
+              threadsTotal: profile.threadsTotal,
             },
           };
         }

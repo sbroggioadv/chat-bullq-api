@@ -207,11 +207,13 @@ export class HistoryImportService {
       return existing.contactId;
     }
 
+    const looksLikeEmail = /@/.test(normalized.externalContactId || '');
     const contact = await this.prisma.contact.create({
       data: {
         organizationId: channel.organizationId,
         name: normalized.contactName,
         phone: normalized.contactPhone,
+        email: looksLikeEmail ? normalized.externalContactId.toLowerCase() : undefined,
         avatarUrl: normalized.contactAvatarUrl,
         channels: {
           create: {

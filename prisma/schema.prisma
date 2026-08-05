@@ -26,6 +26,7 @@ enum ChannelType {
   WHATSAPP_OFFICIAL
   WHATSAPP_ZAPPFY
   INSTAGRAM
+  GMAIL
 }
 
 // ORG    = todos os membros da org enxergam
