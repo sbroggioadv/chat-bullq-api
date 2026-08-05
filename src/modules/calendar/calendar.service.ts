@@ -267,11 +267,23 @@ export class CalendarService {
     }
   }
 
+  async listCalendars(organizationId: string, access: ChannelAccess, channelId?: string) {
+    const channel = await this.resolveGmailChannel(
+      organizationId,
+      access,
+      channelId,
+    );
+    const calendars = await this.listSelectedCalendars(channel);
+    return { channelId: channel.id, calendars };
+  }
+
   async createEvent(
     organizationId: string,
     access: ChannelAccess,
     input: {
       channelId?: string;
+      /** Calendário Google de destino (default primary). */
+      calendarId?: string;
       summary: string;
       description?: string;
       startIso: string;
@@ -291,6 +303,7 @@ export class CalendarService {
       access,
       input.channelId,
     );
+    const calendarId = (input.calendarId || 'primary').trim() || 'primary';
     const tz = input.timeZone || DEFAULT_TZ;
     const attendees = (input.attendeeEmails || [])
       .map((e) => e.trim().toLowerCase())
@@ -316,7 +329,7 @@ export class CalendarService {
     try {
       const http = await this.calClient(channel);
       const { data: ev } = await http.post(
-        '/calendars/primary/events',
+        `/calendars/${encodeURIComponent(calendarId)}/events`,
         body,
         {
           params: {
@@ -334,6 +347,93 @@ export class CalendarService {
       return {
         success: true,
         id: String(ev.id),
+        compositeId: `${calendarId}:${String(ev.id)}`,
+        calendarId,
+        htmlLink: ev.htmlLink || null,
+        meetLink,
+        start: ev.start?.dateTime || null,
+        end: ev.end?.dateTime || null,
+        summary: ev.summary,
+        note:
+          'Meet criado no Google. Gravação/transcrição: ligue no Meet ou via política do Workspace.',
+      };
+    } catch (err: any) {
+      this.throwCalError(err, 'criar evento');
+    }
+  }
+
+  async updateEvent(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      calendarId: string;
+      eventId: string;
+      summary?: string;
+      description?: string;
+      startIso?: string;
+      endIso?: string;
+      attendeeEmails?: string[];
+      withMeet?: boolean;
+      timeZone?: string;
+    },
+  ) {
+    const calendarId = (input.calendarId || '').trim();
+    const eventId = (input.eventId || '').trim();
+    if (!calendarId || !eventId) {
+      throw new BadRequestException('calendarId e eventId são obrigatórios');
+    }
+    const channel = await this.resolveGmailChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    const tz = input.timeZone || DEFAULT_TZ;
+
+    try {
+      const http = await this.calClient(channel);
+      // PATCH parcial — só campos enviados
+      const body: Record<string, any> = {};
+      if (input.summary !== undefined) body.summary = input.summary.trim();
+      if (input.description !== undefined) body.description = input.description;
+      if (input.startIso) body.start = { dateTime: input.startIso, timeZone: tz };
+      if (input.endIso) body.end = { dateTime: input.endIso, timeZone: tz };
+      if (input.attendeeEmails) {
+        body.attendees = input.attendeeEmails
+          .map((e) => e.trim().toLowerCase())
+          .filter((e) => e.includes('@'))
+          .map((email) => ({ email }));
+      }
+      if (input.withMeet === true) {
+        body.conferenceData = {
+          createRequest: {
+            requestId: randomUUID(),
+            conferenceSolutionKey: { type: 'hangoutsMeet' },
+          },
+        };
+      }
+
+      const { data: ev } = await http.patch(
+        `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+        body,
+        {
+          params: {
+            conferenceDataVersion: input.withMeet === true ? 1 : 0,
+            sendUpdates: 'all',
+          },
+        },
+      );
+      const meetLink =
+        ev.hangoutLink ||
+        ev.conferenceData?.entryPoints?.find(
+          (e: any) => e.entryPointType === 'video',
+        )?.uri ||
+        null;
+      return {
+        success: true,
+        id: String(ev.id),
+        compositeId: `${calendarId}:${String(ev.id)}`,
+        calendarId,
         htmlLink: ev.htmlLink || null,
         meetLink,
         start: ev.start?.dateTime || null,
@@ -341,16 +441,60 @@ export class CalendarService {
         summary: ev.summary,
       };
     } catch (err: any) {
-      const status = err?.response?.status;
-      const gmsg = err?.response?.data?.error?.message || err?.message || '';
-      this.logger.warn(`Calendar createEvent: ${status} ${gmsg}`);
-      if (status === 403 || /insufficient|scope/i.test(String(gmsg))) {
-        throw new BadRequestException(
-          'Sem permissão de Agenda. Reconecte o Google autorizando o Calendar.',
-        );
-      }
-      throw new BadGatewayException('Falha ao criar evento no Google Calendar');
+      this.throwCalError(err, 'atualizar evento');
     }
+  }
+
+  async deleteEvent(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      calendarId: string;
+      eventId: string;
+      /** Notifica convidados (default true). */
+      notify?: boolean;
+    },
+  ) {
+    const calendarId = (input.calendarId || '').trim();
+    const eventId = (input.eventId || '').trim();
+    if (!calendarId || !eventId) {
+      throw new BadRequestException('calendarId e eventId são obrigatórios');
+    }
+    const channel = await this.resolveGmailChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    try {
+      const http = await this.calClient(channel);
+      await http.delete(
+        `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+        {
+          params: {
+            sendUpdates: input.notify === false ? 'none' : 'all',
+          },
+        },
+      );
+      return { success: true, calendarId, eventId };
+    } catch (err: any) {
+      this.throwCalError(err, 'apagar evento');
+    }
+  }
+
+  private throwCalError(err: any, action: string): never {
+    const status = err?.response?.status;
+    const gmsg = err?.response?.data?.error?.message || err?.message || '';
+    this.logger.warn(`Calendar ${action}: ${status} ${gmsg}`);
+    if (status === 404) {
+      throw new NotFoundException('Evento não encontrado no Google');
+    }
+    if (status === 403 || /insufficient|scope/i.test(String(gmsg))) {
+      throw new BadRequestException(
+        'Sem permissão de Agenda. Em Canais use Autorizar Agenda.',
+      );
+    }
+    throw new BadGatewayException(`Falha ao ${action} no Google Calendar`);
   }
 
   /** Paleta colorId de evento (API /colors + fallback oficial). */
