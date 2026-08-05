@@ -17,6 +17,7 @@ import {
 } from '../channel-hub/adapters/gmail/gmail.http-client';
 import {
   extractAddress,
+  extractAddresses,
   extractBody,
   headerOf,
 } from '../channel-hub/adapters/gmail/gmail.message-mapper';
@@ -304,6 +305,7 @@ export class EmailService {
         id: String(m.id),
         from,
         to: headerOf(m, 'To'),
+        cc: headerOf(m, 'Cc') || '',
         subject: headerOf(m, 'Subject'),
         date: Number.isNaN(internal) ? null : new Date(internal).toISOString(),
         body: extractBody(m),
@@ -337,6 +339,10 @@ export class EmailService {
       body: string;
       /** Override To (default = From da última mensagem inbound). */
       to?: string;
+      /** Cc explícito (vírgula). Em replyAll o servidor monta. */
+      cc?: string;
+      /** Responder a todos: To=From, Cc=To+Cc originais (sem eu). */
+      replyAll?: boolean;
       subject?: string;
     },
   ) {
@@ -362,7 +368,7 @@ export class EmailService {
       this.gmailUnavailable(channel, err, 'carregar o e-mail para responder');
     }
 
-    const my = await this.myEmail(channel);
+    const my = (await this.myEmail(channel)).toLowerCase();
     const msgs = (full.messages as any[]) || [];
     if (!msgs.length) throw new BadRequestException('Thread sem mensagens');
 
@@ -373,9 +379,35 @@ export class EmailService {
     });
     if (!replyToMsg) replyToMsg = msgs[msgs.length - 1];
 
-    const toAddr =
-      (input.to || '').trim() ||
-      extractAddress(headerOf(replyToMsg, 'From') || '').email;
+    const fromAddr = extractAddress(headerOf(replyToMsg, 'From') || '').email;
+    let toAddr = (input.to || '').trim() || fromAddr;
+    let ccAddr = (input.cc || '').trim();
+
+    if (input.replyAll) {
+      // To = From original; Cc = To + Cc do e-mail, sem mim e sem o To
+      toAddr = fromAddr;
+      const pool = [
+        ...extractAddresses(headerOf(replyToMsg, 'To') || ''),
+        ...extractAddresses(headerOf(replyToMsg, 'Cc') || ''),
+      ];
+      const exclude = new Set(
+        [my, toAddr].filter(Boolean).map((e) => e.toLowerCase()),
+      );
+      const ccList = pool
+        .map((a) => a.email)
+        .filter((e) => e.includes('@') && !exclude.has(e.toLowerCase()));
+      // dedupe preserving order
+      const seen = new Set<string>();
+      ccAddr = ccList
+        .filter((e) => {
+          const k = e.toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        })
+        .join(', ');
+    }
+
     if (!toAddr || !toAddr.includes('@')) {
       throw new BadRequestException('Destinatário inválido para a resposta');
     }
@@ -400,6 +432,7 @@ export class EmailService {
     const raw = this.buildRfc822({
       from: fromHeader,
       to: toAddr,
+      cc: ccAddr || undefined,
       subject,
       body: bodyText,
       inReplyTo: inReplyTo || undefined,
@@ -530,6 +563,7 @@ export class EmailService {
   private buildRfc822(input: {
     from: string;
     to: string;
+    cc?: string;
     subject: string;
     body: string;
     inReplyTo?: string;
@@ -543,6 +577,7 @@ export class EmailService {
     const parts: string[] = [];
     if (input.from) parts.push(`From: ${input.from}`);
     parts.push(`To: ${input.to}`);
+    if (input.cc?.trim()) parts.push(`Cc: ${input.cc.trim()}`);
     parts.push(`Subject: ${encodeSubject(input.subject)}`);
     if (input.inReplyTo) parts.push(`In-Reply-To: ${input.inReplyTo}`);
     if (input.references) parts.push(`References: ${input.references}`);

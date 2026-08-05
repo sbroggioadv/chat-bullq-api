@@ -63,6 +63,39 @@ export function extractAddress(raw: string): { email: string; name?: string } {
   return { email: raw.trim().toLowerCase() };
 }
 
+/** Extrai todos os e-mails de um header To/Cc (lista separada por vírgula). */
+export function extractAddresses(raw: string): Array<{ email: string; name?: string }> {
+  if (!raw?.trim()) return [];
+  // Split por vírgula fora de aspas/ângulo
+  const parts: string[] = [];
+  let cur = '';
+  let depth = 0;
+  let inQuotes = false;
+  for (const ch of raw) {
+    if (ch === '"') inQuotes = !inQuotes;
+    if (!inQuotes) {
+      if (ch === '<') depth += 1;
+      if (ch === '>') depth = Math.max(0, depth - 1);
+    }
+    if (ch === ',' && !inQuotes && depth === 0) {
+      if (cur.trim()) parts.push(cur.trim());
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  const out: Array<{ email: string; name?: string }> = [];
+  const seen = new Set<string>();
+  for (const p of parts) {
+    const a = extractAddress(p);
+    if (!a.email || !a.email.includes('@') || seen.has(a.email)) continue;
+    seen.add(a.email);
+    out.push(a);
+  }
+  return out;
+}
+
 export function extractBody(msg: any): string {
   const acc = { text: '', html: '' };
   walkParts(msg?.payload, acc);

@@ -8,7 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import {
   CurrentChannelAccess,
@@ -35,6 +35,18 @@ class EmailReplyDto {
   @IsOptional()
   @IsString()
   to?: string;
+
+  @ApiPropertyOptional({ description: 'Cc (vírgula). Ignorado se replyAll=true.' })
+  @IsOptional()
+  @IsString()
+  cc?: string;
+
+  @ApiPropertyOptional({
+    description: 'Responder a todos (To=From, Cc=To+Cc originais sem o remetente)',
+  })
+  @IsOptional()
+  @IsBoolean()
+  replyAll?: boolean;
 
   @ApiPropertyOptional()
   @IsOptional()
