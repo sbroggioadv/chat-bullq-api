@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { ChannelType, OrgRole } from '@prisma/client';
 import axios from 'axios';
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { PrismaService } from '../../../../database/prisma.service';
 import { ChannelsService } from '../../channels/channels.service';
 
 export interface GmailOAuthStartInput {
@@ -16,6 +17,8 @@ export interface GmailOAuthStartInput {
   role: OrgRole;
   name?: string;
   visibility?: 'ORG' | 'PRIVATE';
+  /** Se informado, reconecta ESTE canal (não cria outro). */
+  channelId?: string;
 }
 
 interface OAuthStatePayload {
@@ -25,6 +28,7 @@ interface OAuthStatePayload {
   role: OrgRole;
   name: string;
   visibility: 'ORG' | 'PRIVATE';
+  channelId?: string;
   nonce: string;
   exp: number;
 }
@@ -50,6 +54,7 @@ export class GmailOAuthService {
   constructor(
     private readonly config: ConfigService,
     private readonly channelsService: ChannelsService,
+    private readonly prisma: PrismaService,
   ) {}
 
   isConfigured(): boolean {
@@ -124,6 +129,7 @@ export class GmailOAuthService {
       role: input.role,
       name: (input.name || '').trim() || 'Gmail',
       visibility: input.visibility || 'PRIVATE',
+      channelId: input.channelId || undefined,
       nonce: randomBytes(12).toString('hex'),
       exp: Math.floor(Date.now() / 1000) + expiresInSec,
     });
@@ -146,7 +152,10 @@ export class GmailOAuthService {
   }
 
   /**
-   * Callback do Google. Cria canal GMAIL na org do state e devolve URL de redirect pro web.
+   * Callback do Google.
+   * - Reconecta canal existente (mesmo e-mail na org ou channelId no state).
+   * - Só cria canal NOVO se não houver match.
+   * - Nunca multiplica caixas a cada "Reconectar".
    */
   async handleCallback(code?: string, state?: string, oauthError?: string): Promise<string> {
     const base = this.webChannelsUrl();
@@ -167,12 +176,79 @@ export class GmailOAuthService {
 
     try {
       const tokens = await this.exchangeCode(code);
+      const email = (await this.fetchEmail(tokens.access_token)).toLowerCase();
+      const scope = tokens.scope || GMAIL_SCOPES;
+
+      // 1) canal explícito no state (reconnect do card / reply CTA)
+      let existing = payload.channelId
+        ? await this.prisma.channel.findFirst({
+            where: {
+              id: payload.channelId,
+              organizationId: payload.orgId,
+              type: ChannelType.GMAIL,
+              deletedAt: null,
+            },
+          })
+        : null;
+
+      // 2) mesmo e-mail na org (evita duplicar "Gmail · luis@…")
+      if (!existing && email) {
+        const candidates = await this.prisma.channel.findMany({
+          where: {
+            organizationId: payload.orgId,
+            type: ChannelType.GMAIL,
+            deletedAt: null,
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+        existing =
+          candidates.find((c) => {
+            const cfg = (c.config as any) || {};
+            return String(cfg.email || '').toLowerCase() === email;
+          }) || null;
+        // 3) se só existe 1 Gmail na org, reutiliza (reconnect genérico)
+        if (!existing && candidates.length === 1) {
+          existing = candidates[0];
+        }
+      }
+
+      if (existing) {
+        const prev = ((existing.config as any) || {}) as Record<string, any>;
+        const refreshToken = tokens.refresh_token || prev.refreshToken;
+        if (!refreshToken) {
+          return `${base}?gmail=error&reason=${encodeURIComponent('no_refresh_token')}`;
+        }
+        await this.prisma.channel.update({
+          where: { id: existing.id },
+          data: {
+            isActive: true,
+            config: {
+              ...prev,
+              email: email || prev.email,
+              refreshToken,
+              // grava scopes pedidos/retornados — habilita canSend sem novo canal
+              scope,
+              connectedAt: new Date().toISOString(),
+              auth: 'oauth_platform_app',
+              lastReconnectAt: new Date().toISOString(),
+            },
+          },
+        });
+        if (email) {
+          await this.softDeleteDuplicateGmailChannels(
+            payload.orgId,
+            email,
+            existing.id,
+          );
+        }
+        return `${base}?gmail=connected&updated=1&email=${encodeURIComponent(email || '')}`;
+      }
+
+      // Create path — precisa de refresh_token novo
       if (!tokens.refresh_token) {
-        // Google só devolve refresh_token no primeiro consent / prompt=consent.
         return `${base}?gmail=error&reason=${encodeURIComponent('no_refresh_token')}`;
       }
 
-      const email = await this.fetchEmail(tokens.access_token);
       const channelName =
         payload.name && payload.name !== 'Gmail'
           ? payload.name
@@ -180,9 +256,7 @@ export class GmailOAuthService {
             ? `Gmail · ${email}`
             : 'Gmail';
 
-      // Credenciais do tenant ficam APENAS no config do canal.
-      // Nunca grava clientSecret no banco — usa o da plataforma em runtime.
-      await this.channelsService.create(
+      const created = await this.channelsService.create(
         payload.orgId,
         {
           type: ChannelType.GMAIL,
@@ -191,9 +265,8 @@ export class GmailOAuthService {
           config: {
             email: email || undefined,
             refreshToken: tokens.refresh_token,
-            scope: tokens.scope || GMAIL_SCOPES,
+            scope,
             connectedAt: new Date().toISOString(),
-            // marca origem do conector (auditoria multi-tenant)
             auth: 'oauth_platform_app',
           },
         },
@@ -203,11 +276,48 @@ export class GmailOAuthService {
         },
       );
 
+      if (email && created?.id) {
+        await this.softDeleteDuplicateGmailChannels(
+          payload.orgId,
+          email,
+          created.id,
+        );
+      }
+
       return `${base}?gmail=connected&email=${encodeURIComponent(email || '')}`;
     } catch (err: any) {
       this.logger.error(`Gmail OAuth callback failed: ${err.message}`, err.stack);
       const reason = err?.response?.data?.error || err.message || 'callback_failed';
       return `${base}?gmail=error&reason=${encodeURIComponent(String(reason).slice(0, 180))}`;
+    }
+  }
+
+  /** Desativa outros canais Gmail da mesma conta na org (limpa spam de reconnect). */
+  private async softDeleteDuplicateGmailChannels(
+    organizationId: string,
+    email: string,
+    keepId: string,
+  ): Promise<void> {
+    const all = await this.prisma.channel.findMany({
+      where: {
+        organizationId,
+        type: ChannelType.GMAIL,
+        deletedAt: null,
+        id: { not: keepId },
+      },
+    });
+    const now = new Date();
+    for (const c of all) {
+      const cfgEmail = String(((c.config as any) || {}).email || '').toLowerCase();
+      if (cfgEmail && cfgEmail === email.toLowerCase()) {
+        await this.prisma.channel.update({
+          where: { id: c.id },
+          data: { deletedAt: now, isActive: false },
+        });
+        this.logger.warn(
+          `Gmail OAuth: soft-deleted duplicate channel ${c.id} (email=${email}, keep=${keepId})`,
+        );
+      }
     }
   }
 

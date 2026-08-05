@@ -26,6 +26,11 @@ class GmailOAuthStartDto {
   @IsOptional()
   @IsIn(['ORG', 'PRIVATE'])
   visibility?: 'ORG' | 'PRIVATE';
+
+  @ApiPropertyOptional({ description: 'Reconectar este canal (não cria outro)' })
+  @IsOptional()
+  @IsString()
+  channelId?: string;
 }
 
 @ApiTags('Channels / Gmail')
@@ -62,6 +67,7 @@ export class GmailOAuthController {
       role: org.userRole,
       name: dto.name,
       visibility: dto.visibility,
+      channelId: dto.channelId,
     });
   }
 
