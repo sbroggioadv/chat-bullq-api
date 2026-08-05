@@ -87,11 +87,21 @@ export class EmailService {
     const channels = await this.accessibleGmailChannels(organizationId, access);
     return {
       connected: channels.length > 0,
-      channels: channels.map((c) => ({
-        id: c.id,
-        name: c.name,
-        email: ((c.config as any)?.email as string | undefined) ?? null,
-      })),
+      channels: channels.map((c) => {
+        const cfg = (c.config as any) || {};
+        const scope = String(cfg.scope || '');
+        const canSend =
+          scope.includes('gmail.send') ||
+          scope.includes('gmail.modify') ||
+          scope.includes('mail.google.com');
+        return {
+          id: c.id,
+          name: c.name,
+          email: (cfg.email as string | undefined) ?? null,
+          canSend,
+          needsReauthForSend: !canSend,
+        };
+      }),
     };
   }
 
@@ -288,14 +298,169 @@ export class EmailService {
         snippet: m.snippet || '',
         unread: (m.labelIds || []).includes('UNREAD'),
         outbound: !!my && from.email === my,
+        messageId: headerOf(m, 'Message-ID') || headerOf(m, 'Message-Id') || '',
       };
     });
+
+    const cfg = (channel.config as any) || {};
+    const scope = String(cfg.scope || '');
+    const canSend =
+      scope.includes('gmail.send') ||
+      scope.includes('gmail.modify') ||
+      scope.includes('mail.google.com');
 
     return {
       id: String(full.id || threadId),
       externalConversationId: threadId,
       subject: messages.map((m) => m.subject).find(Boolean) || '(sem assunto)',
+      canSend,
+      needsReauthForSend: !canSend,
+      myEmail: my || null,
       messages,
     };
+  }
+
+  /**
+   * Reply no thread Gmail (SPEC-004 W2). Exige scope gmail.send no token do canal.
+   */
+  async reply(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      threadId: string;
+      body: string;
+      /** Override To (default = From da última mensagem inbound). */
+      to?: string;
+      subject?: string;
+    },
+  ) {
+    const bodyText = (input.body || '').trim();
+    if (!bodyText) throw new BadRequestException('Corpo da resposta é obrigatório');
+    if (!input.threadId) throw new BadRequestException('threadId é obrigatório');
+
+    const channel = await this.resolveChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    const cfg = (channel.config as any) || {};
+    const scope = String(cfg.scope || '');
+    const canSend =
+      scope.includes('gmail.send') ||
+      scope.includes('gmail.modify') ||
+      scope.includes('mail.google.com');
+    if (!canSend) {
+      throw new BadRequestException(
+        'Este canal só tem leitura. Reconecte o Gmail autorizando envio (gmail.send).',
+      );
+    }
+
+    let full: Record<string, any>;
+    try {
+      full = await this.gmail.getThread(channel, input.threadId);
+    } catch (err: any) {
+      if (err?.response?.status === 404) {
+        throw new NotFoundException('E-mail não encontrado');
+      }
+      this.gmailUnavailable(channel, err, 'carregar o e-mail para responder');
+    }
+
+    const my = await this.myEmail(channel);
+    const msgs = (full.messages as any[]) || [];
+    if (!msgs.length) throw new BadRequestException('Thread sem mensagens');
+
+    // última inbound (não enviada por nós) para To / In-Reply-To
+    let replyToMsg = [...msgs].reverse().find((m) => {
+      const from = extractAddress(headerOf(m, 'From') || '');
+      return !my || from.email !== my;
+    });
+    if (!replyToMsg) replyToMsg = msgs[msgs.length - 1];
+
+    const toAddr =
+      (input.to || '').trim() ||
+      extractAddress(headerOf(replyToMsg, 'From') || '').email;
+    if (!toAddr || !toAddr.includes('@')) {
+      throw new BadRequestException('Destinatário inválido para a resposta');
+    }
+
+    const baseSubject =
+      input.subject?.trim() ||
+      headerOf(replyToMsg, 'Subject') ||
+      msgs.map((m) => headerOf(m, 'Subject')).find(Boolean) ||
+      '(sem assunto)';
+    const subject = /^re\s*:/i.test(baseSubject)
+      ? baseSubject
+      : `Re: ${baseSubject}`;
+
+    const inReplyTo =
+      headerOf(replyToMsg, 'Message-ID') ||
+      headerOf(replyToMsg, 'Message-Id') ||
+      '';
+    const references =
+      [headerOf(replyToMsg, 'References'), inReplyTo].filter(Boolean).join(' ').trim();
+
+    const fromHeader = my || (cfg.email as string) || '';
+    const raw = this.buildRfc822({
+      from: fromHeader,
+      to: toAddr,
+      subject,
+      body: bodyText,
+      inReplyTo: inReplyTo || undefined,
+      references: references || undefined,
+    });
+
+    try {
+      const sent = await this.gmail.sendRawMessage(channel, raw, input.threadId);
+      return {
+        success: true,
+        id: sent.id,
+        threadId: sent.threadId || input.threadId,
+      };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const gmsg = err?.response?.data?.error?.message || err?.message || '';
+      if (
+        status === 403 ||
+        /insufficient|scope|accessNotConfigured|PERMISSION/i.test(String(gmsg))
+      ) {
+        throw new BadRequestException(
+          'Sem permissão de envio no Google. Reconecte o canal Gmail autorizando gmail.send.',
+        );
+      }
+      this.gmailUnavailable(channel, err, 'enviar a resposta');
+    }
+  }
+
+  private buildRfc822(input: {
+    from: string;
+    to: string;
+    subject: string;
+    body: string;
+    inReplyTo?: string;
+    references?: string;
+  }): string {
+    const encodeSubject = (s: string) => {
+      if (/^[\x20-\x7e]*$/.test(s)) return s;
+      return `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
+    };
+    const bodyNorm = input.body.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    const parts: string[] = [];
+    if (input.from) parts.push(`From: ${input.from}`);
+    parts.push(`To: ${input.to}`);
+    parts.push(`Subject: ${encodeSubject(input.subject)}`);
+    if (input.inReplyTo) parts.push(`In-Reply-To: ${input.inReplyTo}`);
+    if (input.references) parts.push(`References: ${input.references}`);
+    parts.push('MIME-Version: 1.0');
+    parts.push('Content-Type: text/plain; charset=UTF-8');
+    parts.push('Content-Transfer-Encoding: 8bit');
+    parts.push('');
+    parts.push(bodyNorm);
+    const rfc = parts.join('\r\n');
+    return Buffer.from(rfc, 'utf8')
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/g, '');
   }
 }

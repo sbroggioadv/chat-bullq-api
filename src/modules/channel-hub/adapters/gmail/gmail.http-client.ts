@@ -176,4 +176,24 @@ export class GmailHttpClient {
     );
     return data;
   }
+
+  /**
+   * Envia mensagem (reply/compose). Exige scope gmail.send no refresh token.
+   * `raw` = RFC 2822 em base64url (sem padding).
+   */
+  async sendRawMessage(
+    channel: Channel,
+    rawBase64Url: string,
+    threadId?: string,
+  ): Promise<{ id: string; threadId: string; labelIds?: string[] }> {
+    const http = await this.client(channel);
+    const body: Record<string, string> = { raw: rawBase64Url };
+    if (threadId) body.threadId = threadId;
+    const { data } = await http.post('/users/me/messages/send', body);
+    return {
+      id: String(data.id),
+      threadId: String(data.threadId || threadId || ''),
+      labelIds: data.labelIds,
+    };
+  }
 }
