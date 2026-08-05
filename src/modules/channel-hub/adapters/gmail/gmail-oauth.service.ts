@@ -182,37 +182,35 @@ export class GmailOAuthService {
       // salvarmos só tokens.scope parcial, a UI fica em loop de "reconectar".
       const scope = [GMAIL_SCOPES, tokens.scope || ''].filter(Boolean).join(' ');
 
-      // 1) canal explícito no state (reconnect do card / reply CTA)
-      let existing = payload.channelId
-        ? await this.prisma.channel.findFirst({
-            where: {
-              id: payload.channelId,
-              organizationId: payload.orgId,
-              type: ChannelType.GMAIL,
-              deletedAt: null,
-            },
-          })
-        : null;
+      // All active Gmail channels in this org
+      const candidates = await this.prisma.channel.findMany({
+        where: {
+          organizationId: payload.orgId,
+          type: ChannelType.GMAIL,
+          deletedAt: null,
+        },
+        orderBy: { createdAt: 'asc' },
+      });
 
-      // 2) mesmo e-mail na org (evita duplicar "Gmail · luis@…")
+      // 1) canal explícito no state (reconnect do card / reply CTA)
+      let existing =
+        (payload.channelId
+          ? candidates.find((c) => c.id === payload.channelId)
+          : undefined) || null;
+
+      // 2) mesmo e-mail na org
       if (!existing && email) {
-        const candidates = await this.prisma.channel.findMany({
-          where: {
-            organizationId: payload.orgId,
-            type: ChannelType.GMAIL,
-            deletedAt: null,
-          },
-          orderBy: { createdAt: 'asc' },
-        });
         existing =
           candidates.find((c) => {
             const cfg = (c.config as any) || {};
             return String(cfg.email || '').toLowerCase() === email;
           }) || null;
-        // 3) se só existe 1 Gmail na org, reutiliza (reconnect genérico)
-        if (!existing && candidates.length === 1) {
-          existing = candidates[0];
-        }
+      }
+
+      // 3) ANY existing Gmail channel → update oldest, retire the rest.
+      //    Heals "3x GMAIL - LUIS" duplicates from earlier reconnect bugs.
+      if (!existing && candidates.length > 0) {
+        existing = candidates[0];
       }
 
       if (existing) {
@@ -237,11 +235,22 @@ export class GmailOAuthService {
             },
           },
         });
-        if (email) {
-          await this.softDeleteDuplicateGmailChannels(
-            payload.orgId,
-            email,
-            existing.id,
+        // Retire every other Gmail channel in this org (same Google account)
+        const siblings = await this.prisma.channel.findMany({
+          where: {
+            organizationId: payload.orgId,
+            type: ChannelType.GMAIL,
+            deletedAt: null,
+            id: { not: existing.id },
+          },
+        });
+        for (const c of siblings) {
+          await this.prisma.channel.update({
+            where: { id: c.id },
+            data: { deletedAt: new Date(), isActive: false },
+          });
+          this.logger.warn(
+            `Gmail OAuth: retired duplicate channel ${c.id} (keep=${existing.id})`,
           );
         }
         return `${base}?gmail=connected&updated=1&email=${encodeURIComponent(email || '')}`;
