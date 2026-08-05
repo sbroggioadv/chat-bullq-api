@@ -89,17 +89,12 @@ export class EmailService {
       connected: channels.length > 0,
       channels: channels.map((c) => {
         const cfg = (c.config as any) || {};
-        const scope = String(cfg.scope || '');
-        const canSend =
-          scope.includes('gmail.send') ||
-          scope.includes('gmail.modify') ||
-          scope.includes('mail.google.com');
         return {
           id: c.id,
           name: c.name,
           email: (cfg.email as string | undefined) ?? null,
-          canSend,
-          needsReauthForSend: !canSend,
+          canSend: this.channelCanSend(c),
+          needsReauthForSend: this.channelNeedsReauthForSend(c),
         };
       }),
     };
@@ -122,6 +117,23 @@ export class EmailService {
     if (!channel) throw new NotFoundException('Canal Gmail não encontrado');
     this.channelAccess.assertChannelAccess(access, channel.id);
     return channel;
+  }
+
+  /**
+   * Detecta se o canal pode enviar.
+   * - scope vazio/desconhecido: assume true (tenta enviar; 403 pede reauth)
+   * - se scope listado e SEM gmail.send: false
+   */
+  private channelCanSend(channel: Channel): boolean {
+    const scope = String(((channel.config as any) || {}).scope || '');
+    if (!scope.trim()) return true;
+    return /gmail\.send|gmail\.modify|mail\.google\.com/i.test(scope);
+  }
+
+  private channelNeedsReauthForSend(channel: Channel): boolean {
+    const scope = String(((channel.config as any) || {}).scope || '');
+    if (!scope.trim()) return false;
+    return !this.channelCanSend(channel);
   }
 
   /** Nunca vaza token/erro cru do Google pro cliente — só loga a mensagem. */
@@ -302,19 +314,12 @@ export class EmailService {
       };
     });
 
-    const cfg = (channel.config as any) || {};
-    const scope = String(cfg.scope || '');
-    const canSend =
-      scope.includes('gmail.send') ||
-      scope.includes('gmail.modify') ||
-      scope.includes('mail.google.com');
-
     return {
       id: String(full.id || threadId),
       externalConversationId: threadId,
       subject: messages.map((m) => m.subject).find(Boolean) || '(sem assunto)',
-      canSend,
-      needsReauthForSend: !canSend,
+      canSend: this.channelCanSend(channel),
+      needsReauthForSend: this.channelNeedsReauthForSend(channel),
       myEmail: my || null,
       messages,
     };
@@ -344,17 +349,8 @@ export class EmailService {
       access,
       input.channelId,
     );
-    const cfg = (channel.config as any) || {};
-    const scope = String(cfg.scope || '');
-    const canSend =
-      scope.includes('gmail.send') ||
-      scope.includes('gmail.modify') ||
-      scope.includes('mail.google.com');
-    if (!canSend) {
-      throw new BadRequestException(
-        'Este canal só tem leitura. Reconecte o Gmail autorizando envio (gmail.send).',
-      );
-    }
+    // Não bloqueia só por string de scope — tenta enviar; 403 vira reauth.
+    // (canais legados sem campo scope ficavam presos em loop de reconexão)
 
     let full: Record<string, any>;
     try {
@@ -400,7 +396,7 @@ export class EmailService {
     const references =
       [headerOf(replyToMsg, 'References'), inReplyTo].filter(Boolean).join(' ').trim();
 
-    const fromHeader = my || (cfg.email as string) || '';
+    const fromHeader = my || String(((channel.config as any) || {}).email || '');
     const raw = this.buildRfc822({
       from: fromHeader,
       to: toAddr,

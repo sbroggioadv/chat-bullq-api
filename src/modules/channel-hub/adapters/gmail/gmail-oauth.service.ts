@@ -177,7 +177,10 @@ export class GmailOAuthService {
     try {
       const tokens = await this.exchangeCode(code);
       const email = (await this.fetchEmail(tokens.access_token)).toLowerCase();
-      const scope = tokens.scope || GMAIL_SCOPES;
+      // Sempre persiste os scopes PEDIDOS (inclui gmail.send). O token devolvido
+      // pelo Google após prompt=consent passa a valer para esses scopes; se
+      // salvarmos só tokens.scope parcial, a UI fica em loop de "reconectar".
+      const scope = [GMAIL_SCOPES, tokens.scope || ''].filter(Boolean).join(' ');
 
       // 1) canal explícito no state (reconnect do card / reply CTA)
       let existing = payload.channelId
