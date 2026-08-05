@@ -201,6 +201,7 @@ export class ConversationsRepository {
               id: true,
               name: true,
               phone: true,
+              email: true,
               avatarUrl: true,
               tags: { include: { tag: true } },
               // Canais do contato → deriva o JID do grupo p/ anexar o Projeto.

@@ -79,6 +79,42 @@ class EmailForwardDto {
   subject?: string;
 }
 
+class EmailComposeDto {
+  @ApiProperty()
+  @IsString()
+  channelId!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(3)
+  to!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  subject!: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  body!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  cc?: string;
+}
+
+class EmailArchiveDto {
+  @ApiProperty()
+  @IsString()
+  channelId!: string;
+
+  @ApiProperty()
+  @IsString()
+  threadId!: string;
+}
+
 @ApiTags('Email')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
@@ -165,5 +201,25 @@ export class EmailController {
     @Body() dto: EmailForwardDto,
   ) {
     return this.email.forward(orgId, access, dto);
+  }
+
+  @Post('compose')
+  @ApiOperation({ summary: 'Envia e-mail novo (compose livre)' })
+  compose(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() dto: EmailComposeDto,
+  ) {
+    return this.email.compose(orgId, access, dto);
+  }
+
+  @Post('archive')
+  @ApiOperation({ summary: 'Arquiva thread Gmail (remove INBOX)' })
+  archive(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() dto: EmailArchiveDto,
+  ) {
+    return this.email.archive(orgId, access, dto);
   }
 }

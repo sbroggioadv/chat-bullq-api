@@ -196,4 +196,26 @@ export class GmailHttpClient {
       labelIds: data.labelIds,
     };
   }
+
+  /** Arquivar / spam / star — exige gmail.modify. */
+  async modifyThreadLabels(
+    channel: Channel,
+    threadId: string,
+    opts: { addLabelIds?: string[]; removeLabelIds?: string[] },
+  ): Promise<{ id: string; labelIds?: string[] }> {
+    const http = await this.client(channel);
+    const { data } = await http.post(
+      `/users/me/threads/${encodeURIComponent(threadId)}/modify`,
+      {
+        addLabelIds: opts.addLabelIds || [],
+        removeLabelIds: opts.removeLabelIds || [],
+      },
+    );
+    return { id: String(data.id || threadId), labelIds: data.labelIds };
+  }
+
+  /** Access token do canal Gmail (reuso Calendar API com mesmo OAuth). */
+  async accessToken(channel: Channel): Promise<string> {
+    return this.getAccessToken(channel);
+  }
 }

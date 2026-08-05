@@ -341,6 +341,121 @@ export class DashboardService {
     });
   }
 
+  /**
+   * Premissas gerenciais por canal (ADR-004 W4): WA / IG / Gmail.
+   */
+  async getChannelPremises(organizationId: string, range: DateRange) {
+    const channels = await this.prisma.channel.findMany({
+      where: { organizationId, deletedAt: null, isActive: true },
+      select: { id: true, name: true, type: true },
+    });
+
+    const byType = (types: string[]) =>
+      channels.filter((c) => types.includes(String(c.type)));
+
+    const wa = byType(['WHATSAPP_OFFICIAL', 'WHATSAPP_ZAPPFY']);
+    const ig = byType(['INSTAGRAM']);
+    const mail = byType(['GMAIL']);
+
+    const premiseFor = async (
+      list: typeof channels,
+      kind: 'WHATSAPP' | 'INSTAGRAM' | 'GMAIL',
+    ) => {
+      if (!list.length) {
+        return {
+          kind,
+          connected: false,
+          channelIds: [] as string[],
+          channelNames: [] as string[],
+          conversationsInPeriod: 0,
+          open: 0,
+          unreadApprox: 0,
+          inboundMessages: 0,
+          outboundMessages: 0,
+          avgFirstResponseMinutes: null as number | null,
+        };
+      }
+      const ids = list.map((c) => c.id);
+      const [
+        conversationsInPeriod,
+        open,
+        inboundMessages,
+        outboundMessages,
+        withFirst,
+      ] = await Promise.all([
+        this.prisma.conversation.count({
+          where: {
+            organizationId,
+            channelId: { in: ids },
+            createdAt: { gte: range.from, lte: range.to },
+          },
+        }),
+        this.prisma.conversation.count({
+          where: {
+            organizationId,
+            channelId: { in: ids },
+            status: { in: ['OPEN', 'PENDING', 'WAITING', 'BOT'] },
+            deletedAt: null,
+          },
+        }),
+        this.prisma.message.count({
+          where: {
+            conversation: { organizationId, channelId: { in: ids } },
+            direction: 'INBOUND',
+            createdAt: { gte: range.from, lte: range.to },
+          },
+        }),
+        this.prisma.message.count({
+          where: {
+            conversation: { organizationId, channelId: { in: ids } },
+            direction: 'OUTBOUND',
+            createdAt: { gte: range.from, lte: range.to },
+          },
+        }),
+        this.prisma.conversation.findMany({
+          where: {
+            organizationId,
+            channelId: { in: ids },
+            createdAt: { gte: range.from, lte: range.to },
+            firstResponseAt: { not: null },
+          },
+          select: { createdAt: true, firstResponseAt: true },
+          take: 5000,
+        }),
+      ]);
+
+      let avgFirstResponseMinutes: number | null = null;
+      if (withFirst.length) {
+        const sum = withFirst.reduce((acc, c) => {
+          if (!c.firstResponseAt) return acc;
+          return acc + (c.firstResponseAt.getTime() - c.createdAt.getTime()) / 60000;
+        }, 0);
+        avgFirstResponseMinutes = Math.round(sum / withFirst.length);
+      }
+
+      return {
+        kind,
+        connected: true,
+        channelIds: ids,
+        channelNames: list.map((c) => c.name),
+        conversationsInPeriod,
+        open,
+        unreadApprox: open, // proxy até cursor por canal
+        inboundMessages,
+        outboundMessages,
+        avgFirstResponseMinutes,
+      };
+    };
+
+    const [whatsapp, instagram, email] = await Promise.all([
+      premiseFor(wa, 'WHATSAPP'),
+      premiseFor(ig, 'INSTAGRAM'),
+      premiseFor(mail, 'GMAIL'),
+    ]);
+
+    return { whatsapp, instagram, email, range };
+  }
+
   async getVolumeByStatus(organizationId: string) {
     const result = await this.prisma.conversation.groupBy({
       by: ['status'],

@@ -40,6 +40,21 @@ export class DashboardController {
     return this.service.getVolumeByChannel(orgId, this.parseRange(from, to));
   }
 
+  @Get('channel-premises')
+  @ApiOperation({
+    summary:
+      'Premissas gerenciais por canal (WhatsApp / Instagram DM / E-mail) — ADR-004 W4',
+  })
+  @ApiQuery({ name: 'from', required: false })
+  @ApiQuery({ name: 'to', required: false })
+  getChannelPremises(
+    @CurrentOrg('id') orgId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.service.getChannelPremises(orgId, this.parseRange(from, to));
+  }
+
   @Get('volume-by-status')
   @ApiOperation({ summary: 'Conversations by status (current)' })
   getVolumeByStatus(@CurrentOrg('id') orgId: string) {

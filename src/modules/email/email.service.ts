@@ -462,6 +462,94 @@ export class EmailService {
   }
 
   /**
+   * Compose livre (painel conversa / novo e-mail).
+   */
+  async compose(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      to: string;
+      subject: string;
+      body: string;
+      cc?: string;
+    },
+  ) {
+    const toRaw = (input.to || '').trim();
+    const subject = (input.subject || '').trim();
+    const bodyText = (input.body || '').trim();
+    if (!toRaw.includes('@')) throw new BadRequestException('Destinatário inválido');
+    if (!subject) throw new BadRequestException('Assunto é obrigatório');
+    if (!bodyText) throw new BadRequestException('Corpo é obrigatório');
+
+    const toList = toRaw
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter((s) => s.includes('@'));
+    if (!toList.length) throw new BadRequestException('Destinatário inválido');
+
+    const channel = await this.resolveChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    const my = await this.myEmail(channel);
+    const fromHeader = my || String(((channel.config as any) || {}).email || '');
+    const raw = this.buildRfc822({
+      from: fromHeader,
+      to: toList.join(', '),
+      cc: (input.cc || '').trim() || undefined,
+      subject,
+      body: bodyText,
+    });
+
+    try {
+      const sent = await this.gmail.sendRawMessage(channel, raw);
+      return { success: true, id: sent.id, threadId: sent.threadId || '' };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const gmsg = err?.response?.data?.error?.message || err?.message || '';
+      if (
+        status === 403 ||
+        /insufficient|scope|accessNotConfigured|PERMISSION/i.test(String(gmsg))
+      ) {
+        throw new BadRequestException(
+          'Sem permissão de envio no Google. Reconecte o canal Gmail.',
+        );
+      }
+      this.gmailUnavailable(channel, err, 'enviar o e-mail');
+    }
+  }
+
+  /** Arquivar thread (remove INBOX). */
+  async archive(
+    organizationId: string,
+    access: ChannelAccess,
+    input: { channelId?: string; threadId: string },
+  ) {
+    if (!input.threadId) throw new BadRequestException('threadId é obrigatório');
+    const channel = await this.resolveChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    try {
+      await this.gmail.modifyThreadLabels(channel, input.threadId, {
+        removeLabelIds: ['INBOX'],
+      });
+      return { success: true, threadId: input.threadId };
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 403) {
+        throw new BadRequestException(
+          'Sem permissão para arquivar. Reconecte o Gmail com gmail.modify.',
+        );
+      }
+      this.gmailUnavailable(channel, err, 'arquivar o e-mail');
+    }
+  }
+
+  /**
    * Encaminha o thread (citação da última mensagem) para novos destinatários.
    */
   async forward(
