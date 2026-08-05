@@ -47,10 +47,44 @@ export class InboxViewsService {
 
   async list(organizationId: string, userId: string) {
     await this.ensureBuiltinViews(organizationId, userId);
+    await this.dedupeAutoGmailViews(organizationId, userId);
     return this.prisma.inboxView.findMany({
       where: { organizationId, userId },
       orderBy: [{ order: 'asc' }, { createdAt: 'asc' }],
     });
+  }
+
+  /**
+   * Uma única marcação "Gmail" na sidebar — remove duplicatas de reconnect
+   * ("Gmail" + "Gmail · luis…").
+   */
+  private async dedupeAutoGmailViews(
+    organizationId: string,
+    userId: string,
+  ): Promise<void> {
+    const views = await this.prisma.inboxView.findMany({
+      where: { organizationId, userId },
+      orderBy: { createdAt: 'asc' },
+    });
+    const gmailViews = views.filter((v) => {
+      const m = (v.metadata as any) || {};
+      if (m.auto === true || m.gmailChannelId) return true;
+      return /^gmail\b/i.test(String(v.name || ''));
+    });
+    if (gmailViews.length <= 1) return;
+
+    const keep = gmailViews[0];
+    const drop = gmailViews.slice(1);
+    await this.prisma.inboxView.deleteMany({
+      where: { id: { in: drop.map((d) => d.id) } },
+    });
+    // Normaliza nome da que fica
+    if (keep.name !== 'Gmail') {
+      await this.prisma.inboxView.update({
+        where: { id: keep.id },
+        data: { name: 'Gmail', icon: 'Mail', color: '#ea4335' },
+      });
+    }
   }
 
   /**

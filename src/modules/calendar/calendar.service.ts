@@ -25,6 +25,11 @@ const DEFAULT_TZ = 'America/Sao_Paulo';
 @Injectable()
 export class CalendarService {
   private readonly logger = new Logger(CalendarService.name);
+  /** Cache de cores do Google (event colorId → bg/fg). */
+  private colorsCache = new Map<
+    string,
+    { at: number; event: Record<string, { background: string; foreground: string }> }
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -136,36 +141,50 @@ export class CalendarService {
 
     try {
       const http = await this.calClient(channel);
-      const { data } = await http.get('/calendars/primary/events', {
-        params: {
-          timeMin,
-          timeMax,
-          singleEvents: true,
-          orderBy: 'startTime',
-          maxResults: 250,
-        },
+      const [eventsResp, colorMap, calMeta] = await Promise.all([
+        http.get('/calendars/primary/events', {
+          params: {
+            timeMin,
+            timeMax,
+            singleEvents: true,
+            orderBy: 'startTime',
+            maxResults: 250,
+          },
+        }),
+        this.getEventColorMap(channel),
+        this.getPrimaryCalendarMeta(channel).catch(() => null),
+      ]);
+      const data = eventsResp.data;
+      const defaultBg = calMeta?.backgroundColor || '#3b82f6';
+      const defaultFg = calMeta?.foregroundColor || '#ffffff';
+      const items = (data.items || []).map((ev: any) => {
+        const colorId = ev.colorId ? String(ev.colorId) : null;
+        const palette = (colorId && colorMap[colorId]) || null;
+        return {
+          id: String(ev.id),
+          summary: ev.summary || '(sem título)',
+          description: ev.description || '',
+          htmlLink: ev.htmlLink || null,
+          meetLink:
+            ev.hangoutLink ||
+            ev.conferenceData?.entryPoints?.find(
+              (e: any) => e.entryPointType === 'video',
+            )?.uri ||
+            null,
+          start: ev.start?.dateTime || ev.start?.date || null,
+          end: ev.end?.dateTime || ev.end?.date || null,
+          allDay: !!ev.start?.date && !ev.start?.dateTime,
+          attendees: (ev.attendees || []).map((a: any) => ({
+            email: a.email,
+            displayName: a.displayName,
+            responseStatus: a.responseStatus,
+          })),
+          status: ev.status,
+          colorId,
+          backgroundColor: palette?.background || defaultBg,
+          foregroundColor: palette?.foreground || defaultFg,
+        };
       });
-      const items = (data.items || []).map((ev: any) => ({
-        id: String(ev.id),
-        summary: ev.summary || '(sem título)',
-        description: ev.description || '',
-        htmlLink: ev.htmlLink || null,
-        meetLink:
-          ev.hangoutLink ||
-          ev.conferenceData?.entryPoints?.find(
-            (e: any) => e.entryPointType === 'video',
-          )?.uri ||
-          null,
-        start: ev.start?.dateTime || ev.start?.date || null,
-        end: ev.end?.dateTime || ev.end?.date || null,
-        allDay: !!ev.start?.date && !ev.start?.dateTime,
-        attendees: (ev.attendees || []).map((a: any) => ({
-          email: a.email,
-          displayName: a.displayName,
-          responseStatus: a.responseStatus,
-        })),
-        status: ev.status,
-      }));
       return {
         channelId: channel.id,
         calendarId: 'primary',
@@ -269,6 +288,53 @@ export class CalendarService {
         );
       }
       throw new BadGatewayException('Falha ao criar evento no Google Calendar');
+    }
+  }
+
+  /** Paleta oficial de cores de evento do Google Calendar. */
+  private async getEventColorMap(
+    channel: Channel,
+  ): Promise<Record<string, { background: string; foreground: string }>> {
+    const cached = this.colorsCache.get(channel.id);
+    if (cached && Date.now() - cached.at < 6 * 60 * 60_000) return cached.event;
+    try {
+      const http = await this.calClient(channel);
+      const { data } = await http.get('/colors');
+      const event: Record<string, { background: string; foreground: string }> =
+        {};
+      for (const [id, val] of Object.entries((data.event || {}) as Record<string, any>)) {
+        event[id] = {
+          background: String(val.background || '#3b82f6'),
+          foreground: String(val.foreground || '#ffffff'),
+        };
+      }
+      this.colorsCache.set(channel.id, { at: Date.now(), event });
+      return event;
+    } catch (err: any) {
+      this.logger.warn(`Calendar colors: ${err?.message || err}`);
+      return cached?.event || {};
+    }
+  }
+
+  /** Cor padrão do calendário primary (quando o evento não tem colorId). */
+  private async getPrimaryCalendarMeta(channel: Channel): Promise<{
+    backgroundColor?: string;
+    foregroundColor?: string;
+  } | null> {
+    const http = await this.calClient(channel);
+    try {
+      const { data } = await http.get('/calendars/primary');
+      return {
+        backgroundColor: data.backgroundColor,
+        foregroundColor: data.foregroundColor,
+      };
+    } catch {
+      // calendarList entry às vezes tem a cor
+      const { data } = await http.get('/users/me/calendarList/primary');
+      return {
+        backgroundColor: data.backgroundColor,
+        foregroundColor: data.foregroundColor,
+      };
     }
   }
 }

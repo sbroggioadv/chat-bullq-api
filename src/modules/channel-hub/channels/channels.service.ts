@@ -139,7 +139,7 @@ export class ChannelsService {
   }
 
   private async ensureGmailInboxView(
-    channel: { id: string; organizationId: string; name: string },
+    channel: { id: string; organizationId: string; name: string; type?: any },
     userOrganizationId: string,
   ): Promise<void> {
     const uo = await this.prisma.userOrganization.findUnique({
@@ -148,42 +148,104 @@ export class ChannelsService {
     });
     if (!uo?.userId) return;
 
-    const existing = await this.prisma.inboxView.findFirst({
+    // Uma única view auto-Gmail por usuário/org — evita "Gmail" + "Gmail · luis…"
+    const candidateViews = await this.prisma.inboxView.findMany({
       where: {
         organizationId: channel.organizationId,
         userId: uo.userId,
-        metadata: { path: ['gmailChannelId'], equals: channel.id },
       },
+      orderBy: { createdAt: 'asc' },
     });
-    if (existing) return;
-
-    const max = await this.prisma.inboxView.findFirst({
-      where: { userId: uo.userId },
-      orderBy: { order: 'desc' },
-      select: { order: true },
+    const autoGmailViews = candidateViews.filter((v) => {
+      const m = (v.metadata as any) || {};
+      if (m.auto === true || m.gmailChannelId) return true;
+      return /^gmail\b/i.test(String(v.name || ''));
     });
 
-    const isGmail = (channel as any).type === ChannelType.GMAIL;
-    await this.prisma.inboxView.create({
-      data: {
-        organizationId: channel.organizationId,
-        userId: uo.userId,
-        name: isGmail
-          ? channel.name?.startsWith('Gmail')
-            ? channel.name
-            : `Gmail · ${channel.name}`
-          : channel.name,
-        icon: isGmail ? 'Mail' : 'Inbox',
-        color: isGmail ? '#ea4335' : '#6b7280',
-        filters: { channelIds: [channel.id] } as object,
-        metadata: {
-          gmailChannelId: channel.id,
-          channelId: channel.id,
-          auto: true,
-        } as object,
-        order: (max?.order ?? -1) + 1,
-      },
+    // Preferir view já ligada a ESTE canal; senão a mais antiga auto
+    let keep =
+      autoGmailViews.find((v) => {
+        const m = (v.metadata as any) || {};
+        return m.gmailChannelId === channel.id || m.channelId === channel.id;
+      }) || autoGmailViews[0];
+
+    const label =
+      channel.name?.startsWith('Gmail') || channel.name?.startsWith('E-mail')
+        ? channel.name
+        : `Gmail · ${channel.name}`;
+
+    if (keep) {
+      await this.prisma.inboxView.update({
+        where: { id: keep.id },
+        data: {
+          name: label.startsWith('Gmail') ? 'Gmail' : label,
+          icon: 'Mail',
+          color: '#ea4335',
+          filters: { channelIds: [channel.id] } as object,
+          metadata: {
+            gmailChannelId: channel.id,
+            channelId: channel.id,
+            auto: true,
+          } as object,
+        },
+      });
+    } else {
+      const max = await this.prisma.inboxView.findFirst({
+        where: { userId: uo.userId },
+        orderBy: { order: 'desc' },
+        select: { order: true },
+      });
+      keep = await this.prisma.inboxView.create({
+        data: {
+          organizationId: channel.organizationId,
+          userId: uo.userId,
+          name: 'Gmail',
+          icon: 'Mail',
+          color: '#ea4335',
+          filters: { channelIds: [channel.id] } as object,
+          metadata: {
+            gmailChannelId: channel.id,
+            channelId: channel.id,
+            auto: true,
+          } as object,
+          order: (max?.order ?? -1) + 1,
+        },
+      });
+    }
+
+    // Remove duplicatas auto-Gmail (outros canais legados / reconnect)
+    const dups = autoGmailViews.filter((v) => v.id !== keep!.id);
+    if (dups.length) {
+      await this.prisma.inboxView.deleteMany({
+        where: { id: { in: dups.map((d) => d.id) } },
+      });
+      this.logger.warn(
+        `Gmail inbox views: removed ${dups.length} duplicate(s), keep=${keep.id}`,
+      );
+    }
+  }
+
+  /** Remove inbox views auto ligadas a canais Gmail aposentados. */
+  async cleanupGmailInboxViewsForRetiredChannels(
+    organizationId: string,
+    retiredChannelIds: string[],
+  ): Promise<void> {
+    if (!retiredChannelIds.length) return;
+    const views = await this.prisma.inboxView.findMany({
+      where: { organizationId },
     });
+    const toDelete = views.filter((v) => {
+      const m = (v.metadata as any) || {};
+      const id = m.gmailChannelId || m.channelId;
+      return id && retiredChannelIds.includes(String(id));
+    });
+    if (!toDelete.length) return;
+    await this.prisma.inboxView.deleteMany({
+      where: { id: { in: toDelete.map((v) => v.id) } },
+    });
+    this.logger.warn(
+      `Gmail inbox views: deleted ${toDelete.length} for retired channels`,
+    );
   }
 
   /**

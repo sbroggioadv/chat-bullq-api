@@ -294,6 +294,22 @@ export class GmailOAuthService {
           );
         }
         const calOk = /calendar(\.events)?/i.test(granted) ? '1' : '0';
+        // Consolida view Gmail na sidebar (1 só) e limpa views de canais aposentados
+        try {
+          await this.channelsService.ensureInboxViewForChannel(
+            existing.id,
+            payload.orgId,
+            payload.uoId,
+          );
+          if (siblings.length) {
+            await this.channelsService.cleanupGmailInboxViewsForRetiredChannels(
+              payload.orgId,
+              siblings.map((c) => c.id),
+            );
+          }
+        } catch (e: any) {
+          this.logger.warn(`Gmail inbox view cleanup: ${e?.message || e}`);
+        }
         return this.webReturnUrl(
           returnTo,
           `gmail=connected&updated=1&calendar=${calOk}&email=${encodeURIComponent(email || '')}`,
