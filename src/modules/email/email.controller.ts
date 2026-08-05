@@ -8,7 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
-import { IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsArray, IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import {
   CurrentChannelAccess,
@@ -113,6 +113,32 @@ class EmailArchiveDto {
   @ApiProperty()
   @IsString()
   threadId!: string;
+}
+
+class EmailModifyDto {
+  @ApiProperty()
+  @IsString()
+  channelId!: string;
+
+  @ApiProperty()
+  @IsString()
+  threadId!: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  addLabelIds?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  removeLabelIds?: string[];
+
+  /** Atalhos: star | unstar | spam | unspam | read | unread | archive */
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  action?: string;
 }
 
 @ApiTags('Email')
@@ -221,5 +247,59 @@ export class EmailController {
     @Body() dto: EmailArchiveDto,
   ) {
     return this.email.archive(orgId, access, dto);
+  }
+
+  @Post('modify')
+  @ApiOperation({
+    summary:
+      'Altera labels do thread (star/spam/lido/arquivar/custom). Atalho via action=.',
+  })
+  modify(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() dto: EmailModifyDto,
+  ) {
+    const action = (dto.action || '').toLowerCase();
+    let add = dto.addLabelIds || [];
+    let remove = dto.removeLabelIds || [];
+    switch (action) {
+      case 'star':
+        add = [...add, 'STARRED'];
+        break;
+      case 'unstar':
+        remove = [...remove, 'STARRED'];
+        break;
+      case 'spam':
+        add = [...add, 'SPAM'];
+        remove = [...remove, 'INBOX'];
+        break;
+      case 'unspam':
+        remove = [...remove, 'SPAM'];
+        add = [...add, 'INBOX'];
+        break;
+      case 'read':
+        remove = [...remove, 'UNREAD'];
+        break;
+      case 'unread':
+        add = [...add, 'UNREAD'];
+        break;
+      case 'archive':
+        remove = [...remove, 'INBOX'];
+        break;
+      case 'important':
+        add = [...add, 'IMPORTANT'];
+        break;
+      case 'unimportant':
+        remove = [...remove, 'IMPORTANT'];
+        break;
+      default:
+        break;
+    }
+    return this.email.modifyLabels(orgId, access, {
+      channelId: dto.channelId,
+      threadId: dto.threadId,
+      addLabelIds: add,
+      removeLabelIds: remove,
+    });
   }
 }

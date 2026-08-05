@@ -298,7 +298,12 @@ export class EmailService {
     }
 
     const my = await this.myEmail(channel);
-    const messages = ((full.messages as any[]) || []).map((m) => {
+    const rawMsgs = (full.messages as any[]) || [];
+    const allLabels = new Set<string>();
+    for (const m of rawMsgs) {
+      for (const l of m.labelIds || []) allLabels.add(String(l));
+    }
+    const messages = rawMsgs.map((m) => {
       const from = extractAddress(headerOf(m, 'From') || '');
       const internal = m.internalDate ? Number(m.internalDate) : NaN;
       return {
@@ -313,8 +318,19 @@ export class EmailService {
         unread: (m.labelIds || []).includes('UNREAD'),
         outbound: !!my && from.email === my,
         messageId: headerOf(m, 'Message-ID') || headerOf(m, 'Message-Id') || '',
+        labelIds: (m.labelIds || []) as string[],
       };
     });
+
+    // Marca como lido ao abrir (best-effort, não bloqueia a resposta)
+    if (allLabels.has('UNREAD')) {
+      this.gmail
+        .modifyThreadLabels(channel, threadId, { removeLabelIds: ['UNREAD'] })
+        .catch((err) =>
+          this.logger.warn(`Gmail mark-read ${threadId}: ${err?.message || err}`),
+        );
+      allLabels.delete('UNREAD');
+    }
 
     return {
       id: String(full.id || threadId),
@@ -323,6 +339,10 @@ export class EmailService {
       canSend: this.channelCanSend(channel),
       needsReauthForSend: this.channelNeedsReauthForSend(channel),
       myEmail: my || null,
+      starred: allLabels.has('STARRED'),
+      spam: allLabels.has('SPAM'),
+      important: allLabels.has('IMPORTANT'),
+      labelIds: [...allLabels],
       messages,
     };
   }
@@ -527,25 +547,57 @@ export class EmailService {
     access: ChannelAccess,
     input: { channelId?: string; threadId: string },
   ) {
+    return this.modifyLabels(organizationId, access, {
+      ...input,
+      removeLabelIds: ['INBOX'],
+    });
+  }
+
+  /**
+   * Mutações de label Gmail (star/spam/lido/arquivar/custom).
+   * Exige gmail.modify no token.
+   */
+  async modifyLabels(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      channelId?: string;
+      threadId: string;
+      addLabelIds?: string[];
+      removeLabelIds?: string[];
+    },
+  ) {
     if (!input.threadId) throw new BadRequestException('threadId é obrigatório');
+    const add = (input.addLabelIds || []).map((s) => String(s).trim()).filter(Boolean);
+    const remove = (input.removeLabelIds || [])
+      .map((s) => String(s).trim())
+      .filter(Boolean);
+    if (!add.length && !remove.length) {
+      throw new BadRequestException('Informe addLabelIds e/ou removeLabelIds');
+    }
     const channel = await this.resolveChannel(
       organizationId,
       access,
       input.channelId,
     );
     try {
-      await this.gmail.modifyThreadLabels(channel, input.threadId, {
-        removeLabelIds: ['INBOX'],
+      const res = await this.gmail.modifyThreadLabels(channel, input.threadId, {
+        addLabelIds: add,
+        removeLabelIds: remove,
       });
-      return { success: true, threadId: input.threadId };
+      return {
+        success: true,
+        threadId: input.threadId,
+        labelIds: res.labelIds || [],
+      };
     } catch (err: any) {
       const status = err?.response?.status;
       if (status === 403) {
         throw new BadRequestException(
-          'Sem permissão para arquivar. Reconecte o Gmail com gmail.modify.',
+          'Sem permissão para alterar o e-mail. Reconecte o Gmail com gmail.modify.',
         );
       }
-      this.gmailUnavailable(channel, err, 'arquivar o e-mail');
+      this.gmailUnavailable(channel, err, 'alterar marcadores do e-mail');
     }
   }
 
