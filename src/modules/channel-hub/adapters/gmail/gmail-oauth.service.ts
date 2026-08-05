@@ -19,6 +19,8 @@ export interface GmailOAuthStartInput {
   visibility?: 'ORG' | 'PRIVATE';
   /** Se informado, reconecta ESTE canal (não cria outro). */
   channelId?: string;
+  /** Path web pós-callback (ex.: /calendar, /settings/channels). */
+  returnTo?: string;
 }
 
 interface OAuthStatePayload {
@@ -29,6 +31,7 @@ interface OAuthStatePayload {
   name: string;
   visibility: 'ORG' | 'PRIVATE';
   channelId?: string;
+  returnTo?: string;
   nonce: string;
   exp: number;
 }
@@ -96,13 +99,40 @@ export class GmailOAuthService {
     return `${appUrl}/api/v1/channels/gmail/oauth/callback`;
   }
 
-  webChannelsUrl(): string {
+  private webBase(): string {
     const web =
       this.config.get<string>('WEB_URL') ||
       this.config.get<string>('FRONTEND_URL') ||
       this.config.get<string>('CORS_ORIGIN')?.split(',')[0]?.trim() ||
       'https://bullq.iacombativa.com';
-    return `${web.replace(/\/$/, '')}/settings/channels`;
+    return web.replace(/\/$/, '');
+  }
+
+  webChannelsUrl(): string {
+    return `${this.webBase()}/settings/channels`;
+  }
+
+  /** Só paths internos do app (anti open-redirect). */
+  private safeReturnTo(returnTo?: string): string {
+    const raw = (returnTo || '').trim();
+    if (!raw.startsWith('/')) return '/settings/channels';
+    if (raw.startsWith('//') || raw.includes('://')) return '/settings/channels';
+    // allowlist de destinos pós-OAuth
+    if (
+      raw.startsWith('/settings/channels') ||
+      raw.startsWith('/calendar') ||
+      raw.startsWith('/email') ||
+      raw.startsWith('/inbox')
+    ) {
+      return raw.split('#')[0].slice(0, 200);
+    }
+    return '/settings/channels';
+  }
+
+  private webReturnUrl(returnTo: string | undefined, qs: string): string {
+    const path = this.safeReturnTo(returnTo);
+    const sep = path.includes('?') ? '&' : '?';
+    return `${this.webBase()}${path}${sep}${qs}`;
   }
 
   status() {
@@ -132,6 +162,7 @@ export class GmailOAuthService {
       name: (input.name || '').trim() || 'Gmail',
       visibility: input.visibility || 'PRIVATE',
       channelId: input.channelId || undefined,
+      returnTo: this.safeReturnTo(input.returnTo),
       nonce: randomBytes(12).toString('hex'),
       exp: Math.floor(Date.now() / 1000) + expiresInSec,
     });
@@ -160,29 +191,31 @@ export class GmailOAuthService {
    * - Nunca multiplica caixas a cada "Reconectar".
    */
   async handleCallback(code?: string, state?: string, oauthError?: string): Promise<string> {
-    const base = this.webChannelsUrl();
-    if (oauthError) {
-      return `${base}?gmail=error&reason=${encodeURIComponent(oauthError)}`;
-    }
-    if (!code || !state) {
-      return `${base}?gmail=error&reason=${encodeURIComponent('missing_code_or_state')}`;
-    }
+    // returnTo só conhecido após parse do state; fallback Canais
+    let returnTo = '/settings/channels';
+    const fail = (reason: string) =>
+      this.webReturnUrl(returnTo, `gmail=error&reason=${encodeURIComponent(reason)}`);
+
+    if (oauthError) return fail(oauthError);
+    if (!code || !state) return fail('missing_code_or_state');
 
     let payload: OAuthStatePayload;
     try {
       payload = this.verifyState(state);
+      returnTo = this.safeReturnTo(payload.returnTo);
     } catch (err: any) {
       this.logger.warn(`Gmail OAuth state invalid: ${err.message}`);
-      return `${base}?gmail=error&reason=${encodeURIComponent('invalid_state')}`;
+      return fail('invalid_state');
     }
 
     try {
       const tokens = await this.exchangeCode(code);
       const email = (await this.fetchEmail(tokens.access_token)).toLowerCase();
-      // Sempre persiste os scopes PEDIDOS (inclui gmail.send). O token devolvido
-      // pelo Google após prompt=consent passa a valer para esses scopes; se
-      // salvarmos só tokens.scope parcial, a UI fica em loop de "reconectar".
-      const scope = [GMAIL_SCOPES, tokens.scope || ''].filter(Boolean).join(' ');
+      // scopeGranted = o que o Google REALMENTE deu (fonte da verdade p/ Agenda).
+      // scopeRequested = o que pedimos. scope = união p/ compat (canSend etc).
+      const scopeGranted = String(tokens.scope || '').trim();
+      const scopeRequested = GMAIL_SCOPES;
+      const scope = [scopeRequested, scopeGranted].filter(Boolean).join(' ');
 
       // All active Gmail channels in this org
       const candidates = await this.prisma.channel.findMany({
@@ -218,9 +251,11 @@ export class GmailOAuthService {
       if (existing) {
         const prev = ((existing.config as any) || {}) as Record<string, any>;
         const refreshToken = tokens.refresh_token || prev.refreshToken;
-        if (!refreshToken) {
-          return `${base}?gmail=error&reason=${encodeURIComponent('no_refresh_token')}`;
-        }
+        if (!refreshToken) return fail('no_refresh_token');
+        // Se Google não devolveu scope string, mantém o granted anterior e marca pedido
+        const granted =
+          scopeGranted ||
+          String(prev.scopeGranted || prev.scope || '').trim();
         await this.prisma.channel.update({
           where: { id: existing.id },
           data: {
@@ -229,8 +264,11 @@ export class GmailOAuthService {
               ...prev,
               email: email || prev.email,
               refreshToken,
-              // grava scopes pedidos/retornados — habilita canSend sem novo canal
-              scope,
+              scope: [scopeRequested, granted].filter(Boolean).join(' '),
+              scopeRequested,
+              scopeGranted: granted,
+              hasCalendar: /calendar(\.events)?/i.test(granted),
+              hasGmailModify: /gmail\.modify|gmail\.send/i.test(granted),
               connectedAt: new Date().toISOString(),
               auth: 'oauth_platform_app',
               lastReconnectAt: new Date().toISOString(),
@@ -255,13 +293,15 @@ export class GmailOAuthService {
             `Gmail OAuth: retired duplicate channel ${c.id} (keep=${existing.id})`,
           );
         }
-        return `${base}?gmail=connected&updated=1&email=${encodeURIComponent(email || '')}`;
+        const calOk = /calendar(\.events)?/i.test(granted) ? '1' : '0';
+        return this.webReturnUrl(
+          returnTo,
+          `gmail=connected&updated=1&calendar=${calOk}&email=${encodeURIComponent(email || '')}`,
+        );
       }
 
       // Create path — precisa de refresh_token novo
-      if (!tokens.refresh_token) {
-        return `${base}?gmail=error&reason=${encodeURIComponent('no_refresh_token')}`;
-      }
+      if (!tokens.refresh_token) return fail('no_refresh_token');
 
       const channelName =
         payload.name && payload.name !== 'Gmail'
@@ -279,7 +319,17 @@ export class GmailOAuthService {
           config: {
             email: email || undefined,
             refreshToken: tokens.refresh_token,
-            scope,
+            scope: [scopeRequested, scopeGranted || scopeRequested]
+              .filter(Boolean)
+              .join(' '),
+            scopeRequested,
+            scopeGranted: scopeGranted || scopeRequested,
+            hasCalendar: /calendar(\.events)?/i.test(
+              scopeGranted || scopeRequested,
+            ),
+            hasGmailModify: /gmail\.modify|gmail\.send/i.test(
+              scopeGranted || scopeRequested,
+            ),
             connectedAt: new Date().toISOString(),
             auth: 'oauth_platform_app',
           },
@@ -298,11 +348,17 @@ export class GmailOAuthService {
         );
       }
 
-      return `${base}?gmail=connected&email=${encodeURIComponent(email || '')}`;
+      const calOk = /calendar(\.events)?/i.test(scopeGranted || scope)
+        ? '1'
+        : '0';
+      return this.webReturnUrl(
+        returnTo,
+        `gmail=connected&calendar=${calOk}&email=${encodeURIComponent(email || '')}`,
+      );
     } catch (err: any) {
       this.logger.error(`Gmail OAuth callback failed: ${err.message}`, err.stack);
       const reason = err?.response?.data?.error || err.message || 'callback_failed';
-      return `${base}?gmail=error&reason=${encodeURIComponent(String(reason).slice(0, 180))}`;
+      return fail(String(reason).slice(0, 180));
     }
   }
 

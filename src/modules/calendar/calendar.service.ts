@@ -71,9 +71,12 @@ export class CalendarService {
   }
 
   private channelHasCalendar(channel: Channel): boolean {
-    const scope = String(((channel.config as any) || {}).scope || '');
-    if (!scope.trim()) return true; // tenta; 403 pede reauth
-    return /calendar(\.events)?|calendar\.google\.com/i.test(scope);
+    const cfg = ((channel.config as any) || {}) as Record<string, any>;
+    if (typeof cfg.hasCalendar === 'boolean') return cfg.hasCalendar;
+    // Fonte da verdade: o que o Google concedeu no último consent
+    const granted = String(cfg.scopeGranted || cfg.scope || '');
+    if (!granted.trim()) return false; // desconhecido → pede Autorizar Agenda
+    return /calendar(\.events)?|calendar\.google\.com/i.test(granted);
   }
 
   async status(organizationId: string, access: ChannelAccess) {
@@ -90,16 +93,17 @@ export class CalendarService {
       this.channelAccess.hasAccess(access, c.id),
     );
     const primary = allowed[0];
-    const scope = String(((primary?.config as any) || {}).scope || '');
+    const cfg = ((primary?.config as any) || {}) as Record<string, any>;
+    const granted = String(cfg.scopeGranted || cfg.scope || '');
     const hasCal = primary ? this.channelHasCalendar(primary) : false;
     return {
       connected: !!primary,
       calendarAuthorized: hasCal,
       channelId: primary?.id || null,
-      email: ((primary?.config as any) || {}).email || null,
-      scopes: scope ? scope.split(/\s+/).filter(Boolean) : [],
+      email: cfg.email || null,
+      scopes: granted ? granted.split(/\s+/).filter(Boolean) : [],
       needsReauthForCalendar: !!primary && !hasCal,
-      note: 'Agenda usa o mesmo Google Connect do E-mail (calendar.events).',
+      note: 'Agenda usa o mesmo Google Connect do canal Gmail (Canais → Autorizar Agenda).',
     };
   }
 

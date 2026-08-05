@@ -31,6 +31,13 @@ class GmailOAuthStartDto {
   @IsOptional()
   @IsString()
   channelId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Path web pós-callback (/calendar, /settings/channels, /email)',
+  })
+  @IsOptional()
+  @IsString()
+  returnTo?: string;
 }
 
 @ApiTags('Channels / Gmail')
@@ -68,6 +75,7 @@ export class GmailOAuthController {
       name: dto.name,
       visibility: dto.visibility,
       channelId: dto.channelId,
+      returnTo: dto.returnTo,
     });
   }
 
