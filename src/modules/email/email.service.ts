@@ -322,14 +322,22 @@ export class EmailService {
       };
     });
 
-    // Marca como lido ao abrir (best-effort, não bloqueia a resposta)
+    // Marca como lido ao abrir — AWAIT pra espelhar no Gmail de verdade
+    // (fire-and-forget falhava em silêncio e a bolinha na lista não sumia).
+    let markedRead = false;
     if (allLabels.has('UNREAD')) {
-      this.gmail
-        .modifyThreadLabels(channel, threadId, { removeLabelIds: ['UNREAD'] })
-        .catch((err) =>
-          this.logger.warn(`Gmail mark-read ${threadId}: ${err?.message || err}`),
+      try {
+        await this.gmail.modifyThreadLabels(channel, threadId, {
+          removeLabelIds: ['UNREAD'],
+        });
+        markedRead = true;
+        allLabels.delete('UNREAD');
+        for (const m of messages) m.unread = false;
+      } catch (err: any) {
+        this.logger.warn(
+          `Gmail mark-read ${threadId}: ${err?.message || err}`,
         );
-      allLabels.delete('UNREAD');
+      }
     }
 
     return {
@@ -342,6 +350,8 @@ export class EmailService {
       starred: allLabels.has('STARRED'),
       spam: allLabels.has('SPAM'),
       important: allLabels.has('IMPORTANT'),
+      unread: allLabels.has('UNREAD'),
+      markedRead,
       labelIds: [...allLabels],
       messages,
     };
