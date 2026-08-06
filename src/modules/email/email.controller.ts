@@ -11,7 +11,15 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  MinLength,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import {
   CurrentChannelAccess,
@@ -19,6 +27,23 @@ import {
 } from '../../common/decorators';
 import type { ChannelAccess } from '../iam/channel-access/channel-access.service';
 import { EmailService } from './email.service';
+
+class EmailOutboundAttachmentDto {
+  @ApiProperty({ example: 'contrato.pdf' })
+  @IsString()
+  @MinLength(1)
+  filename!: string;
+
+  @ApiPropertyOptional({ example: 'application/pdf' })
+  @IsOptional()
+  @IsString()
+  mimeType?: string;
+
+  @ApiProperty({ description: 'Conteúdo base64 (std ou data-URL)' })
+  @IsString()
+  @MinLength(1)
+  contentBase64!: string;
+}
 
 class EmailReplyDto {
   @ApiProperty()
@@ -55,6 +80,16 @@ class EmailReplyDto {
   @IsOptional()
   @IsString()
   subject?: string;
+
+  @ApiPropertyOptional({
+    type: [EmailOutboundAttachmentDto],
+    description: 'Até 5 anexos, 8 MB cada (base64)',
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EmailOutboundAttachmentDto)
+  attachments?: EmailOutboundAttachmentDto[];
 }
 
 class EmailForwardDto {
@@ -80,6 +115,13 @@ class EmailForwardDto {
   @IsOptional()
   @IsString()
   subject?: string;
+
+  @ApiPropertyOptional({ type: [EmailOutboundAttachmentDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EmailOutboundAttachmentDto)
+  attachments?: EmailOutboundAttachmentDto[];
 }
 
 class EmailComposeDto {
@@ -106,6 +148,13 @@ class EmailComposeDto {
   @IsOptional()
   @IsString()
   cc?: string;
+
+  @ApiPropertyOptional({ type: [EmailOutboundAttachmentDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => EmailOutboundAttachmentDto)
+  attachments?: EmailOutboundAttachmentDto[];
 }
 
 class EmailArchiveDto {

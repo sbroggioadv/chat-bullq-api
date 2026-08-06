@@ -50,6 +50,17 @@ const MAX_USER_LABELS = 40;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 
+/** Anexos outbound (compose/reply/forward) — base64 JSON, MVP. */
+export interface OutboundEmailAttachment {
+  filename: string;
+  mimeType?: string;
+  /** Conteúdo em base64 (std ou data-URL). */
+  contentBase64: string;
+}
+
+const MAX_OUTBOUND_ATTACHMENTS = 5;
+const MAX_OUTBOUND_ATTACHMENT_BYTES = 8 * 1024 * 1024; // 8 MB cada
+
 /**
  * Leitura de e-mail (SPEC-004 W1, readonly) — pastas/labels e threads direto
  * da API do Gmail, sempre escopado a canal GMAIL da org com ChannelAccess.
@@ -376,11 +387,13 @@ export class EmailService {
       /** Responder a todos: To=From, Cc=To+Cc originais (sem eu). */
       replyAll?: boolean;
       subject?: string;
+      attachments?: OutboundEmailAttachment[];
     },
   ) {
     const bodyText = (input.body || '').trim();
     if (!bodyText) throw new BadRequestException('Corpo da resposta é obrigatório');
     if (!input.threadId) throw new BadRequestException('threadId é obrigatório');
+    const attachments = this.normalizeOutboundAttachments(input.attachments);
 
     const channel = await this.resolveChannel(
       organizationId,
@@ -469,6 +482,7 @@ export class EmailService {
       body: bodyText,
       inReplyTo: inReplyTo || undefined,
       references: references || undefined,
+      attachments,
     });
 
     try {
@@ -505,6 +519,7 @@ export class EmailService {
       subject: string;
       body: string;
       cc?: string;
+      attachments?: OutboundEmailAttachment[];
     },
   ) {
     const toRaw = (input.to || '').trim();
@@ -513,6 +528,7 @@ export class EmailService {
     if (!toRaw.includes('@')) throw new BadRequestException('Destinatário inválido');
     if (!subject) throw new BadRequestException('Assunto é obrigatório');
     if (!bodyText) throw new BadRequestException('Corpo é obrigatório');
+    const attachments = this.normalizeOutboundAttachments(input.attachments);
 
     const toList = toRaw
       .split(/[,;]/)
@@ -533,6 +549,7 @@ export class EmailService {
       cc: (input.cc || '').trim() || undefined,
       subject,
       body: bodyText,
+      attachments,
     });
 
     try {
@@ -653,6 +670,7 @@ export class EmailService {
       to: string;
       body?: string;
       subject?: string;
+      attachments?: OutboundEmailAttachment[];
     },
   ) {
     const toRaw = (input.to || '').trim();
@@ -664,6 +682,7 @@ export class EmailService {
     if (!toList.length) {
       throw new BadRequestException('Destinatário inválido');
     }
+    const attachments = this.normalizeOutboundAttachments(input.attachments);
 
     const channel = await this.resolveChannel(
       organizationId,
@@ -716,6 +735,7 @@ export class EmailService {
       to: toList.join(', '),
       subject,
       body: parts.join('\n'),
+      attachments,
     });
 
     try {
@@ -740,6 +760,53 @@ export class EmailService {
     }
   }
 
+  private normalizeOutboundAttachments(
+    raw?: OutboundEmailAttachment[] | null,
+  ): Array<{ filename: string; mimeType: string; buffer: Buffer }> {
+    if (!raw?.length) return [];
+    if (raw.length > MAX_OUTBOUND_ATTACHMENTS) {
+      throw new BadRequestException(
+        `No máximo ${MAX_OUTBOUND_ATTACHMENTS} anexos por e-mail`,
+      );
+    }
+    return raw.map((item, idx) => {
+      const filename = String(item?.filename || '')
+        .trim()
+        .replace(/[\r\n"\\]/g, '_')
+        .slice(0, 180);
+      if (!filename) {
+        throw new BadRequestException(`Anexo #${idx + 1}: filename obrigatório`);
+      }
+      let b64 = String(item?.contentBase64 || '').trim();
+      const dataUrl = /^data:[^;]+;base64,(.+)$/i.exec(b64);
+      if (dataUrl) b64 = dataUrl[1];
+      b64 = b64.replace(/\s+/g, '');
+      if (!b64) {
+        throw new BadRequestException(`Anexo #${idx + 1}: conteúdo vazio`);
+      }
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(b64, 'base64');
+      } catch {
+        throw new BadRequestException(`Anexo #${idx + 1}: base64 inválido`);
+      }
+      if (!buffer.length) {
+        throw new BadRequestException(`Anexo #${idx + 1}: conteúdo vazio`);
+      }
+      if (buffer.length > MAX_OUTBOUND_ATTACHMENT_BYTES) {
+        throw new BadRequestException(
+          `Anexo "${filename}" excede 8 MB (máx por arquivo)`,
+        );
+      }
+      const mimeType =
+        String(item?.mimeType || 'application/octet-stream')
+          .trim()
+          .replace(/[\r\n;]/g, '')
+          .slice(0, 120) || 'application/octet-stream';
+      return { filename, mimeType, buffer };
+    });
+  }
+
   private buildRfc822(input: {
     from: string;
     to: string;
@@ -748,25 +815,64 @@ export class EmailService {
     body: string;
     inReplyTo?: string;
     references?: string;
+    attachments?: Array<{ filename: string; mimeType: string; buffer: Buffer }>;
   }): string {
     const encodeSubject = (s: string) => {
       if (/^[\x20-\x7e]*$/.test(s)) return s;
       return `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
     };
+    const encodeFilename = (name: string) => {
+      if (/^[\x20-\x7e]*$/.test(name) && !/["\\]/.test(name)) return `"${name}"`;
+      // RFC 2047 para nomes com acentos
+      return `"=?UTF-8?B?${Buffer.from(name, 'utf8').toString('base64')}?="`;
+    };
     const bodyNorm = input.body.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-    const parts: string[] = [];
-    if (input.from) parts.push(`From: ${input.from}`);
-    parts.push(`To: ${input.to}`);
-    if (input.cc?.trim()) parts.push(`Cc: ${input.cc.trim()}`);
-    parts.push(`Subject: ${encodeSubject(input.subject)}`);
-    if (input.inReplyTo) parts.push(`In-Reply-To: ${input.inReplyTo}`);
-    if (input.references) parts.push(`References: ${input.references}`);
-    parts.push('MIME-Version: 1.0');
-    parts.push('Content-Type: text/plain; charset=UTF-8');
-    parts.push('Content-Transfer-Encoding: 8bit');
-    parts.push('');
-    parts.push(bodyNorm);
-    const rfc = parts.join('\r\n');
+    const headers: string[] = [];
+    if (input.from) headers.push(`From: ${input.from}`);
+    headers.push(`To: ${input.to}`);
+    if (input.cc?.trim()) headers.push(`Cc: ${input.cc.trim()}`);
+    headers.push(`Subject: ${encodeSubject(input.subject)}`);
+    if (input.inReplyTo) headers.push(`In-Reply-To: ${input.inReplyTo}`);
+    if (input.references) headers.push(`References: ${input.references}`);
+    headers.push('MIME-Version: 1.0');
+
+    const atts = input.attachments || [];
+    let bodySection: string;
+    if (!atts.length) {
+      headers.push('Content-Type: text/plain; charset=UTF-8');
+      headers.push('Content-Transfer-Encoding: 8bit');
+      bodySection = bodyNorm;
+    } else {
+      const boundary = `bullq_${Date.now().toString(36)}_${Math.random()
+        .toString(36)
+        .slice(2, 10)}`;
+      headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      const chunks: string[] = [];
+      chunks.push(`--${boundary}`);
+      chunks.push('Content-Type: text/plain; charset=UTF-8');
+      chunks.push('Content-Transfer-Encoding: 8bit');
+      chunks.push('');
+      chunks.push(bodyNorm);
+      for (const att of atts) {
+        const b64 = att.buffer.toString('base64');
+        const folded = b64.replace(/.{1,76}/g, (line) => `${line}\r\n`).trimEnd();
+        chunks.push(`--${boundary}`);
+        chunks.push(
+          `Content-Type: ${att.mimeType}; name=${encodeFilename(att.filename)}`,
+        );
+        chunks.push(
+          `Content-Disposition: attachment; filename=${encodeFilename(att.filename)}`,
+        );
+        chunks.push('Content-Transfer-Encoding: base64');
+        chunks.push('');
+        chunks.push(folded);
+      }
+      chunks.push(`--${boundary}--`);
+      chunks.push('');
+      bodySection = chunks.join('\r\n');
+    }
+
+    const rfc = `${headers.join('\r\n')}\r\n\r\n${bodySection}`;
     return Buffer.from(rfc, 'utf8')
       .toString('base64')
       .replace(/\+/g, '-')
