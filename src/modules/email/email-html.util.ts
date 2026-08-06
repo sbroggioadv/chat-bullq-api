@@ -143,22 +143,50 @@ function attrValue(
 
 /**
  * Remove blocos que nunca devem vazar pro texto/HTML final.
- * Inclui condicionais MSO e style malformado.
+ * Inclui <head>, condicionais MSO e <style> (várias passagens).
+ *
+ * Importante: se o strip de <style> falhar, o walker de tags
+ * deixa o CSS como nó de texto — por isso o strip é agressivo.
  */
 export function stripDangerousEmailBlocks(html: string): string {
-  return String(html || '')
-    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, ' ')
-    .replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/gi, ' ')
-    .replace(
-      /<(script|style|iframe|object|embed|form|link|meta|base|textarea|noscript|svg|math)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
-      ' ',
-    )
-    .replace(
-      /<(script|style|iframe|object|embed|form|link|meta|base|textarea|noscript|svg|math)\b[^>]*\/?>/gi,
-      ' ',
-    );
+  let s = String(html || '');
+
+  // head inteiro (quase sempre só style/meta)
+  s = s.replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, ' ');
+
+  // condicionais MSO / comentários / CDATA
+  s = s.replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, ' ');
+  s = s.replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, ' ');
+  s = s.replace(/<!--[\s\S]*?-->/g, ' ');
+  s = s.replace(/<!\[CDATA\[[\s\S]*?\]\]>/gi, ' ');
+
+  // style/script com nome explícito (não depende de backref de case)
+  for (let i = 0; i < 8; i++) {
+    const before = s;
+    s = s.replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ');
+    s = s.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ');
+    if (s === before) break;
+  }
+  // style/script não fechado até o próximo bloco estrutural
+  s = s.replace(/<style\b[^>]*>[\s\S]*?(?=<(?:body|table|div|center|p)\b|\/body)/gi, ' ');
+  s = s.replace(/<script\b[^>]*>[\s\S]*?(?=<(?:body|table|div)\b|\/body)/gi, ' ');
+
+  s = s.replace(
+    /<(iframe|object|embed|form|link|meta|base|textarea|noscript|svg|math|title|xml)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+    ' ',
+  );
+  s = s.replace(
+    /<(iframe|object|embed|form|link|meta|base|textarea|noscript|svg|math|title|xml|style|script)\b[^>]*\/?>/gi,
+    ' ',
+  );
+
+  // CSS “nu” que já vazou como texto (comum após strip incompleto)
+  s = s.replace(
+    /(?:^|[\s>])(?:#outlook|\.ExternalClass|@media\s+only|@font-face|body\s*\{|table\s*,\s*td\s*\{|img\s*\{|a\s+img\s*\{|u\s*\+\s*a\s*\{)[\s\S]{0,8000}?\}(?=\s*(?:<|$))/gi,
+    ' ',
+  );
+
+  return s;
 }
 
 /**
@@ -182,8 +210,8 @@ export function sanitizeEmailHtml(
   while ((m = re.exec(html)) !== null) {
     if (m[3] != null) {
       const text = m[3];
-      // ignora trechos que ainda parecem CSS puro
-      if (looksLikeCssDump(text) && text.length > 40) continue;
+      // ignora trechos que ainda parecem CSS puro (threshold baixo — print do Doc)
+      if (looksLikeCssDump(text) || isMostlyCssNoise(text)) continue;
       out.push(escapeText(text));
       continue;
     }
@@ -307,19 +335,46 @@ export function sanitizeEmailHtml(
 /** Detecta dump de CSS de client de e-mail no plain text. */
 export function looksLikeCssDump(s: string): boolean {
   const t = String(s || '');
-  if (t.length < 20) return false;
+  if (t.length < 12) return false;
   const hits = [
     /#outlook\b/i,
     /\.ExternalClass\b/i,
-    /@media\s+only\s+screen/i,
+    /@media\s+only/i,
+    /@font-face\b/i,
     /mso-/i,
     /\{\s*padding\s*:\s*0/i,
     /\/\*[\s\S]*?\*\//,
     /body\s*\{\s*width\s*:\s*100%\s*!important/i,
     /-ms-text-size-adjust/i,
+    /-webkit-text-size-adjust/i,
     /table\s*,\s*td\s*\{/i,
+    /u\s*\+\s*a\s*\{/i,
+    /a\s+img\s*\{/i,
+    /#MessageViewBody/i,
+    /\.yshortcuts/i,
   ].filter((re) => re.test(t)).length;
   return hits >= 1 && (hits >= 2 || /[{};]/.test(t));
+}
+
+/** Heurística: texto com densidade alta de tokens CSS e pouco prosa. */
+export function isMostlyCssNoise(s: string): boolean {
+  const t = String(s || '').trim();
+  if (t.length < 24) return false;
+  if (looksLikeCssDump(t)) return true;
+  const braces = (t.match(/[{}]/g) || []).length;
+  const semis = (t.match(/;/g) || []).length;
+  const words = (t.match(/[A-Za-zÀ-ÿ]{3,}/g) || []).length;
+  const cssProp =
+    (t.match(
+      /(?:padding|margin|border|background|font-size|line-height|text-decoration|display|width|height|max-width)\s*:/gi,
+    ) || []).length;
+  if (cssProp >= 2 && braces >= 2) return true;
+  if (braces >= 4 && semis >= 4 && words < braces * 3) return true;
+  // bloco tipo "u + a{background: ...}"
+  if (/^[\s\S]{0,40}[\w.\#+\s]+\{[^}]{8,}\}/.test(t) && semis >= 1) {
+    return cssProp >= 1 || /background|padding|margin|border/i.test(t);
+  }
+  return false;
 }
 
 /** HTML → texto puro legível (fallback plain part / body). */
