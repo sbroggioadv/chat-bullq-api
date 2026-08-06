@@ -54,10 +54,15 @@ class EmailReplyDto {
   @IsString()
   threadId!: string;
 
-  @ApiProperty({ description: 'Corpo texto puro da resposta' })
+  @ApiProperty({ description: 'Corpo texto puro da resposta (fallback plain)' })
   @IsString()
   @MinLength(1)
   body!: string;
+
+  @ApiPropertyOptional({ description: 'HTML opcional (sanitizado no servidor)' })
+  @IsOptional()
+  @IsString()
+  bodyHtml?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -111,6 +116,11 @@ class EmailForwardDto {
   @IsString()
   body?: string;
 
+  @ApiPropertyOptional({ description: 'HTML opcional da nota de encaminhamento' })
+  @IsOptional()
+  @IsString()
+  bodyHtml?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -143,6 +153,11 @@ class EmailComposeDto {
   @IsString()
   @MinLength(1)
   body!: string;
+
+  @ApiPropertyOptional({ description: 'HTML opcional (sanitizado no servidor)' })
+  @IsOptional()
+  @IsString()
+  bodyHtml?: string;
 
   @ApiPropertyOptional()
   @IsOptional()

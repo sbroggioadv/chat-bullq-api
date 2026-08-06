@@ -22,6 +22,12 @@ import {
   extractBody,
   headerOf,
 } from '../channel-hub/adapters/gmail/gmail.message-mapper';
+import {
+  extractBodyParts,
+  htmlToPlainText,
+  plainTextToHtml,
+  sanitizeEmailHtml,
+} from './email-html.util';
 
 export interface EmailFolder {
   id: string;
@@ -318,6 +324,12 @@ export class EmailService {
     const messages = rawMsgs.map((m) => {
       const from = extractAddress(headerOf(m, 'From') || '');
       const internal = m.internalDate ? Number(m.internalDate) : NaN;
+      const parts = extractBodyParts(m);
+      const bodyText =
+        parts.text ||
+        (parts.html ? htmlToPlainText(parts.html) : '') ||
+        extractBody(m);
+      const bodyHtml = parts.html ? sanitizeEmailHtml(parts.html) : '';
       return {
         id: String(m.id),
         from,
@@ -325,7 +337,9 @@ export class EmailService {
         cc: headerOf(m, 'Cc') || '',
         subject: headerOf(m, 'Subject'),
         date: Number.isNaN(internal) ? null : new Date(internal).toISOString(),
-        body: extractBody(m),
+        body: bodyText,
+        /** HTML sanitizado (allowlist). Vazio se só plain. */
+        bodyHtml: bodyHtml || undefined,
         snippet: m.snippet || '',
         unread: (m.labelIds || []).includes('UNREAD'),
         outbound: !!my && from.email === my,
@@ -380,6 +394,8 @@ export class EmailService {
       channelId?: string;
       threadId: string;
       body: string;
+      /** HTML opcional (sanitizado no servidor). */
+      bodyHtml?: string;
       /** Override To (default = From da última mensagem inbound). */
       to?: string;
       /** Cc explícito (vírgula). Em replyAll o servidor monta. */
@@ -390,7 +406,7 @@ export class EmailService {
       attachments?: OutboundEmailAttachment[];
     },
   ) {
-    const bodyText = (input.body || '').trim();
+    const { bodyText, bodyHtml } = this.resolveOutboundBody(input.body, input.bodyHtml);
     if (!bodyText) throw new BadRequestException('Corpo da resposta é obrigatório');
     if (!input.threadId) throw new BadRequestException('threadId é obrigatório');
     const attachments = this.normalizeOutboundAttachments(input.attachments);
@@ -480,6 +496,7 @@ export class EmailService {
       cc: ccAddr || undefined,
       subject,
       body: bodyText,
+      bodyHtml,
       inReplyTo: inReplyTo || undefined,
       references: references || undefined,
       attachments,
@@ -518,13 +535,14 @@ export class EmailService {
       to: string;
       subject: string;
       body: string;
+      bodyHtml?: string;
       cc?: string;
       attachments?: OutboundEmailAttachment[];
     },
   ) {
     const toRaw = (input.to || '').trim();
     const subject = (input.subject || '').trim();
-    const bodyText = (input.body || '').trim();
+    const { bodyText, bodyHtml } = this.resolveOutboundBody(input.body, input.bodyHtml);
     if (!toRaw.includes('@')) throw new BadRequestException('Destinatário inválido');
     if (!subject) throw new BadRequestException('Assunto é obrigatório');
     if (!bodyText) throw new BadRequestException('Corpo é obrigatório');
@@ -549,6 +567,7 @@ export class EmailService {
       cc: (input.cc || '').trim() || undefined,
       subject,
       body: bodyText,
+      bodyHtml,
       attachments,
     });
 
@@ -669,6 +688,7 @@ export class EmailService {
       threadId: string;
       to: string;
       body?: string;
+      bodyHtml?: string;
       subject?: string;
       attachments?: OutboundEmailAttachment[];
     },
@@ -683,6 +703,7 @@ export class EmailService {
       throw new BadRequestException('Destinatário inválido');
     }
     const attachments = this.normalizeOutboundAttachments(input.attachments);
+    const note = this.resolveOutboundBody(input.body || '', input.bodyHtml);
 
     const channel = await this.resolveChannel(
       organizationId,
@@ -717,7 +738,7 @@ export class EmailService {
       ? baseSubject
       : `Enc: ${baseSubject}`;
 
-    const userNote = (input.body || '').trim();
+    const userNote = note.bodyText;
     const parts: string[] = [];
     if (userNote) {
       parts.push(userNote, '');
@@ -729,12 +750,31 @@ export class EmailService {
     if (lastDate) parts.push(`Data: ${lastDate}`);
     parts.push(`Assunto: ${baseSubject}`, '', lastBody);
 
+    const plainForward = parts.join('\n');
+    let htmlForward: string | undefined;
+    if (note.bodyHtml) {
+      const quoted = plainTextToHtml(
+        [
+          '---------- Mensagem encaminhada ----------',
+          `De: ${lastFrom}`,
+          lastDate ? `Data: ${lastDate}` : '',
+          `Assunto: ${baseSubject}`,
+          '',
+          lastBody,
+        ]
+          .filter((l) => l !== '')
+          .join('\n'),
+      );
+      htmlForward = `${note.bodyHtml}${quoted}`;
+    }
+
     const fromHeader = my || String(((channel.config as any) || {}).email || '');
     const raw = this.buildRfc822({
       from: fromHeader,
       to: toList.join(', '),
       subject,
-      body: parts.join('\n'),
+      body: plainForward,
+      bodyHtml: htmlForward,
       attachments,
     });
 
@@ -758,6 +798,28 @@ export class EmailService {
       }
       this.gmailUnavailable(channel, err, 'encaminhar o e-mail');
     }
+  }
+
+  /** body plain + bodyHtml opcional → plain obrigatório + html sanitizado. */
+  private resolveOutboundBody(
+    body?: string,
+    bodyHtml?: string,
+  ): { bodyText: string; bodyHtml?: string } {
+    const htmlRaw = (bodyHtml || '').trim();
+    const plainRaw = (body || '').trim();
+    if (htmlRaw) {
+      const safe = sanitizeEmailHtml(htmlRaw);
+      if (!safe || !htmlToPlainText(safe).trim()) {
+        // HTML vazio após sanitize — cai no plain
+        if (!plainRaw) return { bodyText: '' };
+        return { bodyText: plainRaw, bodyHtml: plainTextToHtml(plainRaw) };
+      }
+      const plain = plainRaw || htmlToPlainText(safe);
+      return { bodyText: plain, bodyHtml: safe };
+    }
+    if (!plainRaw) return { bodyText: '' };
+    // plain only — ainda manda text/html simples pra clientes modernos
+    return { bodyText: plainRaw, bodyHtml: plainTextToHtml(plainRaw) };
   }
 
   private normalizeOutboundAttachments(
@@ -813,6 +875,7 @@ export class EmailService {
     cc?: string;
     subject: string;
     body: string;
+    bodyHtml?: string;
     inReplyTo?: string;
     references?: string;
     attachments?: Array<{ filename: string; mimeType: string; buffer: Buffer }>;
@@ -823,10 +886,11 @@ export class EmailService {
     };
     const encodeFilename = (name: string) => {
       if (/^[\x20-\x7e]*$/.test(name) && !/["\\]/.test(name)) return `"${name}"`;
-      // RFC 2047 para nomes com acentos
       return `"=?UTF-8?B?${Buffer.from(name, 'utf8').toString('base64')}?="`;
     };
-    const bodyNorm = input.body.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    const crlf = (s: string) => s.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+    const bodyNorm = crlf(input.body);
+    const htmlNorm = input.bodyHtml ? crlf(input.bodyHtml) : '';
     const headers: string[] = [];
     if (input.from) headers.push(`From: ${input.from}`);
     headers.push(`To: ${input.to}`);
@@ -837,26 +901,58 @@ export class EmailService {
     headers.push('MIME-Version: 1.0');
 
     const atts = input.attachments || [];
+    const mkBoundary = (p: string) =>
+      `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+    const buildAlternative = (): { headers: string[]; body: string } => {
+      if (!htmlNorm) {
+        return {
+          headers: [
+            'Content-Type: text/plain; charset=UTF-8',
+            'Content-Transfer-Encoding: 8bit',
+          ],
+          body: bodyNorm,
+        };
+      }
+      const alt = mkBoundary('bullq_alt');
+      const chunks = [
+        `--${alt}`,
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+        '',
+        bodyNorm,
+        `--${alt}`,
+        'Content-Type: text/html; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+        '',
+        htmlNorm,
+        `--${alt}--`,
+        '',
+      ];
+      return {
+        headers: [`Content-Type: multipart/alternative; boundary="${alt}"`],
+        body: chunks.join('\r\n'),
+      };
+    };
+
+    const altPart = buildAlternative();
     let bodySection: string;
     if (!atts.length) {
-      headers.push('Content-Type: text/plain; charset=UTF-8');
-      headers.push('Content-Transfer-Encoding: 8bit');
-      bodySection = bodyNorm;
+      headers.push(...altPart.headers);
+      bodySection = altPart.body;
     } else {
-      const boundary = `bullq_${Date.now().toString(36)}_${Math.random()
-        .toString(36)
-        .slice(2, 10)}`;
-      headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      const mixed = mkBoundary('bullq_mix');
+      headers.push(`Content-Type: multipart/mixed; boundary="${mixed}"`);
       const chunks: string[] = [];
-      chunks.push(`--${boundary}`);
-      chunks.push('Content-Type: text/plain; charset=UTF-8');
-      chunks.push('Content-Transfer-Encoding: 8bit');
+      chunks.push(`--${mixed}`);
+      // parte de texto/html embutida
+      for (const h of altPart.headers) chunks.push(h);
       chunks.push('');
-      chunks.push(bodyNorm);
+      chunks.push(altPart.body.replace(/\r\n$/,'') );
       for (const att of atts) {
         const b64 = att.buffer.toString('base64');
         const folded = b64.replace(/.{1,76}/g, (line) => `${line}\r\n`).trimEnd();
-        chunks.push(`--${boundary}`);
+        chunks.push(`--${mixed}`);
         chunks.push(
           `Content-Type: ${att.mimeType}; name=${encodeFilename(att.filename)}`,
         );
@@ -867,7 +963,7 @@ export class EmailService {
         chunks.push('');
         chunks.push(folded);
       }
-      chunks.push(`--${boundary}--`);
+      chunks.push(`--${mixed}--`);
       chunks.push('');
       bodySection = chunks.join('\r\n');
     }
