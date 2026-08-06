@@ -25,6 +25,7 @@ import {
 import {
   extractBodyParts,
   htmlToPlainText,
+  looksLikeCssDump,
   plainTextToHtml,
   sanitizeEmailHtml,
 } from './email-html.util';
@@ -325,11 +326,21 @@ export class EmailService {
       const from = extractAddress(headerOf(m, 'From') || '');
       const internal = m.internalDate ? Number(m.internalDate) : NaN;
       const parts = extractBodyParts(m);
-      const bodyText =
+      // display: tabelas + img https (newsletters); compose continua estrito no envio
+      const bodyHtml = parts.html
+        ? sanitizeEmailHtml(parts.html, 'display')
+        : '';
+      let bodyText =
         parts.text ||
         (parts.html ? htmlToPlainText(parts.html) : '') ||
         extractBody(m);
-      const bodyHtml = parts.html ? sanitizeEmailHtml(parts.html) : '';
+      // nunca devolver CSS cru na UI
+      if (looksLikeCssDump(bodyText)) {
+        bodyText =
+          (m.snippet && !looksLikeCssDump(m.snippet) ? String(m.snippet) : '') ||
+          (bodyHtml ? htmlToPlainText(bodyHtml) : '') ||
+          '';
+      }
       return {
         id: String(m.id),
         from,
@@ -338,7 +349,7 @@ export class EmailService {
         subject: headerOf(m, 'Subject'),
         date: Number.isNaN(internal) ? null : new Date(internal).toISOString(),
         body: bodyText,
-        /** HTML sanitizado (allowlist). Vazio se só plain. */
+        /** HTML sanitizado modo display (tabelas/imgs https). */
         bodyHtml: bodyHtml || undefined,
         snippet: m.snippet || '',
         unread: (m.labelIds || []).includes('UNREAD'),
@@ -808,7 +819,7 @@ export class EmailService {
     const htmlRaw = (bodyHtml || '').trim();
     const plainRaw = (body || '').trim();
     if (htmlRaw) {
-      const safe = sanitizeEmailHtml(htmlRaw);
+      const safe = sanitizeEmailHtml(htmlRaw, 'compose');
       if (!safe || !htmlToPlainText(safe).trim()) {
         // HTML vazio após sanitize — cai no plain
         if (!plainRaw) return { bodyText: '' };
