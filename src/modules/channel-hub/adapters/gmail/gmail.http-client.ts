@@ -218,4 +218,17 @@ export class GmailHttpClient {
   async accessToken(channel: Channel): Promise<string> {
     return this.getAccessToken(channel);
   }
+
+  /** Baixa anexo Gmail (dados base64url). */
+  async getAttachment(
+    channel: Channel,
+    messageId: string,
+    attachmentId: string,
+  ): Promise<{ data: string; size?: number }> {
+    const http = await this.client(channel);
+    const { data } = await http.get(
+      `/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`,
+    );
+    return { data: String(data.data || ''), size: data.size };
+  }
 }

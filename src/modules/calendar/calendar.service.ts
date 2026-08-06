@@ -5,7 +5,13 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Channel, ChannelType } from '@prisma/client';
+import {
+  Channel,
+  ChannelType,
+  MessageContentType,
+  MessageDirection,
+  MessageStatus,
+} from '@prisma/client';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../database/prisma.service';
@@ -480,6 +486,95 @@ export class CalendarService {
     } catch (err: any) {
       this.throwCalError(err, 'apagar evento');
     }
+  }
+
+  /**
+   * Cria evento + bolha SYSTEM na conversa (NÃO envia pro WhatsApp/IG).
+   */
+  async createEventFromConversation(
+    organizationId: string,
+    access: ChannelAccess,
+    input: {
+      conversationId: string;
+      channelId?: string;
+      calendarId?: string;
+      summary: string;
+      description?: string;
+      startIso: string;
+      endIso: string;
+      attendeeEmails?: string[];
+      withMeet?: boolean;
+      timeZone?: string;
+      userId?: string;
+    },
+  ) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        id: input.conversationId,
+        organizationId,
+        deletedAt: null,
+      },
+      select: { id: true, channelId: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    this.channelAccess.assertChannelAccess(access, conversation.channelId);
+
+    const created = await this.createEvent(organizationId, access, {
+      channelId: input.channelId,
+      calendarId: input.calendarId,
+      summary: input.summary,
+      description: input.description,
+      startIso: input.startIso,
+      endIso: input.endIso,
+      attendeeEmails: input.attendeeEmails,
+      withMeet: input.withMeet,
+      timeZone: input.timeZone,
+    });
+
+    const startLabel = input.startIso
+      ? new Date(input.startIso).toLocaleString('pt-BR', {
+          dateStyle: 'short',
+          timeStyle: 'short',
+        })
+      : '';
+    const lines = [
+      `📅 Reunião agendada: ${created.summary || input.summary}`,
+      startLabel ? `Quando: ${startLabel}` : null,
+      created.meetLink ? `Meet: ${created.meetLink}` : null,
+      created.htmlLink ? `Agenda: ${created.htmlLink}` : null,
+    ].filter(Boolean);
+
+    const message = await this.prisma.message.create({
+      data: {
+        conversationId: conversation.id,
+        direction: MessageDirection.OUTBOUND,
+        type: MessageContentType.SYSTEM,
+        content: { text: lines.join('\n') },
+        status: MessageStatus.DELIVERED,
+        senderId: input.userId || null,
+        sentAt: new Date(),
+        deliveredAt: new Date(),
+        metadata: {
+          kind: 'calendar_scheduled',
+          calendarEventId: created.id,
+          calendarId: created.calendarId,
+          meetLink: created.meetLink,
+          htmlLink: created.htmlLink,
+          localOnly: true,
+        },
+      },
+    });
+
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { lastMessageAt: new Date() },
+    });
+
+    return {
+      ...created,
+      conversationId: conversation.id,
+      systemMessageId: message.id,
+    };
   }
 
   private throwCalError(err: any, action: string): never {

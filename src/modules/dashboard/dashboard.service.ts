@@ -433,6 +433,19 @@ export class DashboardService {
         avgFirstResponseMinutes = Math.round(sum / withFirst.length);
       }
 
+      // Premissa IG: msgs inbound nas últimas 24h (janela de resposta Meta)
+      let inboundLast24h: number | null = null;
+      if (kind === 'INSTAGRAM') {
+        const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        inboundLast24h = await this.prisma.message.count({
+          where: {
+            conversation: { organizationId, channelId: { in: ids } },
+            direction: 'INBOUND',
+            createdAt: { gte: since },
+          },
+        });
+      }
+
       return {
         kind,
         connected: true,
@@ -444,6 +457,8 @@ export class DashboardService {
         inboundMessages,
         outboundMessages,
         avgFirstResponseMinutes,
+        /** Só IG: inbound nas últimas 24h (proxy da janela Meta). */
+        inboundLast24h,
       };
     };
 

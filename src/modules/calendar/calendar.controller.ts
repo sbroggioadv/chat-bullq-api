@@ -27,6 +27,7 @@ import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import {
   CurrentChannelAccess,
   CurrentOrg,
+  CurrentUser,
 } from '../../common/decorators';
 import type { ChannelAccess } from '../iam/channel-access/channel-access.service';
 import { CalendarService } from './calendar.service';
@@ -66,6 +67,55 @@ class CreateCalendarEventDto {
   attendeeEmails?: string[];
 
   @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  withMeet?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  timeZone?: string;
+}
+
+class CreateFromConversationDto {
+  @ApiProperty()
+  @IsString()
+  conversationId!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  channelId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  calendarId?: string;
+
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  summary!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @ApiProperty()
+  @IsString()
+  startIso!: string;
+
+  @ApiProperty()
+  @IsString()
+  endIso!: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  attendeeEmails?: string[];
+
+  @ApiPropertyOptional()
   @IsOptional()
   @IsBoolean()
   withMeet?: boolean;
@@ -168,6 +218,23 @@ export class CalendarController {
     @Body() dto: CreateCalendarEventDto,
   ) {
     return this.calendar.createEvent(orgId, access, dto);
+  }
+
+  @Post('events/from-conversation')
+  @ApiOperation({
+    summary:
+      'Cria evento no Google + bolha SYSTEM na conversa (não envia pro canal WA/IG)',
+  })
+  createFromConversation(
+    @CurrentOrg('id') orgId: string,
+    @CurrentUser('id') userId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Body() dto: CreateFromConversationDto,
+  ) {
+    return this.calendar.createEventFromConversation(orgId, access, {
+      ...dto,
+      userId,
+    });
   }
 
   @Patch('events/:eventId')

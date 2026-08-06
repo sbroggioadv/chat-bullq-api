@@ -192,3 +192,43 @@ export function pickThreadContact(
   }
   return { externalContactId: 'unknown@gmail.local', contactName: 'Desconhecido' };
 }
+
+/** Anexos (parts com filename + body.attachmentId). */
+export function extractAttachments(
+  msg: any,
+): Array<{
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  messageId: string;
+}> {
+  const out: Array<{
+    attachmentId: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+    messageId: string;
+  }> = [];
+  const messageId = String(msg?.id || '');
+  const walk = (part: any) => {
+    if (!part) return;
+    const filename = String(part.filename || '').trim();
+    const attachmentId = part.body?.attachmentId
+      ? String(part.body.attachmentId)
+      : '';
+    if (filename && attachmentId) {
+      out.push({
+        attachmentId,
+        filename,
+        mimeType: String(part.mimeType || 'application/octet-stream'),
+        size: Number(part.body?.size || 0),
+        messageId,
+      });
+    }
+    for (const child of part.parts || []) walk(child);
+  };
+  walk(msg?.payload);
+  return out;
+}
+

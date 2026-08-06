@@ -18,6 +18,7 @@ import {
 import {
   extractAddress,
   extractAddresses,
+  extractAttachments,
   extractBody,
   headerOf,
 } from '../channel-hub/adapters/gmail/gmail.message-mapper';
@@ -319,6 +320,7 @@ export class EmailService {
         outbound: !!my && from.email === my,
         messageId: headerOf(m, 'Message-ID') || headerOf(m, 'Message-Id') || '',
         labelIds: (m.labelIds || []) as string[],
+        attachments: extractAttachments(m),
       };
     });
 
@@ -567,7 +569,35 @@ export class EmailService {
    * Mutações de label Gmail (star/spam/lido/arquivar/custom).
    * Exige gmail.modify no token.
    */
-  async modifyLabels(
+  async getAttachment(
+    organizationId: string,
+    access: ChannelAccess,
+    input: { channelId?: string; messageId: string; attachmentId: string },
+  ) {
+    if (!input.messageId || !input.attachmentId) {
+      throw new BadRequestException('messageId e attachmentId são obrigatórios');
+    }
+    const channel = await this.resolveChannel(
+      organizationId,
+      access,
+      input.channelId,
+    );
+    try {
+      const att = await this.gmail.getAttachment(
+        channel,
+        input.messageId,
+        input.attachmentId,
+      );
+      // Gmail returns base64url
+      const b64 = att.data.replace(/-/g, '+').replace(/_/g, '/');
+      const buf = Buffer.from(b64, 'base64');
+      return { buffer: buf, size: att.size ?? buf.length };
+    } catch (err: any) {
+      this.gmailUnavailable(channel, err, 'baixar anexo');
+    }
+  }
+
+    async modifyLabels(
     organizationId: string,
     access: ChannelAccess,
     input: {

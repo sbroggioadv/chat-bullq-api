@@ -2,11 +2,14 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Param,
   Post,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from '@nestjs/swagger';
 import { IsArray, IsBoolean, IsOptional, IsString, MinLength } from 'class-validator';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
@@ -247,6 +250,36 @@ export class EmailController {
     @Body() dto: EmailArchiveDto,
   ) {
     return this.email.archive(orgId, access, dto);
+  }
+
+  @Get('attachments')
+  @ApiOperation({ summary: 'Baixa anexo Gmail (binary)' })
+  async attachment(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Query('channelId') channelId: string,
+    @Query('messageId') messageId: string,
+    @Query('attachmentId') attachmentId: string,
+    @Query('filename') filename: string | undefined,
+    @Query('mimeType') mimeType: string | undefined,
+    @Res() res: Response,
+  ) {
+    const { buffer } = await this.email.getAttachment(orgId, access, {
+      channelId,
+      messageId,
+      attachmentId,
+    });
+    const name = (filename || 'anexo').replace(/[\r\n"]/g, '_');
+    res.setHeader(
+      'Content-Type',
+      mimeType || 'application/octet-stream',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${name}"`,
+    );
+    res.setHeader('Content-Length', String(buffer.length));
+    res.send(buffer);
   }
 
   @Post('modify')
