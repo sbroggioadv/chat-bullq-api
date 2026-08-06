@@ -95,12 +95,18 @@ function safeHref(raw: string): string | null {
   return null;
 }
 
-/** img src: só http(s). cid: fica pro futuro (proxy Gmail). */
+/** img src: http(s) ou data:image/* (cid reescrito no server). */
 function safeImgSrc(raw: string): string | null {
   const v = decodeEntities(raw).trim();
   if (!v) return null;
   if (/^https?:\/\//i.test(v) && !/javascript:/i.test(v)) {
     return v.slice(0, 2000);
+  }
+  // data URL de imagem gerada no server a partir de cid:
+  if (/^data:image\/(?:png|jpe?g|gif|webp|bmp|svg\+xml);base64,/i.test(v)) {
+    // evita data URL gigante / polyglot
+    if (v.length > 2_500_000) return null;
+    return v;
   }
   return null;
 }
@@ -253,10 +259,16 @@ export function sanitizeEmailHtml(
         'colspan',
         'rowspan',
         'role',
+        'color',
+        'face',
+        'size',
       ]) {
         const v = attrValue(attrsRaw, name);
         if (v == null) continue;
         if (name === 'bgcolor' && !/^#?[0-9a-zA-Z]{3,20}$/.test(v)) continue;
+        if (name === 'color' && !/^#?[0-9a-zA-Z]{3,30}$/.test(v)) continue;
+        if (name === 'face' && !/^[a-zA-Z0-9 ,\-_]{1,80}$/.test(v)) continue;
+        if (name === 'size' && !/^[1-7]$/.test(v)) continue;
         if (
           ['width', 'height', 'border', 'cellpadding', 'cellspacing', 'colspan', 'rowspan'].includes(
             name,
@@ -354,35 +366,125 @@ export function plainTextToHtml(text: string): string {
     .join('');
 }
 
-/** Extrai text + html crus de um payload Gmail (sem sanitize). */
-export function extractBodyParts(msg: any): { text: string; html: string } {
-  const acc = { text: '', html: '' };
+export interface GmailPartRef {
+  mimeType: string;
+  /** base64url inline (pode estar vazio se só attachmentId) */
+  data?: string;
+  attachmentId?: string;
+  size?: number;
+  filename?: string;
+  contentId?: string;
+  /** Gmail costuma espelhar o cid em X-Attachment-Id */
+  xAttachmentId?: string;
+  inline?: boolean;
+  headers?: Array<{ name: string; value: string }>;
+}
+
+function headerVal(
+  headers: Array<{ name: string; value: string }>,
+  name: string,
+): string {
+  return (
+    headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ||
+    ''
+  );
+}
+
+/** Walk recursivo do payload Gmail. */
+export function walkGmailParts(root: any): GmailPartRef[] {
+  const out: GmailPartRef[] = [];
   const walk = (part: any) => {
     if (!part) return;
-    const mime = String(part.mimeType || '');
-    if (mime === 'text/plain' && part.body?.data) {
-      acc.text += decodeBodyData(part.body.data);
-    } else if (mime === 'text/html' && part.body?.data) {
-      acc.html += decodeBodyData(part.body.data);
+    const headers: Array<{ name: string; value: string }> = part.headers || [];
+    const contentIdRaw = headerVal(headers, 'Content-ID');
+    const contentId = contentIdRaw.replace(/[<>]/g, '').trim() || undefined;
+    const xAttachmentId =
+      headerVal(headers, 'X-Attachment-Id').trim() || undefined;
+    const disposition = headerVal(headers, 'Content-Disposition');
+    const inline =
+      !!contentId ||
+      !!xAttachmentId ||
+      /\binline\b/i.test(disposition);
+    const mimeType = String(part.mimeType || '');
+    const filename = String(part.filename || '').trim() || undefined;
+    const data = part.body?.data ? String(part.body.data) : undefined;
+    const attachmentId = part.body?.attachmentId
+      ? String(part.body.attachmentId)
+      : undefined;
+    const size = Number(part.body?.size || 0) || undefined;
+    if (data || attachmentId || filename || contentId || xAttachmentId) {
+      out.push({
+        mimeType,
+        data,
+        attachmentId,
+        size,
+        filename,
+        contentId,
+        xAttachmentId,
+        inline,
+        headers,
+      });
     }
     for (const child of part.parts || []) walk(child);
   };
-  walk(msg?.payload);
-  if (!acc.text && !acc.html && msg?.payload?.body?.data) {
-    const single = decodeBodyData(msg.payload.body.data);
-    if (/<[a-z][\s\S]*>/i.test(single)) acc.html = single;
-    else acc.text = single;
+  walk(root);
+  return out;
+}
+
+/** Extrai text + html crus de um payload Gmail (sem sanitize). Só dados inline. */
+export function extractBodyParts(msg: any): { text: string; html: string } {
+  const parts = walkGmailParts(msg?.payload);
+  let text = '';
+  let html = '';
+  for (const p of parts) {
+    const mime = p.mimeType.toLowerCase();
+    if (!p.data) continue;
+    if (mime === 'text/plain' || mime.startsWith('text/plain;')) {
+      text += decodeBodyData(p.data);
+    } else if (mime === 'text/html' || mime.startsWith('text/html;')) {
+      html += decodeBodyData(p.data);
+    }
   }
-  let text = acc.text.trim().slice(0, 20000);
-  // plain part às vezes é o dump CSS do client — descarta
+  if (!text && !html && msg?.payload?.body?.data) {
+    const single = decodeBodyData(msg.payload.body.data);
+    if (/<[a-z][\s\S]*>/i.test(single)) html = single;
+    else text = single;
+  }
+  text = text.trim().slice(0, 20000);
   if (looksLikeCssDump(text)) text = '';
   return {
     text,
-    html: acc.html.trim().slice(0, MAX_HTML_CHARS),
+    html: html.trim().slice(0, MAX_HTML_CHARS),
   };
 }
 
-function decodeBodyData(data?: string): string {
+/**
+ * Reescreve src="cid:…" no HTML usando mapa contentId → data URL.
+ * Aceita cid com/sem <>, case-insensitive.
+ */
+export function rewriteCidImages(
+  html: string,
+  cidToDataUrl: Map<string, string>,
+): string {
+  if (!html || !cidToDataUrl.size) return html;
+  const lookup = new Map<string, string>();
+  for (const [k, v] of cidToDataUrl) {
+    lookup.set(k.toLowerCase(), v);
+    lookup.set(k.toLowerCase().replace(/[<>]/g, ''), v);
+  }
+  return html.replace(
+    /(\bsrc\s*=\s*)(["']?)cid:([^"'\s>]+)\2/gi,
+    (full, prefix: string, quote: string, cidRaw: string) => {
+      const key = decodeEntities(cidRaw).replace(/[<>]/g, '').toLowerCase();
+      const dataUrl = lookup.get(key);
+      if (!dataUrl) return full;
+      const q = quote || '"';
+      return `${prefix}${q}${dataUrl}${q}`;
+    },
+  );
+}
+
+export function decodeBodyData(data?: string): string {
   if (!data) return '';
   try {
     const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
@@ -390,4 +492,23 @@ function decodeBodyData(data?: string): string {
   } catch {
     return '';
   }
+}
+
+export function decodeBodyBuffer(data?: string): Buffer | null {
+  if (!data) return null;
+  try {
+    const b64 = data.replace(/-/g, '+').replace(/_/g, '/');
+    return Buffer.from(b64, 'base64');
+  } catch {
+    return null;
+  }
+}
+
+/** mime image/* → data URL. */
+export function bufferToImageDataUrl(mime: string, buf: Buffer): string | null {
+  const m = (mime || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+  if (!m.startsWith('image/')) return null;
+  if (buf.length > 1_800_000) return null;
+  const b64 = buf.toString('base64');
+  return `data:${m};base64,${b64}`;
 }

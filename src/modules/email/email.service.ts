@@ -23,11 +23,16 @@ import {
   headerOf,
 } from '../channel-hub/adapters/gmail/gmail.message-mapper';
 import {
+  bufferToImageDataUrl,
+  decodeBodyBuffer,
+  decodeBodyData,
   extractBodyParts,
   htmlToPlainText,
   looksLikeCssDump,
   plainTextToHtml,
+  rewriteCidImages,
   sanitizeEmailHtml,
+  walkGmailParts,
 } from './email-html.util';
 
 export interface EmailFolder {
@@ -322,26 +327,26 @@ export class EmailService {
     for (const m of rawMsgs) {
       for (const l of m.labelIds || []) allLabels.add(String(l));
     }
-    const messages = rawMsgs.map((m) => {
+    const messages = [];
+    for (const m of rawMsgs) {
       const from = extractAddress(headerOf(m, 'From') || '');
       const internal = m.internalDate ? Number(m.internalDate) : NaN;
-      const parts = extractBodyParts(m);
-      // display: tabelas + img https (newsletters); compose continua estrito no envio
-      const bodyHtml = parts.html
-        ? sanitizeEmailHtml(parts.html, 'display')
+      const hydrated = await this.hydrateGmailBodies(channel, m);
+      // display: tabelas + img https/data (cid reescrito); compose estrito no envio
+      const bodyHtml = hydrated.html
+        ? sanitizeEmailHtml(hydrated.html, 'display')
         : '';
       let bodyText =
-        parts.text ||
-        (parts.html ? htmlToPlainText(parts.html) : '') ||
+        hydrated.text ||
+        (hydrated.html ? htmlToPlainText(hydrated.html) : '') ||
         extractBody(m);
-      // nunca devolver CSS cru na UI
       if (looksLikeCssDump(bodyText)) {
         bodyText =
           (m.snippet && !looksLikeCssDump(m.snippet) ? String(m.snippet) : '') ||
           (bodyHtml ? htmlToPlainText(bodyHtml) : '') ||
           '';
       }
-      return {
+      messages.push({
         id: String(m.id),
         from,
         to: headerOf(m, 'To'),
@@ -349,7 +354,7 @@ export class EmailService {
         subject: headerOf(m, 'Subject'),
         date: Number.isNaN(internal) ? null : new Date(internal).toISOString(),
         body: bodyText,
-        /** HTML sanitizado modo display (tabelas/imgs https). */
+        /** HTML sanitizado modo display (tabelas/imgs https + cid→data). */
         bodyHtml: bodyHtml || undefined,
         snippet: m.snippet || '',
         unread: (m.labelIds || []).includes('UNREAD'),
@@ -357,8 +362,8 @@ export class EmailService {
         messageId: headerOf(m, 'Message-ID') || headerOf(m, 'Message-Id') || '',
         labelIds: (m.labelIds || []) as string[],
         attachments: extractAttachments(m),
-      };
-    });
+      });
+    }
 
     // Marca como lido ao abrir — AWAIT pra espelhar no Gmail de verdade
     // (fire-and-forget falhava em silêncio e a bolinha na lista não sumia).
@@ -809,6 +814,125 @@ export class EmailService {
       }
       this.gmailUnavailable(channel, err, 'encaminhar o e-mail');
     }
+  }
+
+  /**
+   * Hidrata text/html do Gmail:
+   * 1) baixa parts cujo body só tem attachmentId (HTML grande)
+   * 2) baixa imagens inline (Content-ID) e reescreve cid: → data URL
+   */
+  private async hydrateGmailBodies(
+    channel: Channel,
+    msg: any,
+  ): Promise<{ text: string; html: string }> {
+    const messageId = String(msg?.id || '');
+    const parts = walkGmailParts(msg?.payload);
+    let text = '';
+    let html = '';
+    const cidMap = new Map<string, string>();
+    let inlineBudget = 6_000_000; // ~6MB total de data URLs
+
+    const fetchPartData = async (p: {
+      data?: string;
+      attachmentId?: string;
+    }): Promise<string | null> => {
+      if (p.data) return p.data;
+      if (!p.attachmentId || !messageId) return null;
+      try {
+        const att = await this.gmail.getAttachment(
+          channel,
+          messageId,
+          p.attachmentId,
+        );
+        return att.data || null;
+      } catch (err: any) {
+        this.logger.warn(
+          `Gmail body part ${p.attachmentId}: ${err?.message || err}`,
+        );
+        return null;
+      }
+    };
+
+    for (const p of parts) {
+      const mime = (p.mimeType || '').toLowerCase();
+      const isPlain = mime === 'text/plain' || mime.startsWith('text/plain;');
+      const isHtml = mime === 'text/html' || mime.startsWith('text/html;');
+      const isImage = mime.startsWith('image/');
+
+      if (isPlain || isHtml) {
+        const raw = await fetchPartData(p);
+        if (!raw) continue;
+        const decoded = decodeBodyData(raw);
+        if (isPlain) text += decoded;
+        else html += decoded;
+        continue;
+      }
+
+      // imagens inline (assinatura / cid / X-Attachment-Id)
+      const cidKeys = [p.contentId, p.xAttachmentId]
+        .filter(Boolean)
+        .map((s) => String(s).replace(/[<>]/g, '').trim())
+        .filter(Boolean);
+      if (isImage && p.inline && cidKeys.length && inlineBudget > 0) {
+        let buf: Buffer | null = null;
+        if (p.data) buf = decodeBodyBuffer(p.data);
+        else if (p.attachmentId && messageId) {
+          try {
+            const att = await this.gmail.getAttachment(
+              channel,
+              messageId,
+              p.attachmentId,
+            );
+            buf = decodeBodyBuffer(att.data);
+          } catch (err: any) {
+            this.logger.warn(
+              `Gmail inline img ${cidKeys[0]}: ${err?.message || err}`,
+            );
+          }
+        }
+        if (!buf || !buf.length) continue;
+        if (buf.length > inlineBudget) continue;
+        const dataUrl = bufferToImageDataUrl(mime, buf);
+        if (!dataUrl) continue;
+        inlineBudget -= buf.length;
+        for (const cid of cidKeys) {
+          cidMap.set(cid, dataUrl);
+          cidMap.set(cid.toLowerCase(), dataUrl);
+        }
+      }
+    }
+
+    // fallback single-part
+    if (!text && !html && msg?.payload?.body?.data) {
+      const single = decodeBodyData(msg.payload.body.data);
+      if (/<[a-z][\s\S]*>/i.test(single)) html = single;
+      else text = single;
+    }
+
+    // se HTML ainda vazio mas há attachmentId no root text/html
+    if (!html) {
+      const htmlPart = parts.find(
+        (p) =>
+          (p.mimeType || '').toLowerCase().startsWith('text/html') &&
+          p.attachmentId &&
+          !p.data,
+      );
+      if (htmlPart) {
+        const raw = await fetchPartData(htmlPart);
+        if (raw) html = decodeBodyData(raw);
+      }
+    }
+
+    if (html && cidMap.size) {
+      html = rewriteCidImages(html, cidMap);
+    }
+
+    text = text.trim().slice(0, 20000);
+    if (looksLikeCssDump(text)) text = '';
+    return {
+      text,
+      html: html.trim().slice(0, 200_000),
+    };
   }
 
   /** body plain + bodyHtml opcional → plain obrigatório + html sanitizado. */
