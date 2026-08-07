@@ -180,12 +180,55 @@ export function stripDangerousEmailBlocks(html: string): string {
     ' ',
   );
 
-  // CSS “nu” que já vazou como texto (comum após strip incompleto)
-  s = s.replace(
-    /(?:^|[\s>])(?:#outlook|\.ExternalClass|@media\s+only|@font-face|body\s*\{|table\s*,\s*td\s*\{|img\s*\{|a\s+img\s*\{|u\s*\+\s*a\s*\{)[\s\S]{0,8000}?\}(?=\s*(?:<|$))/gi,
-    ' ',
-  );
+  // CSS “nu” (várias passagens — rulesets soltos após strip incompleto)
+  for (let i = 0; i < 12; i++) {
+    const before = s;
+    s = s.replace(
+      /(^|>)(\s*)(?:#outlook|\.ExternalClass|@media\s+only|@font-face|#MessageViewBody|\.yshortcuts|u\s*\+\s*[\w.#]|body\s*,\s*table|a\[x-apple-data-detectors\]|div\[style\*=)[\s\S]{10,20000}?\}(?=\s*(?:<|$))/gi,
+      '$1$2',
+    );
+    // bloco minificado com muitos !important / text-size-adjust
+    s = s.replace(
+      /(^|>)(\s*)([^<]{40,}(?:!important|text-size-adjust|mso-table|ExternalClass)[^<]{10,})(?=<|$)/gi,
+      (full, boundary: string, sp: string, chunk: string) =>
+        isMostlyCssNoise(chunk) || looksLikeCssDump(chunk)
+          ? `${boundary}${sp}`
+          : full,
+    );
+    if (s === before) break;
+  }
 
+  return s;
+}
+
+/**
+ * Passagem final: remove nós de texto que ainda sejam CSS.
+ * Cobre o caso em que o CSS chega fatiado ou fora de <style>.
+ */
+export function stripCssNoiseTextNodes(html: string): string {
+  let s = String(html || '');
+  // texto antes da primeira tag
+  s = s.replace(/^([^<]+)/, (chunk) =>
+    looksLikeCssDump(chunk) || isMostlyCssNoise(chunk) ? '' : chunk,
+  );
+  // texto entre tags
+  s = s.replace(/>([^<]+)</g, (full, chunk: string) => {
+    if (looksLikeCssDump(chunk) || isMostlyCssNoise(chunk)) return '><';
+    // fatias curtas que só fazem sentido como CSS
+    const t = chunk.trim();
+    if (
+      t.length >= 8 &&
+      /[{};]/.test(t) &&
+      /(?:!important|text-size-adjust|mso-|padding\s*:\s*0|margin\s*:\s*0|#outlook|ExternalClass)/i.test(
+        t,
+      )
+    ) {
+      return '><';
+    }
+    return full;
+  });
+  // limpa wrappers vazios deixados pelo strip
+  s = s.replace(/<(div|span|p|font|center)(\s[^>]*)?>\s*<\/\1>/gi, ' ');
   return s;
 }
 
@@ -329,13 +372,13 @@ export function sanitizeEmailHtml(
     if (!VOID_TAGS.has(t)) out.push(`</${t}>`);
   }
 
-  return out.join('').trim();
+  return stripCssNoiseTextNodes(out.join('')).trim();
 }
 
 /** Detecta dump de CSS de client de e-mail no plain text. */
 export function looksLikeCssDump(s: string): boolean {
   const t = String(s || '');
-  if (t.length < 12) return false;
+  if (t.length < 8) return false;
   const hits = [
     /#outlook\b/i,
     /\.ExternalClass\b/i,
@@ -348,10 +391,14 @@ export function looksLikeCssDump(s: string): boolean {
     /-ms-text-size-adjust/i,
     /-webkit-text-size-adjust/i,
     /table\s*,\s*td\s*\{/i,
-    /u\s*\+\s*a\s*\{/i,
+    /u\s*\+\s*[\w.#]/i, // u + a  OR  u + .body
     /a\s+img\s*\{/i,
     /#MessageViewBody/i,
     /\.yshortcuts/i,
+    /a\[x-apple-data-detectors\]/i,
+    /#MessageViewBody/i,
+    /-ms-interpolation-mode/i,
+    /mso-table-lspace/i,
   ].filter((re) => re.test(t)).length;
   return hits >= 1 && (hits >= 2 || /[{};]/.test(t));
 }
@@ -359,20 +406,35 @@ export function looksLikeCssDump(s: string): boolean {
 /** Heurística: texto com densidade alta de tokens CSS e pouco prosa. */
 export function isMostlyCssNoise(s: string): boolean {
   const t = String(s || '').trim();
-  if (t.length < 24) return false;
+  if (t.length < 12) return false;
   if (looksLikeCssDump(t)) return true;
+
   const braces = (t.match(/[{}]/g) || []).length;
   const semis = (t.match(/;/g) || []).length;
+  const colons = (t.match(/:/g) || []).length;
+  const importants = (t.match(/!important/gi) || []).length;
   const words = (t.match(/[A-Za-zÀ-ÿ]{3,}/g) || []).length;
+  const letters = (t.match(/[A-Za-zÀ-ÿ]/g) || []).length || 1;
+  const punct = (t.match(/[{}:;#@!]/g) || []).length;
   const cssProp =
     (t.match(
-      /(?:padding|margin|border|background|font-size|line-height|text-decoration|display|width|height|max-width)\s*:/gi,
+      /(?:padding|margin|border|background|font-size|line-height|text-decoration|display|width|height|max-width|outline|text-size-adjust)\s*:/gi,
     ) || []).length;
-  if (cssProp >= 2 && braces >= 2) return true;
-  if (braces >= 4 && semis >= 4 && words < braces * 3) return true;
-  // bloco tipo "u + a{background: ...}"
-  if (/^[\s\S]{0,40}[\w.\#+\s]+\{[^}]{8,}\}/.test(t) && semis >= 1) {
-    return cssProp >= 1 || /background|padding|margin|border/i.test(t);
+
+  if (importants >= 2 && semis >= 2) return true;
+  if (cssProp >= 2 && (braces >= 1 || semis >= 2)) return true;
+  if (braces >= 2 && semis >= 3 && words < braces * 4) return true;
+  // densidade de pontuação CSS vs letras (minificado)
+  if (t.length >= 40 && punct >= 12 && punct / letters > 0.12 && semis >= 3) {
+    return true;
+  }
+  if (colons >= 4 && semis >= 4 && braces >= 2 && !/[.!?…]\s+[A-ZÀ-Ÿ]/.test(t)) {
+    return true;
+  }
+  // bloco tipo "u + .body{background: ...}"
+  if (/u\s*\+\s*[\w.#]/.test(t) && /[{};]/.test(t)) return true;
+  if (/^[\s\S]{0,40}[\w.\#+\[\]"'=\s]+\{[^}]{6,}\}/.test(t) && semis >= 1) {
+    return cssProp >= 1 || /background|padding|margin|border|important/i.test(t);
   }
   return false;
 }
