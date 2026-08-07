@@ -148,17 +148,57 @@ function attrValue(
  * Importante: se o strip de <style> falhar, o walker de tags
  * deixa o CSS como nó de texto — por isso o strip é agressivo.
  */
+/**
+ * Markup que o walker de tags NÃO reconhece (só tags `[a-zA-Z]…`).
+ * Sem strip prévio, o motor de regex avança o `<` e o resto vira texto
+ * legível — bug ao vivo: `!DOCTYPE html>` / DOCTYPE XHTML acima do corpo.
+ */
+function stripUnrecognizedDeclarations(html: string): string {
+  let s = String(html || '');
+  // <!DOCTYPE …>  (html / xhtml com aspas e newlines)
+  s = s.replace(/<!DOCTYPE\b[^>]*>/gi, ' ');
+  // <?xml …?> e processing instructions
+  s = s.replace(/<\?[\s\S]*?\?>/g, ' ');
+  // residual já “comido” o < em passagens anteriores / double-sanitize
+  s = s.replace(
+    /(^|>)(\s*)!?DOCTYPE\b[^<]{0,300}(?=<|$)/gi,
+    '$1$2',
+  );
+  s = s.replace(
+    /(^|>)(\s*)!DOCTYPE\s+html\b[^<]{0,300}/gi,
+    '$1$2',
+  );
+  // entidades escapadas do mesmo lixo
+  s = s.replace(
+    /(^|>)(\s*)(?:&lt;!)?DOCTYPE\b[^&<]{0,200}(?:&gt;|>)?/gi,
+    (full, boundary: string, sp: string) => {
+      if (/DOCTYPE/i.test(full) && !/[.!?…]{2}/.test(full)) {
+        return `${boundary}${sp}`;
+      }
+      return full;
+    },
+  );
+  return s;
+}
+
 export function stripDangerousEmailBlocks(html: string): string {
   let s = String(html || '');
 
+  // Declarações / DOCTYPE ANTES de qualquer walker (evita vazamento visual)
+  s = stripUnrecognizedDeclarations(s);
+
   // head inteiro (quase sempre só style/meta)
   s = s.replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, ' ');
+  // html/body wrappers (não estão na allowlist de display — conteúdo fica)
+  s = s.replace(/<\/?(?:html|body)\b[^>]*>/gi, ' ');
 
   // condicionais MSO / comentários / CDATA
   s = s.replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, ' ');
   s = s.replace(/<!\[if[\s\S]*?<!\[endif\]>/gi, ' ');
   s = s.replace(/<!--[\s\S]*?-->/g, ' ');
   s = s.replace(/<!\[CDATA\[[\s\S]*?\]\]>/gi, ' ');
+  // qualquer outra declaração <!…> restante (exceto as já tratadas)
+  s = s.replace(/<![^>]*>/g, ' ');
 
   // style/script com nome explícito (não depende de backref de case)
   for (let i = 0; i < 8; i++) {
@@ -205,15 +245,41 @@ export function stripDangerousEmailBlocks(html: string): string {
  * Passagem final: remove nós de texto que ainda sejam CSS.
  * Cobre o caso em que o CSS chega fatiado ou fora de <style>.
  */
+function isDoctypeResidue(s: string): boolean {
+  const t = String(s || '').trim();
+  if (t.length < 8) return false;
+  // !DOCTYPE html>  |  DOCTYPE html PUBLIC "…"
+  if (/^!?DOCTYPE\b/i.test(t)) return true;
+  if (/DOCTYPE\s+html\b/i.test(t) && /(?:html|PUBLIC|XHTML|DTD|\.dtd)/i.test(t)) {
+    return true;
+  }
+  // entidades: !DOCTYPE html&gt;  /  &lt;!DOCTYPE …
+  if (/DOCTYPE/i.test(t) && /&(?:lt|gt|quot);/i.test(t) && t.length < 400) {
+    return true;
+  }
+  return false;
+}
+
 export function stripCssNoiseTextNodes(html: string): string {
   let s = String(html || '');
+  s = stripUnrecognizedDeclarations(s);
   // texto antes da primeira tag
   s = s.replace(/^([^<]+)/, (chunk) =>
-    looksLikeCssDump(chunk) || isMostlyCssNoise(chunk) ? '' : chunk,
+    looksLikeCssDump(chunk) ||
+    isMostlyCssNoise(chunk) ||
+    isDoctypeResidue(chunk)
+      ? ''
+      : chunk,
   );
   // texto entre tags
   s = s.replace(/>([^<]+)</g, (full, chunk: string) => {
-    if (looksLikeCssDump(chunk) || isMostlyCssNoise(chunk)) return '><';
+    if (
+      looksLikeCssDump(chunk) ||
+      isMostlyCssNoise(chunk) ||
+      isDoctypeResidue(chunk)
+    ) {
+      return '><';
+    }
     // fatias curtas que só fazem sentido como CSS
     const t = chunk.trim();
     if (
@@ -253,8 +319,14 @@ export function sanitizeEmailHtml(
   while ((m = re.exec(html)) !== null) {
     if (m[3] != null) {
       const text = m[3];
-      // ignora trechos que ainda parecem CSS puro (threshold baixo — print do Doc)
-      if (looksLikeCssDump(text) || isMostlyCssNoise(text)) continue;
+      // ignora trechos que ainda parecem CSS puro / DOCTYPE residual
+      if (
+        looksLikeCssDump(text) ||
+        isMostlyCssNoise(text) ||
+        isDoctypeResidue(text)
+      ) {
+        continue;
+      }
       out.push(escapeText(text));
       continue;
     }
