@@ -175,6 +175,27 @@ export class ConversationsController {
     return this.service.getStatusCounts(orgId, access);
   }
 
+  @Get('by-external')
+  @ApiOperation({
+    summary:
+      'Lookup conversa por channelId + externalConversationId (deep-link Gmail ↔ inbox)',
+  })
+  @ApiQuery({ name: 'channelId', required: true })
+  @ApiQuery({ name: 'externalId', required: true })
+  findByExternal(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
+    @Query('channelId') channelId?: string,
+    @Query('externalId') externalId?: string,
+  ) {
+    return this.service.findByExternal(
+      orgId,
+      access,
+      channelId || '',
+      externalId || '',
+    );
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get conversation details' })
   findOne(

@@ -360,6 +360,37 @@ export class ConversationsRepository {
     return { lastReadAt: newLastReadAt, unreadCount };
   }
 
+  async findByExternalConversationId(
+    organizationId: string,
+    channelId: string,
+    externalConversationId: string,
+  ) {
+    return this.prisma.conversation.findFirst({
+      where: {
+        organizationId,
+        channelId,
+        deletedAt: null,
+        metadata: {
+          path: ['externalConversationId'],
+          equals: externalConversationId,
+        },
+      },
+      include: {
+        contact: {
+          select: {
+            id: true,
+            name: true,
+            phone: true,
+            email: true,
+            avatarUrl: true,
+          },
+        },
+        channel: { select: { id: true, type: true, name: true } },
+        assignedTo: { select: { id: true, name: true, avatarUrl: true } },
+      },
+    });
+  }
+
   async findById(id: string) {
     return this.prisma.conversation.findUnique({
       where: { id },

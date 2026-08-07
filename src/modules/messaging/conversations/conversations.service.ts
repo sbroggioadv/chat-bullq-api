@@ -188,6 +188,27 @@ export class ConversationsService {
     };
   }
 
+  async findByExternal(
+    organizationId: string,
+    access: ChannelAccess,
+    channelId: string,
+    externalConversationId: string,
+  ) {
+    if (!channelId?.trim() || !externalConversationId?.trim()) {
+      throw new BadRequestException('channelId e externalId são obrigatórios');
+    }
+    this.channelAccess.assertChannelAccess(access, channelId);
+    const conversation = await this.repository.findByExternalConversationId(
+      organizationId,
+      channelId,
+      externalConversationId.trim(),
+    );
+    if (!conversation) {
+      throw new NotFoundException('Conversation not found for external id');
+    }
+    return conversation;
+  }
+
   async findOne(id: string, organizationId: string, access: ChannelAccess = 'ALL') {
     const conversation = await this.repository.findById(id);
     if (!conversation) throw new NotFoundException('Conversation not found');
