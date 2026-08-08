@@ -69,7 +69,17 @@ export class ZappfySyncAdapter implements HistorySyncPort {
         externalContactId: String(externalId),
         contactName: name,
         contactPhone: phone,
-        contactAvatarUrl: chat.wa_profilePicUrl || undefined,
+        contactAvatarUrl: (() => {
+          const raw =
+            chat.image ||
+            chat.imagePreview ||
+            chat.wa_profilePicUrl ||
+            chat.profilePicUrl ||
+            '';
+          return typeof raw === 'string' && raw.startsWith('http')
+            ? raw
+            : undefined;
+        })(),
         isGroup,
         lastMessageAt,
         unreadCount: Number(chat.wa_unreadCount ?? 0),

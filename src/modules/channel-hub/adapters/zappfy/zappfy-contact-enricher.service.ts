@@ -53,9 +53,25 @@ export class ZappfyContactEnricherService {
       const chat = await this.fetchChat(channel, externalContactId);
       if (!chat) return { enriched: false, reason: 'chat_not_found' };
 
-      const avatarUrl: string | undefined = chat.wa_profilePicUrl || undefined;
+      // Zappfy/uazapi atuais: `image` (full) + `imagePreview` (thumb pps.whatsapp.net).
+      // Campo legado `wa_profilePicUrl` não vem mais no /chat/find.
+      const rawPic =
+        chat.image ||
+        chat.imagePreview ||
+        chat.wa_profilePicUrl ||
+        chat.profilePicUrl ||
+        chat.profilePic ||
+        '';
+      const avatarUrl: string | undefined =
+        typeof rawPic === 'string' && rawPic.startsWith('http')
+          ? rawPic
+          : undefined;
       const profileName: string | undefined =
-        chat.wa_contactName || chat.wa_name || undefined;
+        chat.wa_contactName ||
+        chat.wa_name ||
+        chat.name ||
+        chat.lead_name ||
+        undefined;
 
       if (!avatarUrl && !profileName) {
         return { enriched: false, reason: 'no_data_from_zappfy' };
