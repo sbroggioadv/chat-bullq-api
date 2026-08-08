@@ -79,10 +79,20 @@ export class ZappfyContactEnricherService {
       if (profileName && !contactChannel.contact.name) {
         contactUpdates.name = profileName;
       }
-      // S20 Wave 1: com force=true, atualizamos avatarUrl mesmo quando ja
-      // tinha valor (re-enrich pra URL nova que nao expirou). Sem force,
-      // mantemos comportamento original (so seta se vazio).
-      if (avatarUrl && (options?.force || !contactChannel.contact.avatarUrl)) {
+      // S20 Wave 1 / fix avatares:
+      // - force=true: grava CDN fresca em profileAvatarUrl (acima) e só
+      //   sobrescreve contact.avatarUrl se ainda NÃO for URL estável BullQ
+      //   (/api/v1/uploads/). Assim um rehost falho não apaga foto boa.
+      // - force=false: só seta se vazio (inbound barato).
+      const currentAvatar = contactChannel.contact.avatarUrl || '';
+      const hasStableBullq =
+        currentAvatar.includes('/api/v1/uploads/');
+      if (
+        avatarUrl &&
+        (options?.force
+          ? !hasStableBullq
+          : !currentAvatar)
+      ) {
         contactUpdates.avatarUrl = avatarUrl;
       }
       if (Object.keys(contactUpdates).length > 0) {

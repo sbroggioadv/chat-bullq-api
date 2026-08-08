@@ -201,9 +201,26 @@ export class ContactsService {
             where: { id: cc.contactId },
             select: { id: true, avatarUrl: true },
           });
-          if (contact?.avatarUrl) {
-            const ok = await this.rehostAvatarToBullq(contact.id, contact.avatarUrl);
-            if (ok) rehosted++;
+          // Prefer CDN fresca no channel (force enrich); depois contact.
+          const fresh = await this.prisma.contactChannel.findUnique({
+            where: { id: cc.id },
+            select: { profileAvatarUrl: true },
+          });
+          const candidates = [
+            fresh?.profileAvatarUrl,
+            contact?.avatarUrl,
+          ].filter((u): u is string => !!u && u.startsWith('http'));
+
+          for (const url of candidates) {
+            if (url.includes('/api/v1/uploads/')) {
+              rehosted++;
+              break;
+            }
+            const did = await this.rehostAvatarToBullq(cc.contactId, url);
+            if (did) {
+              rehosted++;
+              break;
+            }
           }
           return r;
         }),
@@ -232,37 +249,29 @@ export class ContactsService {
 
   /**
    * Download a remote WhatsApp/Zappfy profile pic and store it on BullQ
-   * uploads so the URL never expires. No-op if already a BullQ /uploads URL.
+   * uploads so the URL never expires.
+   *
+   * - Já é URL BullQ `/api/v1/uploads/` estável → no-op (true se "ok").
+   * - Preferimos `saveImage` (pasta images/ servida e persistida como o resto).
+   * - Headers de browser: CDN do WA bloqueia UA de bot / hotlink.
    */
   async rehostAvatarToBullq(
     contactId: string,
     avatarUrl: string,
   ): Promise<boolean> {
     if (!avatarUrl || !avatarUrl.startsWith('http')) return false;
-    if (avatarUrl.includes('/api/v1/uploads/')) return false;
+    if (avatarUrl.includes('/api/v1/uploads/')) {
+      // Já rehostado — se o blob sumiu, o sync force vai sobrescrever com URL nova.
+      return true;
+    }
     try {
-      const resp = await axios.get(avatarUrl, {
-        responseType: 'arraybuffer',
-        timeout: 25_000,
-        headers: {
-          // Some CDNs reject empty UA
-          'User-Agent': 'BullQ-AvatarSync/1.0',
-        },
-        maxRedirects: 5,
-        validateStatus: (s) => s >= 200 && s < 400,
-      });
-      const buffer = Buffer.from(resp.data);
-      if (buffer.length < 100) return false;
-      const headerMime = resp.headers['content-type'];
-      const mime =
-        typeof headerMime === 'string' && headerMime.startsWith('image/')
-          ? headerMime.split(';')[0].trim()
-          : 'image/jpeg';
-      const saved = await this.uploads.saveInboundMedia({
+      const buffer = await this.downloadAvatarBytes(avatarUrl);
+      if (!buffer || buffer.length < 100) return false;
+
+      const saved = await this.uploads.saveImage({
         buffer,
-        mimeType: mime,
-        channelId: 'avatars',
-        originalFilename: `avatar-${contactId}.jpg`,
+        mimetype: 'image/jpeg',
+        originalname: `avatar-${contactId}.jpg`,
       });
       await this.prisma.contact.update({
         where: { id: contactId },
@@ -278,5 +287,38 @@ export class ContactsService {
       );
       return false;
     }
+  }
+
+  /** Tenta baixar bytes da foto com headers de browser (WA CDN é exigente). */
+  private async downloadAvatarBytes(url: string): Promise<Buffer | null> {
+    const attempts = [
+      {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+        Referer: 'https://web.whatsapp.com/',
+      },
+      {
+        'User-Agent': 'BullQ-AvatarSync/1.1',
+        Accept: 'image/*',
+      },
+    ];
+    for (const headers of attempts) {
+      try {
+        const resp = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 25_000,
+          headers,
+          maxRedirects: 5,
+          validateStatus: (s) => s >= 200 && s < 400,
+        });
+        const buffer = Buffer.from(resp.data);
+        if (buffer.length >= 100) return buffer;
+      } catch {
+        // try next header set
+      }
+    }
+    return null;
   }
 }
