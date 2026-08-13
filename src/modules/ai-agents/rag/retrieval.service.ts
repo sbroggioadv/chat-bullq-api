@@ -31,7 +31,10 @@ export class RetrievalService {
     const k = input.k ?? DEFAULT_RAG_CONFIG.k;
     const minScore = input.minScore ?? DEFAULT_RAG_CONFIG.minScore;
 
-    const emb = await this.embeddings.embed(input.query);
+    const emb = await this.embeddings.embed(
+      input.query,
+      input.organizationId,
+    );
     let results = await this.store.search(emb.vector, input.scope, k, minScore);
 
     const shouldRerank = input.rerank ?? DEFAULT_RAG_CONFIG.rerankEnabled;

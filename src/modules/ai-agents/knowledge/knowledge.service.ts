@@ -198,7 +198,7 @@ export class AgentKnowledgeService {
   private friendlyEmbedError(err: unknown): string {
     const raw = err instanceof Error ? err.message : String(err);
     if (/OPENAI_API_KEY|No credential|embeddings|401|403/i.test(raw)) {
-      return 'Embeddings não configurados. Em Credenciais de IA, ligue OpenAI na capacidade Embeddings e anexe de novo.';
+      return 'Embeddings não configurados. Em Credenciais de IA, roteie Embeddings para Sakana Fugu (formato OpenAI) ou OpenAI e anexe de novo.';
     }
     return raw.slice(0, 400);
   }

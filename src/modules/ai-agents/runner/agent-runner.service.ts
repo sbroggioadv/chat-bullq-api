@@ -272,6 +272,7 @@ export class AiAgentRunnerService {
       conversation.contactId,
       conversation.id,
       this.extractText(triggerMessage.content as unknown),
+      conversation.organizationId,
     );
 
     const tools = llmTools;
@@ -980,6 +981,7 @@ export class AiAgentRunnerService {
     contactId: string,
     conversationId: string,
     triggerText: string,
+    organizationId?: string,
   ): Promise<void> {
     const firstMsg = messages[0];
     if (!firstMsg || firstMsg.role !== 'system' || !Array.isArray(firstMsg.content)) {
@@ -1002,6 +1004,7 @@ export class AiAgentRunnerService {
       try {
         const results = await this.retrieval.retrieve({
           query: triggerText,
+          organizationId,
           scope: {
             agentId,
             contactId,
@@ -1031,6 +1034,7 @@ export class AiAgentRunnerService {
       try {
         const knowledge = await this.retrieval.retrieve({
           query: triggerText,
+          organizationId,
           scope: { agentId, ownerType: 'knowledge_doc' },
           k: 6,
           minScore: 0.55,

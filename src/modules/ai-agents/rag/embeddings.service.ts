@@ -1,77 +1,57 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import { AiProvider } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { ProviderResolverService } from '../providers/provider-resolver.service';
+import {
+  ProviderResolverService,
+  type ResolvedCredential,
+} from '../providers/provider-resolver.service';
+import { defaultBaseUrlFor } from '../providers/provider-defaults';
 import type { EmbeddingResult } from './types';
 
+const DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-small';
+const COST_PER_1M_TOKENS = 0.02;
+
 /**
- * Generates embeddings via the OpenAI Embeddings API (`text-embedding-3-small`,
- * 1536 dims, ~$0.02 per 1M tokens). Anthropic does not provide an embeddings
- * endpoint, so this is the one place we still depend on OpenAI.
- *
- * The service is stateless: each call is one HTTP request. Batching is
- * supported via `embedBatch` to amortize round-trip latency when indexing
- * many messages at once.
+ * Embeddings via API OpenAI-compatible (`POST {baseUrl}/embeddings`).
+ * Sakana Fugu e OpenAI nativo usam o mesmo contrato — muda só host + chave.
+ * Dimensão canônica: 1536 (`text-embedding-3-small`).
  */
 @Injectable()
 export class EmbeddingsService {
   private readonly logger = new Logger(EmbeddingsService.name);
-  private readonly MODEL = 'text-embedding-3-small';
-  /** USD cost per 1M tokens for `text-embedding-3-small`. */
-  private readonly COST_PER_1M_TOKENS = 0.02;
-  private readonly envApiKey: string;
 
   constructor(
-    config: ConfigService,
+    private readonly config: ConfigService,
     private readonly resolver: ProviderResolverService,
-  ) {
-    const apiKey =
-      config.get<string>('OPENAI_API_KEY') ?? process.env.OPENAI_API_KEY ?? '';
-    if (!apiKey) {
-      this.logger.warn(
-        'No OPENAI_API_KEY set — embeddings will fail at runtime unless org credential provided',
-      );
-    }
-    this.envApiKey = apiKey;
-  }
+  ) {}
 
-  /**
-   * Resolve OpenAI API key for the given org. Falls back to env if no
-   * org-level credential is configured. organizationId is optional pra
-   * preservar compat com callers internos que ainda não passam orgId.
-   */
-  private async resolveKey(organizationId?: string): Promise<string> {
-    if (!organizationId) return this.envApiKey;
-    const resolved = await this.resolver.resolveForEmbeddings(organizationId);
-    if (resolved.source === 'NONE' || !resolved.apiKey) {
-      throw new InternalServerErrorException(
-        `No OpenAI credential available for org=${organizationId}`,
-      );
-    }
-    return resolved.apiKey;
-  }
-
-  /**
-   * Embeds a single string. Returns the vector + cost metadata so the
-   * caller can log it against the agent run's budget.
-   *
-   * `organizationId` opcional — quando presente, busca credential org-level.
-   */
   async embed(text: string, organizationId?: string): Promise<EmbeddingResult> {
-    const apiKey = await this.resolveKey(organizationId);
+    const results = await this.embedBatch([text], organizationId);
+    return results[0];
+  }
+
+  async embedBatch(
+    texts: string[],
+    organizationId?: string,
+  ): Promise<EmbeddingResult[]> {
+    if (texts.length === 0) return [];
+
+    const target = await this.resolveTarget(organizationId);
     const t0 = Date.now();
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
+    const url = `${target.baseUrl.replace(/\/$/, '')}/embeddings`;
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${target.apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ model: this.MODEL, input: text }),
+      body: JSON.stringify({ model: target.model, input: texts }),
     });
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
       this.logger.error(
-        `Embeddings API ${response.status}: ${body.slice(0, 300)}`,
+        `Embeddings API ${response.status} ${url} model=${target.model}: ${body.slice(0, 300)}`,
       );
       throw new InternalServerErrorException(
         `Embeddings API error (${response.status}): ${response.statusText}`,
@@ -83,76 +63,85 @@ export class EmbeddingsService {
       usage: { total_tokens: number };
     };
 
-    const tokensUsed = data.usage?.total_tokens ?? 0;
-    const costUsd = (tokensUsed / 1_000_000) * this.COST_PER_1M_TOKENS;
-
-    this.logger.log(
-      `embedding_generated tokens=${tokensUsed} costUsd=${costUsd.toFixed(6)} durationMs=${Date.now() - t0}`,
-    );
-
-    return {
-      vector: data.data[0].embedding,
-      model: this.MODEL,
-      tokensUsed,
-      costUsd,
-    };
-  }
-
-  /**
-   * Embeds N strings in a single API call. Order is preserved — the
-   * returned array is parallel to `texts`.
-   *
-   * Each `EmbeddingResult` reports the per-call totals divided evenly
-   * across inputs so the caller can attribute cost back to each item
-   * (the API itself only returns one aggregate token count).
-   */
-  async embedBatch(texts: string[], organizationId?: string): Promise<EmbeddingResult[]> {
-    if (texts.length === 0) return [];
-
-    const apiKey = await this.resolveKey(organizationId);
-    const t0 = Date.now();
-    const response = await fetch('https://api.openai.com/v1/embeddings', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ model: this.MODEL, input: texts }),
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      this.logger.error(
-        `Embeddings batch API ${response.status}: ${body.slice(0, 300)}`,
-      );
-      throw new InternalServerErrorException(
-        `Embeddings batch API error (${response.status}): ${response.statusText}`,
-      );
-    }
-
-    const data = (await response.json()) as {
-      data: { embedding: number[]; index: number }[];
-      usage: { total_tokens: number };
-    };
-
     const totalTokens = data.usage?.total_tokens ?? 0;
-    const totalCost = (totalTokens / 1_000_000) * this.COST_PER_1M_TOKENS;
-    // Even split — caller can do better attribution if it has per-text token counts.
+    const totalCost = (totalTokens / 1_000_000) * COST_PER_1M_TOKENS;
     const perCallTokens = Math.round(totalTokens / texts.length);
     const perCallCost = totalCost / texts.length;
 
     this.logger.log(
-      `embedding_batch_generated count=${texts.length} totalTokens=${totalTokens} totalCostUsd=${totalCost.toFixed(6)} durationMs=${Date.now() - t0}`,
+      `embedding_batch count=${texts.length} provider=${target.provider} model=${target.model} tokens=${totalTokens} durationMs=${Date.now() - t0}`,
     );
 
-    // Sort by `index` to be safe — the API documents stable order, but
-    // explicit is cheaper than a future bug.
     const sorted = [...data.data].sort((a, b) => a.index - b.index);
     return sorted.map((item) => ({
       vector: item.embedding,
-      model: this.MODEL,
+      model: target.model,
       tokensUsed: perCallTokens,
       costUsd: perCallCost,
     }));
+  }
+
+  private async resolveTarget(organizationId?: string): Promise<{
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+  }> {
+    if (organizationId) {
+      const resolved = await this.resolver.resolveForEmbeddings(organizationId);
+      if (resolved.source !== 'NONE' && resolved.apiKey) {
+        return this.fromResolved(resolved);
+      }
+    }
+
+    const fuguKey =
+      this.config.get<string>('FUGU_API_KEY') ??
+      process.env.FUGU_API_KEY ??
+      this.config.get<string>('SAKANA_API_KEY') ??
+      process.env.SAKANA_API_KEY ??
+      '';
+    if (fuguKey) {
+      return {
+        provider: AiProvider.FUGU,
+        apiKey: fuguKey,
+        baseUrl: defaultBaseUrlFor(AiProvider.FUGU)!,
+        model: DEFAULT_EMBEDDING_MODEL,
+      };
+    }
+
+    const openaiKey =
+      this.config.get<string>('OPENAI_API_KEY') ??
+      process.env.OPENAI_API_KEY ??
+      '';
+    if (openaiKey) {
+      return {
+        provider: AiProvider.OPENAI,
+        apiKey: openaiKey,
+        baseUrl: defaultBaseUrlFor(AiProvider.OPENAI)!,
+        model: DEFAULT_EMBEDDING_MODEL,
+      };
+    }
+
+    throw new InternalServerErrorException(
+      'Embeddings não configurados. Use Sakana Fugu (OpenAI-compat) ou OpenAI em Credenciais de IA.',
+    );
+  }
+
+  private fromResolved(resolved: ResolvedCredential): {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+  } {
+    const baseUrl =
+      resolved.baseUrl ||
+      defaultBaseUrlFor(resolved.provider) ||
+      defaultBaseUrlFor(AiProvider.OPENAI)!;
+    return {
+      provider: resolved.provider,
+      apiKey: resolved.apiKey!,
+      baseUrl,
+      model: resolved.modelOverride?.trim() || DEFAULT_EMBEDDING_MODEL,
+    };
   }
 }

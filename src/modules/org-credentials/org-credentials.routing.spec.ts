@@ -7,8 +7,8 @@ import type { CredentialAuditService } from './audit.service';
 import type { CredentialEventsBus } from './credential-events';
 
 /**
- * Fix CodeRabbit #2: validação de routing por ALLOWLIST fail-closed. EMBEDDINGS
- * e TRANSCRIPTION só suportam OPENAI (único com implementação real — Whisper).
+ * Fix CodeRabbit #2: validação de routing por ALLOWLIST fail-closed.
+ * EMBEDDINGS: Fugu (Sakana OpenAI-compat) ou OpenAI. TRANSCRIPTION: OPENAI (Whisper).
  * Provider novo no enum não "vaza" como suportado.
  */
 
@@ -52,13 +52,12 @@ describe('OrgCredentialsService.updateRouting — allowlist fail-closed', () => 
     });
   });
 
-  describe('EMBEDDINGS só permite OPENAI', () => {
+  describe('EMBEDDINGS aceita Fugu (OpenAI-compat) e OpenAI', () => {
     it.each([
       AiProvider.GEMINI,
       AiProvider.KIMI,
       AiProvider.ZAI,
       AiProvider.ANTHROPIC,
-      AiProvider.FUGU,
       AiProvider.QWEN,
     ])(
       'rejeita %s',
@@ -69,11 +68,14 @@ describe('OrgCredentialsService.updateRouting — allowlist fail-closed', () => 
       },
     );
 
-    it('aceita OPENAI', async () => {
-      await expect(
-        update(AiCapability.EMBEDDINGS, AiProvider.OPENAI),
-      ).resolves.toBeDefined();
-    });
+    it.each([AiProvider.OPENAI, AiProvider.FUGU])(
+      'aceita %s',
+      async (provider) => {
+        await expect(
+          update(AiCapability.EMBEDDINGS, provider),
+        ).resolves.toBeDefined();
+      },
+    );
   });
 
   describe('LLM_AGENT aceita Fugu Ultra e Qwen 3.7 Max (e legado)', () => {

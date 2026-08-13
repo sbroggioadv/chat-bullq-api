@@ -272,7 +272,7 @@ export class OrgCredentialsService {
     const defaults: Record<AiCapability, AiProvider> = {
       LLM_AGENT: AiProvider.FUGU,
       TRANSCRIPTION: AiProvider.OPENAI,
-      EMBEDDINGS: AiProvider.OPENAI,
+      EMBEDDINGS: AiProvider.FUGU,
     };
     return (Object.keys(defaults) as AiCapability[]).map((cap) => {
       const existing = map.get(cap);
@@ -301,17 +301,18 @@ export class OrgCredentialsService {
     // Validação semântica — allowlist fail-closed (nunca blocklist): só permite
     // providers com implementação REAL da capability. Provider novo no enum
     // não "vaza" como suportado sem código por trás.
-    //   - EMBEDDINGS: só OPENAI (Anthropic sem endpoint público; Gemini fica p/ V2).
+    //   - EMBEDDINGS: Fugu (Sakana OpenAI-compat) ou OpenAI nativo.
     //   - TRANSCRIPTION: só OPENAI (Whisper). GEMINI é stub não-implementado
     //     (transcription.service cai pro fallback OpenAI); KIMI/ZAI/ANTHROPIC
     //     não fazem transcrição por este caminho.
     for (const entry of entries) {
       if (
         entry.capability === AiCapability.EMBEDDINGS &&
-        entry.providerSelected !== AiProvider.OPENAI
+        entry.providerSelected !== AiProvider.OPENAI &&
+        entry.providerSelected !== AiProvider.FUGU
       ) {
         throw new ConflictException(
-          `EMBEDDINGS capability currently only supports OPENAI (got ${entry.providerSelected})`,
+          `EMBEDDINGS aceita Sakana Fugu (OpenAI-compat) ou OpenAI (got ${entry.providerSelected})`,
         );
       }
       if (

@@ -63,6 +63,8 @@ export interface SearchScope {
 export interface SearchQuery {
   /** Natural-language query. We embed this and run cosine similarity. */
   query: string;
+  /** Org da credencial de embeddings (Sakana/OpenAI). */
+  organizationId?: string;
   scope: SearchScope;
   /** Top-K results to return. Default 5. */
   k?: number;

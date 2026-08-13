@@ -292,7 +292,7 @@ export class ProviderResolverService implements OnModuleInit {
       case AiCapability.TRANSCRIPTION:
         return AiProvider.OPENAI;
       case AiCapability.EMBEDDINGS:
-        return AiProvider.OPENAI;
+        return AiProvider.FUGU;
     }
   }
 
