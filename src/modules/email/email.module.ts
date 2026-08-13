@@ -8,5 +8,6 @@ import { EmailService } from './email.service';
   imports: [ChannelAccessModule, GmailModule],
   controllers: [EmailController],
   providers: [EmailService],
+  exports: [EmailService],
 })
 export class EmailModule {}

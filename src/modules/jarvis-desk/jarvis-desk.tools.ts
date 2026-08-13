@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { ChannelType, ConversationStatus, MessageDirection } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { WatchdogConfigService } from '../routing/watchdog/watchdog-config.service';
+import { EmailService } from '../email/email.service';
+import { CalendarService } from '../calendar/calendar.service';
 import type { LlmToolDefinition } from '../ai-agents/llm/llm.types';
 
 const CUSTOMER_CHANNELS: ChannelType[] = [
@@ -53,6 +55,44 @@ export const JARVIS_TOOL_DEFINITIONS: LlmToolDefinition[] = [
       'Como está o monitoramento automático (watchdog): ligado/desligado, conversas presas, config de atrasos.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   },
+  {
+    name: 'list_emails',
+    description:
+      'Lista threads do Gmail conectado no BullQ (caixa de entrada por padrão). Pastas: INBOX, SENT, SPAM, STARRED ou um label. Não envia e-mail.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folderId: { type: 'string' },
+        unreadOnly: { type: 'boolean' },
+        limit: { type: 'number' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_email',
+    description:
+      'Abre um thread do Gmail pelo id devolvido em list_emails. Traz remetente, assunto e corpo texto. Não responde o e-mail.',
+    parameters: {
+      type: 'object',
+      properties: { threadId: { type: 'string' } },
+      required: ['threadId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_calendar_events',
+    description:
+      'Lista compromissos da agenda Google ligada ao Gmail do BullQ. Passe from/to em ISO. Default: ontem até +14 dias. Não cria evento.',
+    parameters: {
+      type: 'object',
+      properties: {
+        from: { type: 'string' },
+        to: { type: 'string' },
+      },
+      additionalProperties: false,
+    },
+  },
 ];
 
 @Injectable()
@@ -60,6 +100,8 @@ export class JarvisDeskTools {
   constructor(
     private readonly prisma: PrismaService,
     private readonly watchdogConfig: WatchdogConfigService,
+    private readonly email: EmailService,
+    private readonly calendar: CalendarService,
   ) {}
 
   async execute(
@@ -76,6 +118,12 @@ export class JarvisDeskTools {
         return this.getConversation(organizationId, String(args.conversationId ?? ''));
       case 'watchdog_status':
         return this.watchdogStatus(organizationId);
+      case 'list_emails':
+        return this.listEmails(organizationId, args);
+      case 'get_email':
+        return this.getEmail(organizationId, String(args.threadId ?? ''));
+      case 'list_calendar_events':
+        return this.listCalendarEvents(organizationId, args);
       default:
         return { error: `tool desconhecida: ${name}` };
     }
@@ -292,6 +340,121 @@ export class JarvisDeskTools {
         maxAttempts: cfg.maxAttempts,
       },
     };
+  }
+
+  async listEmails(organizationId: string, args: Record<string, unknown>) {
+    const channelId = await this.firstGmailChannelId(organizationId);
+    if (!channelId) {
+      return {
+        error:
+          'Nenhum Gmail conectado nesta organização. Conecte em Configurações → Canais.',
+      };
+    }
+    const folderId =
+      typeof args.folderId === 'string' && args.folderId.trim()
+        ? args.folderId.trim()
+        : 'INBOX';
+    const limit = String(Math.min(Math.max(Number(args.limit) || 12, 1), 25));
+    try {
+      const page = await this.email.threads(
+        organizationId,
+        'ALL',
+        channelId,
+        folderId,
+        undefined,
+        limit,
+      );
+      const threads = (page.threads ?? []).filter((t) =>
+        args.unreadOnly === true ? t.unread : true,
+      );
+      return {
+        channelId: page.channelId,
+        folderId: page.folderId,
+        threads: threads.map((t) => ({
+          threadId: t.id,
+          subject: t.subject,
+          from: t.from,
+          snippet: (t.snippet || '').slice(0, 220),
+          date: t.date,
+          unread: t.unread,
+        })),
+      };
+    } catch (err) {
+      return { error: (err as Error).message || 'Falha ao listar e-mails' };
+    }
+  }
+
+  async getEmail(organizationId: string, threadId: string) {
+    if (!threadId) return { error: 'threadId obrigatório' };
+    const channelId = await this.firstGmailChannelId(organizationId);
+    if (!channelId) {
+      return {
+        error:
+          'Nenhum Gmail conectado nesta organização. Conecte em Configurações → Canais.',
+      };
+    }
+    try {
+      const full = await this.email.thread(
+        organizationId,
+        'ALL',
+        channelId,
+        threadId,
+      );
+      return {
+        threadId: full.id,
+        subject: full.subject,
+        unread: full.unread,
+        messages: (full.messages ?? []).slice(-6).map((m) => ({
+          from: m.from,
+          to: m.to,
+          date: m.date,
+          outbound: m.outbound,
+          body: String(m.body || m.snippet || '').slice(0, 1500),
+        })),
+      };
+    } catch (err) {
+      return { error: (err as Error).message || 'Falha ao abrir o e-mail' };
+    }
+  }
+
+  async listCalendarEvents(organizationId: string, args: Record<string, unknown>) {
+    const from = typeof args.from === 'string' ? args.from : undefined;
+    const to = typeof args.to === 'string' ? args.to : undefined;
+    try {
+      const page = await this.calendar.listEvents(organizationId, 'ALL', {
+        from,
+        to,
+      });
+      return {
+        channelId: page.channelId,
+        from: page.timeMin,
+        to: page.timeMax,
+        calendars: (page.calendars ?? []).map((c) => c.summary),
+        events: (page.events ?? []).slice(0, 25).map((ev) => ({
+          eventId: ev.eventId,
+          title: ev.summary,
+          start: ev.start,
+          end: ev.end,
+          allDay: ev.allDay,
+          calendar: ev.calendarSummary,
+          meet: ev.meetLink,
+          attendees: (ev.attendees ?? [])
+            .slice(0, 8)
+            .map((a: { displayName?: string; email?: string }) => a.displayName || a.email),
+        })),
+      };
+    } catch (err) {
+      return {
+        error:
+          (err as Error).message ||
+          'Falha ao listar a agenda. Reconecte o Google em Canais e autorize o Calendar.',
+      };
+    }
+  }
+
+  private async firstGmailChannelId(organizationId: string): Promise<string | null> {
+    const status = await this.email.status(organizationId, 'ALL');
+    return status.channels[0]?.id ?? null;
   }
 }
 

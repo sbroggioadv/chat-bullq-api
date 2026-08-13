@@ -3,13 +3,22 @@ import { PrismaModule } from '../../database/prisma.module';
 import { AiProvidersModule } from '../ai-agents/providers/providers.module';
 import { RealtimeModule } from '../realtime/realtime.module';
 import { WatchdogModule } from '../routing/watchdog/watchdog.module';
+import { EmailModule } from '../email/email.module';
+import { CalendarModule } from '../calendar/calendar.module';
 import { JarvisDeskController } from './jarvis-desk.controller';
 import { JarvisDeskRunner } from './jarvis-desk.runner';
 import { JarvisDeskService } from './jarvis-desk.service';
 import { JarvisDeskTools } from './jarvis-desk.tools';
 
 @Module({
-  imports: [PrismaModule, AiProvidersModule, RealtimeModule, WatchdogModule],
+  imports: [
+    PrismaModule,
+    AiProvidersModule,
+    RealtimeModule,
+    WatchdogModule,
+    EmailModule,
+    CalendarModule,
+  ],
   controllers: [JarvisDeskController],
   providers: [JarvisDeskService, JarvisDeskTools, JarvisDeskRunner],
   exports: [JarvisDeskService, JarvisDeskRunner],
