@@ -996,8 +996,8 @@ export class AiAgentRunnerService {
       cache: true,
     };
 
-    // 2) RAG retrieval (não cacheable — varia por turno)
-    let ragPart: { type: 'text'; text: string; cache: false } | null = null;
+    // 2) RAG — histórico do cliente + base de conhecimento do agente
+    const extraParts: { type: 'text'; text: string; cache: false }[] = [];
     if (triggerText && triggerText.length >= 10) {
       try {
         const results = await this.retrieval.retrieve({
@@ -1011,28 +1011,55 @@ export class AiAgentRunnerService {
           k: 5,
           minScore: 0.7,
         });
-        if (results.length > 0) {
-          const lines = results
+        const history = results.filter((r) => r.entry.ownerType !== 'knowledge_doc');
+        if (history.length > 0) {
+          const lines = history
             .map(
               (r, i) =>
                 `${i + 1}. [${r.entry.ownerType}, score=${r.score.toFixed(2)}] ${r.entry.content.slice(0, 240)}`,
             )
             .join('\n');
-          ragPart = {
+          extraParts.push({
             type: 'text',
             text: `═══ Trechos relevantes do histórico (RAG) ═══\n${lines}\n\nUse esses trechos como memória de longo prazo. NÃO os cite literalmente — apenas demonstre que lembra do contexto.`,
             cache: false,
-          };
+          });
         }
       } catch (err: any) {
         this.logger.warn(`RAG retrieval failed: ${err?.message ?? err}`);
+      }
+      try {
+        const knowledge = await this.retrieval.retrieve({
+          query: triggerText,
+          scope: { agentId, ownerType: 'knowledge_doc' },
+          k: 6,
+          minScore: 0.55,
+        });
+        if (knowledge.length > 0) {
+          const lines = knowledge
+            .map((r, i) => {
+              const src =
+                typeof r.entry.metadata?.fileName === 'string'
+                  ? r.entry.metadata.fileName
+                  : 'documento';
+              return `${i + 1}. [${src}] ${r.entry.content.slice(0, 700)}`;
+            })
+            .join('\n\n');
+          extraParts.push({
+            type: 'text',
+            text: `═══ Base de conhecimento deste agente ═══\nUse APENAS o que está abaixo para fatos, regras e procedimentos. Se a resposta não estiver aqui, diga que não tem essa informação.\n\n${lines}`,
+            cache: false,
+          });
+        }
+      } catch (err: any) {
+        this.logger.warn(`Knowledge retrieval failed: ${err?.message ?? err}`);
       }
     }
 
     firstMsg.content = [
       securityPart,
       ...firstMsg.content,
-      ...(ragPart ? [ragPart] : []),
+      ...extraParts,
     ];
   }
 

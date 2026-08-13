@@ -238,7 +238,8 @@ model Organization {
   notifications Notification[]
   invitations   Invitation[]
   apiKeys       ApiKey[]
-  aiAgents      AiAgent[]
+  aiAgents             AiAgent[]
+  aiAgentKnowledgeDocs AiAgentKnowledgeDoc[]
   aiTools       AiTool[]
   aiSkills      AiSkill[]
   inboxViews    InboxView[]
@@ -1294,6 +1295,7 @@ model AiAgent {
   activeOn       Conversation[]    @relation("ActiveAgent")
   skills         AiAgentSkill[]
   responseLogs   AiResponseLog[]
+  knowledgeDocs  AiAgentKnowledgeDoc[]
 
   @@unique([organizationId, mentionHandle])
   @@index([organizationId], name: "idx_ai_agent_org")
@@ -1301,6 +1303,29 @@ model AiAgent {
   @@index([parentAgentId], name: "idx_ai_agent_parent")
   @@index([organizationId, department], name: "idx_ai_agent_org_dept")
   @@map("ai_agents")
+}
+
+model AiAgentKnowledgeDoc {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  agentId        String    @map("agent_id")
+  fileName       String    @map("file_name")
+  mimeType       String    @map("mime_type")
+  sizeBytes      Int       @map("size_bytes")
+  storagePath    String    @map("storage_path")
+  status         String    @default("PENDING")
+  errorMessage   String?   @map("error_message")
+  chunkCount     Int       @default(0) @map("chunk_count")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  agent        AiAgent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId], name: "idx_ai_agent_knowledge_agent")
+  @@index([organizationId], name: "idx_ai_agent_knowledge_org")
+  @@map("ai_agent_knowledge_docs")
 }
 
 // ─── Tools (built-in registry + custom HTTP) ─────────────────

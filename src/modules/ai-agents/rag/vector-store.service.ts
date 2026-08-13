@@ -159,6 +159,14 @@ export class VectorStoreService {
     );
   }
 
+  async deleteByMetadata(key: string, value: string): Promise<void> {
+    await this.prisma.$executeRawUnsafe(
+      `DELETE FROM ai_vector_entries WHERE metadata ->> $1 = $2`,
+      key,
+      value,
+    );
+  }
+
   /**
    * pgvector accepts both binary and text representations. The text form
    * `'[1,2,3]'::vector` is what the Postgres driver passes through

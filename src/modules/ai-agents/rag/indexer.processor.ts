@@ -50,6 +50,34 @@ export class RagIndexerProcessor extends WorkerHost {
           );
           return { ok: true };
 
+        case 'index_knowledge_doc': {
+          const embeddings = await this.embeddings.embedBatch(
+            data.chunks,
+            data.organizationId,
+          );
+          for (let i = 0; i < data.chunks.length; i++) {
+            await this.store.upsert({
+              id: `knowledge_doc:${data.documentId}:${i}`,
+              ownerType: 'knowledge_doc',
+              ownerId: `${data.documentId}:${i}`,
+              agentId: data.agentId,
+              content: data.chunks[i],
+              embedding: embeddings[i].vector,
+              metadata: {
+                documentId: data.documentId,
+                fileName: data.fileName,
+                chunkIndex: i,
+                embeddingModel: embeddings[i].model,
+              },
+              createdAt: new Date().toISOString(),
+            });
+          }
+          this.logger.log(
+            `rag_indexed knowledge_doc=${data.documentId} chunks=${data.chunks.length}`,
+          );
+          return { ok: true };
+        }
+
         case 'delete_entry':
           await this.store.delete(data.id);
           this.logger.log(`rag_indexer_deleted id=${data.id}`);

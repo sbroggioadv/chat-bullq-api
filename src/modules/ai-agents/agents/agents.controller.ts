@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,14 +8,18 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
 import { AgentsService } from './agents.service';
 import { CreateAgentDto } from './dto/create-agent.dto';
 import { UpdateAgentDto } from './dto/update-agent.dto';
 import { AssignAgentChannelDto } from './dto/assign-channel.dto';
+import { AgentKnowledgeService } from '../knowledge/knowledge.service';
 import { CurrentOrg, Roles } from '../../../common/decorators';
 import {
   JwtAuthGuard,
@@ -27,7 +32,10 @@ import {
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('ai-agents')
 export class AgentsController {
-  constructor(private readonly service: AgentsService) {}
+  constructor(
+    private readonly service: AgentsService,
+    private readonly knowledge: AgentKnowledgeService,
+  ) {}
 
   @Post()
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
@@ -86,6 +94,42 @@ export class AgentsController {
     @Param('channelId') channelId: string,
   ) {
     return this.service.unassignChannel(orgId, id, channelId);
+  }
+
+  @Get(':id/knowledge')
+  @ApiOperation({ summary: 'Lista documentos da base de conhecimento do agente' })
+  listKnowledge(@CurrentOrg('id') orgId: string, @Param('id') id: string) {
+    return this.knowledge.list(orgId, id);
+  }
+
+  @Post(':id/knowledge')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({ summary: 'Anexa um documento à base do agente e indexa' })
+  uploadKnowledge(
+    @CurrentOrg('id') orgId: string,
+    @Param('id') id: string,
+    @UploadedFile()
+    file?: { buffer: Buffer; originalname?: string; mimetype?: string },
+  ) {
+    if (!file) throw new BadRequestException('file is required');
+    return this.knowledge.upload(orgId, id, file);
+  }
+
+  @Delete(':id/knowledge/:docId')
+  @Roles(OrgRole.OWNER, OrgRole.ADMIN)
+  @ApiOperation({ summary: 'Remove documento da base e do índice' })
+  removeKnowledge(
+    @CurrentOrg('id') orgId: string,
+    @Param('id') id: string,
+    @Param('docId') docId: string,
+  ) {
+    return this.knowledge.remove(orgId, id, docId);
   }
 
   @Get('watchdog/stats')

@@ -13,6 +13,7 @@ import { MediaUrlResolverService } from './runner/media-url-resolver.service';
 import { AgentRouterService } from './router/agent-router.service';
 import { AgentsService } from './agents/agents.service';
 import { AgentsController } from './agents/agents.controller';
+import { AgentKnowledgeService } from './knowledge/knowledge.service';
 import { ToolsCatalogService } from './catalog/tools.service';
 import { SkillsCatalogService } from './catalog/skills.service';
 import { AiCatalogController } from './catalog/catalog.controller';
@@ -56,6 +57,7 @@ import { AiProvidersModule } from './providers/providers.module';
     AiAgentRunnerService,
     AgentRouterService,
     AgentsService,
+    AgentKnowledgeService,
     ToolsCatalogService,
     SkillsCatalogService,
     CatalogSyncService,
