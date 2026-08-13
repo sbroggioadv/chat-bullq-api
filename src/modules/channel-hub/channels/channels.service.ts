@@ -46,6 +46,11 @@ export class ChannelsService {
     dto: CreateChannelDto,
     creator?: { userOrganizationId: string; role: OrgRole },
   ) {
+    if (dto.type === ChannelType.JARVIS) {
+      throw new BadRequestException(
+        'O canal Jarvis é criado automaticamente. Abra Falar com o Jarvis na barra lateral.',
+      );
+    }
     const effectiveVisibility = dto.visibility ?? 'PRIVATE';
     let channel = await this.repository.create({
       organizationId,

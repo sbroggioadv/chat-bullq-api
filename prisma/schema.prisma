@@ -27,6 +27,8 @@ enum ChannelType {
   WHATSAPP_ZAPPFY
   INSTAGRAM
   GMAIL
+  /// Canal interno do Jarvis — o agente que mora no BullQ (não é atendimento).
+  JARVIS
 }
 
 // ORG    = todos os membros da org enxergam

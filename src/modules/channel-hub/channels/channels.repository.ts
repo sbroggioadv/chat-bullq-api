@@ -21,6 +21,7 @@ export class ChannelsRepository {
       where: {
         organizationId,
         deletedAt: null,
+        type: { not: ChannelType.JARVIS },
         ...(accessibleIds !== undefined ? { id: { in: accessibleIds } } : {}),
       },
       orderBy: { createdAt: 'desc' },

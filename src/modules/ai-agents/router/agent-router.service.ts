@@ -299,6 +299,14 @@ export class AgentRouterService {
       return { handle: false, reason: 'ORG_PANIC_MODE' };
     }
 
+    const jarvisChannel = await this.prisma.channel.findUnique({
+      where: { id: conversation.channelId },
+      select: { type: true },
+    });
+    if (jarvisChannel?.type === 'JARVIS') {
+      return { handle: false, reason: 'JARVIS_DESK' };
+    }
+
     const convOverride = conversation.aiEnabled;
 
     if (convOverride === false) {

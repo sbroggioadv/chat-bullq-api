@@ -93,6 +93,7 @@ export class WatchdogCronService implements OnModuleInit {
         // tri-state: null ou true = OK, false = humano desligou IA
         OR: [{ aiEnabled: null }, { aiEnabled: true }],
         organization: { watchdogEnabled: true },
+        channel: { type: { not: 'JARVIS' } },
       },
       select: {
         id: true,

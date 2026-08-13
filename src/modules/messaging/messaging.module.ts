@@ -7,6 +7,7 @@ import { AiProvidersModule } from '../ai-agents/providers/providers.module';
 import { WatchdogModule } from '../routing/watchdog/watchdog.module';
 import { SegmentsModule } from '../segments/segments.module';
 import { ProjectsModule } from '../projects/projects.module';
+import { JarvisDeskModule } from '../jarvis-desk/jarvis-desk.module';
 import { IdempotencyService } from './pipeline/idempotency.service';
 import { ContactResolverService } from './pipeline/contact-resolver.service';
 import { ConversationResolverService } from './pipeline/conversation-resolver.service';
@@ -42,6 +43,7 @@ import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service
     WatchdogModule,
     SegmentsModule,
     ProjectsModule,
+    JarvisDeskModule,
   ],
   controllers: [ConversationsController, MessagesController, ContactsController],
   providers: [

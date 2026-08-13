@@ -56,6 +56,11 @@ export class WatchdogService {
 
     if (!conversation) return;
     if (!conversation.organization.watchdogEnabled) return;
+    const jarvis = await this.prisma.channel.findUnique({
+      where: { id: conversation.channelId },
+      select: { type: true },
+    });
+    if (jarvis?.type === 'JARVIS') return;
     if (conversation.aiEnabled === false) {
       // Humano desativou IA explicitamente — watchdog respeita.
       return;

@@ -11,9 +11,18 @@ export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getOverview(organizationId: string, range: DateRange) {
-    const where = { organizationId, createdAt: { gte: range.from, lte: range.to } };
+    const customerChannel = { type: { not: 'JARVIS' as const } };
+    const where = {
+      organizationId,
+      createdAt: { gte: range.from, lte: range.to },
+      channel: customerChannel,
+    };
     const prevFrom = new Date(range.from.getTime() - (range.to.getTime() - range.from.getTime()));
-    const prevWhere = { organizationId, createdAt: { gte: prevFrom, lte: range.from } };
+    const prevWhere = {
+      organizationId,
+      createdAt: { gte: prevFrom, lte: range.from },
+      channel: customerChannel,
+    };
 
     const [
       totalConversations,
@@ -30,17 +39,40 @@ export class DashboardService {
     ] = await this.prisma.$transaction([
       this.prisma.conversation.count({ where }),
       this.prisma.conversation.count({ where: prevWhere }),
-      this.prisma.conversation.count({ where: { organizationId, status: 'OPEN' } }),
-      this.prisma.conversation.count({ where: { organizationId, status: 'PENDING' } }),
-      this.prisma.conversation.count({ where: { organizationId, status: 'WAITING' } }),
-      this.prisma.conversation.count({ where: { organizationId, status: 'BOT' } }),
       this.prisma.conversation.count({
-        where: { organizationId, isStuck: true, deletedAt: null },
+        where: { organizationId, status: 'OPEN', channel: customerChannel },
       }),
-      this.prisma.message.count({ where: { conversation: { organizationId }, createdAt: { gte: range.from, lte: range.to } } }),
-      this.prisma.message.count({ where: { conversation: { organizationId }, createdAt: { gte: prevFrom, lte: range.from } } }),
       this.prisma.conversation.count({
-        where: { organizationId, status: 'CLOSED', closedAt: { gte: range.from, lte: range.to } },
+        where: { organizationId, status: 'PENDING', channel: customerChannel },
+      }),
+      this.prisma.conversation.count({
+        where: { organizationId, status: 'WAITING', channel: customerChannel },
+      }),
+      this.prisma.conversation.count({
+        where: { organizationId, status: 'BOT', channel: customerChannel },
+      }),
+      this.prisma.conversation.count({
+        where: { organizationId, isStuck: true, deletedAt: null, channel: customerChannel },
+      }),
+      this.prisma.message.count({
+        where: {
+          conversation: { organizationId, channel: customerChannel },
+          createdAt: { gte: range.from, lte: range.to },
+        },
+      }),
+      this.prisma.message.count({
+        where: {
+          conversation: { organizationId, channel: customerChannel },
+          createdAt: { gte: prevFrom, lte: range.from },
+        },
+      }),
+      this.prisma.conversation.count({
+        where: {
+          organizationId,
+          status: 'CLOSED',
+          closedAt: { gte: range.from, lte: range.to },
+          channel: customerChannel,
+        },
       }),
       this.prisma.conversation.count({
         where: { organizationId, status: 'CLOSED', closedAt: { gte: prevFrom, lte: range.from } },

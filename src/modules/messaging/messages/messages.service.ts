@@ -9,6 +9,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import {
+  ChannelType,
   MessageDirection,
   MessageContentType,
   MessageStatus,
@@ -25,6 +26,7 @@ import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import { SegmentReadService } from '../../segments/segment-read.service';
 import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
 import { MediaResolverService } from './media-resolver.service';
+import { JarvisDeskRunner } from '../../jarvis-desk/jarvis-desk.runner';
 
 @Injectable()
 export class MessagesService {
@@ -39,6 +41,7 @@ export class MessagesService {
     private readonly adapterRegistry: ChannelAdapterRegistry,
     private readonly mediaResolver: MediaResolverService,
     private readonly segmentRead: SegmentReadService,
+    private readonly jarvisDesk: JarvisDeskRunner,
     @InjectQueue('outbound-messages') private readonly outboundQueue: Queue,
   ) {}
 
@@ -62,6 +65,8 @@ export class MessagesService {
       throw new ForbiddenException();
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
+
+    const isJarvis = conversation.channel.type === ChannelType.JARVIS;
 
     const contactChannel = conversation.contact.channels.find(
       (cc) => cc.channelId === conversation.channelId,
@@ -101,10 +106,10 @@ export class MessagesService {
       if (!original) {
         throw new NotFoundException('Reply target message not found');
       }
-      if (!original.externalId) {
+      if (!original.externalId && !isJarvis) {
         // Sem externalId não dá pra mandar reply nativo (provider não
         // conhece nossa msg interna). Joga erro claro em vez de mandar
-        // mensagem sem reply silenciosamente.
+        // mensagem sem reply silenciosamente. Canal Jarvis é só interno.
         throw new ForbiddenException(
           'Mensagem citada ainda não foi sincronizada com o provider — tente novamente em alguns segundos.',
         );
@@ -115,7 +120,7 @@ export class MessagesService {
         (typeof c.caption === 'string' && c.caption) ||
         `[${original.type.toLowerCase()}]`;
       replyTo = {
-        externalMessageId: original.externalId,
+        externalMessageId: original.externalId ?? original.id,
         previewText,
         senderName:
           original.direction === 'INBOUND'
@@ -169,6 +174,7 @@ export class MessagesService {
       select: { aiAutoDisableOnHuman: true },
     });
     const shouldDisableAi =
+      !isJarvis &&
       conversation.aiEnabled !== false &&
       conversation.aiEnabled !== true &&
       (org?.aiAutoDisableOnHuman ?? true);
@@ -287,6 +293,25 @@ export class MessagesService {
           text: `*${sender.name}*\n${outboundContent.text}`,
         };
       }
+    }
+
+    if (isJarvis) {
+      const sent = await this.repository.updateStatus(message.id, {
+        status: MessageStatus.SENT,
+        sentAt: new Date(),
+      });
+      this.jarvisDesk
+        .handleOperatorMessage({
+          organizationId,
+          conversationId: conversation.id,
+          trigger: sent,
+        })
+        .catch((err) =>
+          this.logger.error(
+            `Jarvis desk runner failed: ${(err as Error).message}`,
+          ),
+        );
+      return sent;
     }
 
     await this.outboundQueue.add(

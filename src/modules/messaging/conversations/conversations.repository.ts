@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { ConversationStatus, Prisma } from '@prisma/client';
+import { ChannelType, ConversationStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 
 export interface InboxFilters {
@@ -67,6 +67,7 @@ export class ConversationsRepository {
       // removed and re-added (same provider token, new DB row), the old channel's
       // conversations kept showing up as phantom duplicates of the live ones.
       deletedAt: null,
+      channel: { type: { not: ChannelType.JARVIS } },
     };
 
     // Archive scope. The default inbox hides archived conversations; an

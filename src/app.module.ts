@@ -31,6 +31,7 @@ import { AutomationsModule } from './modules/automations/automations.module';
 import { HealthModule } from './modules/health/health.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { OrgCredentialsModule } from './modules/org-credentials/org-credentials.module';
+import { JarvisDeskModule } from './modules/jarvis-desk/jarvis-desk.module';
 // ProductsModule removido — catálogo agora vive no Trivapp e é consumido
 // via skill HTTP getProductPitch + CatalogSyncService. Tabela `products`
 // fica órfã no DB (cleanup futuro). Não importar aqui.
@@ -57,6 +58,7 @@ import redisConfig, { buildRedisConnectionOptions } from './config/redis.config'
     // OrgCredentialsModule is @Global — register early so ai-agents
     // resolver can inject OrgCredentialsService without circular imports.
     OrgCredentialsModule,
+    JarvisDeskModule,
     ChannelAccessModule,
     AuthModule,
     UsersModule,
