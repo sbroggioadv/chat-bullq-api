@@ -50,25 +50,36 @@ export class ConversationsService {
    */
   private async attachProjects<
     T extends {
+      id?: string;
       organizationId: string;
       isGroup: boolean;
       channelId: string;
       contact?: { channels?: { channelId: string; externalId: string }[] } | null;
     },
   >(organizationId: string, conversations: T[]): Promise<T[]> {
+    const ids = conversations.map((c) => c.id).filter((id): id is string => !!id);
+    const byConv = ids.length
+      ? await this.projects.attachByConversationIds(organizationId, ids)
+      : new Map();
     const jidByConv = new Map<T, string>();
     for (const c of conversations) {
       if (!c.isGroup) continue;
       const jid = deriveGroupJid(c);
       if (jid) jidByConv.set(c, jid);
     }
-    if (jidByConv.size === 0) return conversations;
-    const map = await this.projects.attachByJids(
-      organizationId,
-      Array.from(new Set(jidByConv.values())),
-    );
-    for (const [conv, jid] of jidByConv) {
-      (conv as Record<string, unknown>).project = map.get(jid) ?? null;
+    const byJid =
+      jidByConv.size > 0
+        ? await this.projects.attachByJids(
+            organizationId,
+            Array.from(new Set(jidByConv.values())),
+          )
+        : new Map();
+    for (const conv of conversations) {
+      const linked = (conv.id && byConv.get(conv.id)) || null;
+      const legacy = jidByConv.has(conv)
+        ? byJid.get(jidByConv.get(conv)!) ?? null
+        : null;
+      (conv as Record<string, unknown>).project = linked ?? legacy ?? null;
     }
     return conversations;
   }
@@ -145,7 +156,7 @@ export class ConversationsService {
         ? representativeIds.filter((id) => filters.conversationIds!.includes(id))
         : representativeIds;
       resolvedChannelIds = memberChannelIds;
-      isGroupResolved = true;
+      isGroupResolved = !!filters.segmentId;
       if (conversationIds.length === 0) {
         return {
           conversations: [],

@@ -530,39 +530,93 @@ model SegmentChannel {
   @@map("segment_channels")
 }
 
-// ─── Projects (grupo = projeto) ──────────────────
-//
-// Cada grupo de WhatsApp é tratado como um Projeto perene. Um grupo tem N
-// conversas/contatos (um por canal-membro); o invariante estável é o JID do
-// grupo (contact_channels.external_id, "...@g.us"). Por isso o Project é keyed
-// por (organizationId, groupJid) — NÃO por conversa. A ligação projeto↔conversas
-// é feita por leitura (derivando o JID), igual ao SegmentReadService.
-//
-// Extensibilidade: colunas tipadas para o que é estável/filtrável; o resto
-// (campos que vão sendo adicionados) vive em `metadata` (merge no update),
-// sem migration por campo — mesmo padrão de Product/Card/Contact.
+// ─── Projects (dossiê — SPEC-005) ────────────────
+// Projeto é independente do grupo. groupJid legado fica opcional.
 model Project {
   id                String    @id @default(cuid())
   organizationId    String    @map("organization_id")
-  groupJid          String    @map("group_jid")
+  groupJid          String?   @map("group_jid")
   name              String
+  description       String?
   hoppeId           String?   @map("hoppe_id")
   responsibleUserId String?   @map("responsible_user_id")
-  status            String?
+  status            String?   @default("TODO")
   metadata          Json      @default("{}")
   isActive          Boolean   @default(true) @map("is_active")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
   deletedAt         DateTime? @map("deleted_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  responsible  User?        @relation("ProjectResponsible", fields: [responsibleUserId], references: [id], onDelete: SetNull)
+  organization  Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  responsible   User?                  @relation("ProjectResponsible", fields: [responsibleUserId], references: [id], onDelete: SetNull)
+  tasks         ProjectTask[]
+  attachments   ProjectAttachment[]
+  contacts      ProjectContact[]
+  conversations ProjectConversation[]
 
-  @@unique([organizationId, groupJid], name: "uq_project_org_jid")
   @@index([organizationId, hoppeId], name: "idx_project_org_hoppe")
   @@index([organizationId, responsibleUserId], name: "idx_project_org_responsible")
   @@index([organizationId, status], name: "idx_project_org_status")
   @@map("projects")
+}
+
+model ProjectTask {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  title     String
+  done      Boolean  @default(false)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, sortOrder], name: "idx_project_task_order")
+  @@map("project_tasks")
+}
+
+model ProjectAttachment {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  messageId      String?  @map("message_id")
+  conversationId String?  @map("conversation_id")
+  label          String
+  fileName       String?  @map("file_name")
+  mimeType       String?  @map("mime_type")
+  url            String?
+  preview        String?
+  createdById    String?  @map("created_by_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId], name: "idx_project_attachment_project")
+  @@map("project_attachments")
+}
+
+model ProjectContact {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  contactId String   @map("contact_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, contactId], name: "uq_project_contact")
+  @@map("project_contacts")
+}
+
+model ProjectConversation {
+  id             String   @id @default(cuid())
+  projectId      String   @map("project_id")
+  conversationId String   @map("conversation_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, conversationId], name: "uq_project_conversation")
+  @@map("project_conversations")
 }
 
 model ChannelAgent {
@@ -667,6 +721,7 @@ model Contact {
   tags          ContactTag[]
   aiMemories    AiAgentMemory[]
   cards         Card[]           @relation("CardContact")
+  projectLinks  ProjectContact[]
 
   @@index([organizationId, phone], name: "idx_contact_org_phone")
   @@index([organizationId, email], name: "idx_contact_org_email")
@@ -769,6 +824,7 @@ model Conversation {
   aiPendingActions AiPendingAction[]
   reads            ConversationRead[]
   cards            Card[]                 @relation("CardConversation")
+  projectLinks     ProjectConversation[]
 
   @@index([organizationId, status], name: "idx_conv_org_status")
   @@index([organizationId, assignedToId], name: "idx_conv_org_agent")
