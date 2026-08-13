@@ -114,6 +114,18 @@ export class HealthController {
           this.config.get<string>('ZHIPU_API_KEY') ??
           process.env.ZHIPU_API_KEY,
       ),
+      fugu: Boolean(
+        this.config.get<string>('FUGU_API_KEY') ??
+          process.env.FUGU_API_KEY ??
+          this.config.get<string>('SAKANA_API_KEY') ??
+          process.env.SAKANA_API_KEY,
+      ),
+      qwen: Boolean(
+        this.config.get<string>('QWEN_API_KEY') ??
+          process.env.QWEN_API_KEY ??
+          this.config.get<string>('DASHSCOPE_API_KEY') ??
+          process.env.DASHSCOPE_API_KEY,
+      ),
     };
 
     let orgsWithCustomCredentials = 0;

@@ -13,6 +13,12 @@ import { AiProvider } from '@prisma/client';
  *       Aceita a API key como Bearer direto — o JWT do SDK `zhipuai` legado
  *       NÃO é necessário. Endpoint China: https://open.bigmodel.cn/api/paas/v4
  *       (usar via baseUrl custom por credencial).
+ *   - Sakana Fugu: https://api.sakana.ai/v1
+ *       OpenAI-compat (console.sakana.ai). Modelo de atendimento: fugu-ultra.
+ *   - Alibaba Qwen / DashScope (internacional): 
+ *       https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+ *       China: https://dashscope.aliyuncs.com/compatible-mode/v1
+ *       Modelo de atendimento: qwen3.7-max.
  *
  * Providers que NÃO são OpenAI-compatible (ANTHROPIC, GEMINI) não têm entrada
  * aqui — usam URL própria hardcoded no seu adapter.
@@ -21,6 +27,8 @@ export const OPENAI_COMPATIBLE_DEFAULT_BASE_URL: Partial<Record<AiProvider, stri
   [AiProvider.OPENAI]: 'https://api.openai.com/v1',
   [AiProvider.KIMI]: 'https://api.moonshot.ai/v1',
   [AiProvider.ZAI]: 'https://api.z.ai/api/paas/v4',
+  [AiProvider.FUGU]: 'https://api.sakana.ai/v1',
+  [AiProvider.QWEN]: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
 };
 
 /**

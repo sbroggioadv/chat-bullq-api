@@ -46,6 +46,42 @@ describe('credential-tester — missing baseUrl guard', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('FUGU sem baseUrl e sem default → erro explícito, sem fetch', async () => {
+    mockedDefaultBaseUrlFor.mockReturnValue(null);
+    const res = await testProviderKey(AiProvider.FUGU, 'sk-fugu', logger, undefined);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/Missing base URL configuration for FUGU/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('QWEN sem baseUrl e sem default → erro explícito, sem fetch', async () => {
+    mockedDefaultBaseUrlFor.mockReturnValue(null);
+    const res = await testProviderKey(AiProvider.QWEN, 'sk-qwen', logger, undefined);
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/Missing base URL configuration for QWEN/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('FUGU usa o default Sakana → GET {default}/models com Bearer', async () => {
+    mockedDefaultBaseUrlFor.mockReturnValue('https://api.sakana.ai/v1');
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });
+    const res = await testProviderKey(AiProvider.FUGU, 'sk-fugu', logger, undefined);
+    expect(res.ok).toBe(true);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.sakana.ai/v1/models');
+  });
+
+  it('QWEN usa o default DashScope intl → GET {default}/models com Bearer', async () => {
+    mockedDefaultBaseUrlFor.mockReturnValue(
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+    );
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });
+    const res = await testProviderKey(AiProvider.QWEN, 'sk-qwen', logger, undefined);
+    expect(res.ok).toBe(true);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models',
+    );
+  });
+
   it('KIMI usa o default resolvido → GET {default}/models com Bearer', async () => {
     mockedDefaultBaseUrlFor.mockReturnValue('https://api.moonshot.ai/v1');
     fetchMock.mockResolvedValueOnce({ ok: true, status: 200 });

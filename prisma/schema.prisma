@@ -301,12 +301,16 @@ model ThemePreset {
 /// adicionado em S18/W2 pra dar opção a orgs que preferem Google. KIMI
 /// (Moonshot) e ZAI (Zhipu/GLM) são providers OpenAI-compatible adicionados
 /// depois — reusam o OpenAiCompatibleAdapter via baseUrl próprio.
+/// FUGU (Sakana Fugu Ultra) e QWEN (Alibaba Qwen 3.7 Max) são os providers
+/// de atendimento: Fugu em api.sakana.ai, Qwen em DashScope compatible-mode.
 enum AiProvider {
   ANTHROPIC
   OPENAI
   GEMINI
   KIMI
   ZAI
+  FUGU
+  QWEN
 }
 
 /// Cada "capability" representa uma função IA distinta que pode rotear

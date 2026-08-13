@@ -37,6 +37,8 @@ describe('OrgCredentialsService.updateRouting — allowlist fail-closed', () => 
       AiProvider.KIMI,
       AiProvider.ZAI,
       AiProvider.ANTHROPIC,
+      AiProvider.FUGU,
+      AiProvider.QWEN,
     ])('rejeita %s', async (provider) => {
       await expect(update(AiCapability.TRANSCRIPTION, provider)).rejects.toThrow(
         ConflictException,
@@ -51,7 +53,14 @@ describe('OrgCredentialsService.updateRouting — allowlist fail-closed', () => 
   });
 
   describe('EMBEDDINGS só permite OPENAI', () => {
-    it.each([AiProvider.GEMINI, AiProvider.KIMI, AiProvider.ZAI, AiProvider.ANTHROPIC])(
+    it.each([
+      AiProvider.GEMINI,
+      AiProvider.KIMI,
+      AiProvider.ZAI,
+      AiProvider.ANTHROPIC,
+      AiProvider.FUGU,
+      AiProvider.QWEN,
+    ])(
       'rejeita %s',
       async (provider) => {
         await expect(update(AiCapability.EMBEDDINGS, provider)).rejects.toThrow(
@@ -67,8 +76,10 @@ describe('OrgCredentialsService.updateRouting — allowlist fail-closed', () => 
     });
   });
 
-  describe('LLM_AGENT permanece flexível (KIMI/ZAI/GEMINI válidos)', () => {
+  describe('LLM_AGENT aceita Fugu Ultra e Qwen 3.7 Max (e legado)', () => {
     it.each([
+      AiProvider.FUGU,
+      AiProvider.QWEN,
       AiProvider.ANTHROPIC,
       AiProvider.OPENAI,
       AiProvider.GEMINI,

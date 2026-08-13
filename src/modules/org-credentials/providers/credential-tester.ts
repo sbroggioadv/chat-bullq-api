@@ -38,6 +38,8 @@ export async function testProviderKey(
       case AiProvider.OPENAI:
       case AiProvider.KIMI:
       case AiProvider.ZAI:
+      case AiProvider.FUGU:
+      case AiProvider.QWEN:
         return await testOpenAiCompatible(
           provider,
           apiKey,

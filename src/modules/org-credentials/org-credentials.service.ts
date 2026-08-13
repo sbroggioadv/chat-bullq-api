@@ -270,7 +270,7 @@ export class OrgCredentialsService {
     // (defensive — não deveria acontecer pós-migration).
     const map = new Map(rows.map((r) => [r.capability, r]));
     const defaults: Record<AiCapability, AiProvider> = {
-      LLM_AGENT: AiProvider.ZAI,
+      LLM_AGENT: AiProvider.FUGU,
       TRANSCRIPTION: AiProvider.OPENAI,
       EMBEDDINGS: AiProvider.OPENAI,
     };
@@ -328,8 +328,10 @@ export class OrgCredentialsService {
     const previousMap = new Map(previous.map((p) => [p.capability, p]));
 
     const results = await this.prisma.$transaction(
-      entries.map((entry) =>
-        this.prisma.organizationCapabilityRouting.upsert({
+      entries.map((entry) => {
+        const modelOverride =
+          entry.modelOverride ?? defaultLlmModelOverride(entry.capability, entry.providerSelected);
+        return this.prisma.organizationCapabilityRouting.upsert({
           where: {
             organizationId_capability: {
               organizationId,
@@ -340,14 +342,14 @@ export class OrgCredentialsService {
             organizationId,
             capability: entry.capability,
             providerSelected: entry.providerSelected,
-            modelOverride: entry.modelOverride,
+            modelOverride,
           },
           update: {
             providerSelected: entry.providerSelected,
-            modelOverride: entry.modelOverride,
+            modelOverride,
           },
-        }),
-      ),
+        });
+      }),
     );
 
     // Audit per-entry pra trail granular
@@ -377,4 +379,14 @@ export class OrgCredentialsService {
 
     return results;
   }
+}
+
+function defaultLlmModelOverride(
+  capability: AiCapability,
+  provider: AiProvider,
+): string | undefined {
+  if (capability !== AiCapability.LLM_AGENT) return undefined;
+  if (provider === AiProvider.FUGU) return 'fugu-ultra';
+  if (provider === AiProvider.QWEN) return 'qwen3.7-max';
+  return undefined;
 }

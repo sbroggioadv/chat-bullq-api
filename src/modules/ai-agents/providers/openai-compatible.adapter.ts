@@ -23,6 +23,8 @@ export interface OpenAiCompatibleConfig {
   providerLabel: string;
   /** Model usado quando `normalizeModelId` não consegue resolver o input. */
   defaultModel: string;
+  /** Fugu Ultra rejeita `temperature` no schema (models.dev). */
+  omitTemperature?: boolean;
   /** Normaliza o `modelId` recebido pro id que o provider aceita. */
   normalizeModelId: (id: string) => string;
   /**
@@ -75,7 +77,7 @@ export class OpenAiCompatibleAdapter {
       model: modelId,
       messages,
       max_tokens: req.maxTokens ?? 2048,
-      temperature: req.temperature ?? 0.7,
+      ...(cfg.omitTemperature ? {} : { temperature: req.temperature ?? 0.7 }),
       ...(tools && tools.length > 0 ? { tools } : {}),
       ...(req.modelParams ?? {}),
     };

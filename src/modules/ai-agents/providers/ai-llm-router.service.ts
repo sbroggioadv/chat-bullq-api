@@ -6,6 +6,8 @@ import { OpenAiLlmAdapter } from './openai-llm.adapter';
 import { GeminiLlmAdapter } from './gemini-llm.adapter';
 import { KimiLlmAdapter } from './kimi-llm.adapter';
 import { ZaiLlmAdapter } from './zai-llm.adapter';
+import { FuguLlmAdapter } from './fugu-llm.adapter';
+import { QwenLlmAdapter } from './qwen-llm.adapter';
 import { ProviderResolverService } from './provider-resolver.service';
 
 /**
@@ -30,6 +32,8 @@ export class AiLlmRouterService {
     private readonly gemini: GeminiLlmAdapter,
     private readonly kimi: KimiLlmAdapter,
     private readonly zai: ZaiLlmAdapter,
+    private readonly fugu: FuguLlmAdapter,
+    private readonly qwen: QwenLlmAdapter,
   ) {}
 
   async complete(req: LlmCompletionRequest): Promise<LlmCompletionResponse> {
@@ -42,7 +46,7 @@ export class AiLlmRouterService {
 
     if (resolved.source === 'NONE') {
       throw new InternalServerErrorException(
-        `No LLM credential available for org=${req.organizationId} (neither org-level nor env). Configure ZAI_API_KEY, ZHIPU_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY env, or set org credential at /settings/ai-credentials`,
+        `No LLM credential available for org=${req.organizationId} (neither org-level nor env). Configure FUGU_API_KEY / SAKANA_API_KEY or QWEN_API_KEY / DASHSCOPE_API_KEY, or set org credential at /settings/ai-credentials`,
       );
     }
 
@@ -78,6 +82,20 @@ export class AiLlmRouterService {
 
       case AiProvider.ZAI:
         return this.zai.complete(
+          effectiveReq,
+          resolved.apiKey!,
+          resolved.baseUrl ?? undefined,
+        );
+
+      case AiProvider.FUGU:
+        return this.fugu.complete(
+          effectiveReq,
+          resolved.apiKey!,
+          resolved.baseUrl ?? undefined,
+        );
+
+      case AiProvider.QWEN:
+        return this.qwen.complete(
           effectiveReq,
           resolved.apiKey!,
           resolved.baseUrl ?? undefined,

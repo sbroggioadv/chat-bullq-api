@@ -185,6 +185,22 @@ export class ProviderResolverService implements OnModuleInit {
           process.env.ZHIPU_API_KEY ??
           null
         );
+      case AiProvider.FUGU:
+        return (
+          this.config.get<string>('FUGU_API_KEY') ??
+          process.env.FUGU_API_KEY ??
+          this.config.get<string>('SAKANA_API_KEY') ??
+          process.env.SAKANA_API_KEY ??
+          null
+        );
+      case AiProvider.QWEN:
+        return (
+          this.config.get<string>('QWEN_API_KEY') ??
+          process.env.QWEN_API_KEY ??
+          this.config.get<string>('DASHSCOPE_API_KEY') ??
+          process.env.DASHSCOPE_API_KEY ??
+          null
+        );
       default:
         return null;
     }
@@ -248,6 +264,22 @@ export class ProviderResolverService implements OnModuleInit {
           process.env.ZHIPU_BASE_URL ??
           null
         );
+      case AiProvider.FUGU:
+        return (
+          this.config.get<string>('FUGU_BASE_URL') ??
+          process.env.FUGU_BASE_URL ??
+          this.config.get<string>('SAKANA_BASE_URL') ??
+          process.env.SAKANA_BASE_URL ??
+          null
+        );
+      case AiProvider.QWEN:
+        return (
+          this.config.get<string>('QWEN_BASE_URL') ??
+          process.env.QWEN_BASE_URL ??
+          this.config.get<string>('DASHSCOPE_BASE_URL') ??
+          process.env.DASHSCOPE_BASE_URL ??
+          null
+        );
       default:
         return null;
     }
@@ -256,7 +288,7 @@ export class ProviderResolverService implements OnModuleInit {
   private defaultProvider(capability: AiCapability): AiProvider {
     switch (capability) {
       case AiCapability.LLM_AGENT:
-        return AiProvider.ZAI;
+        return AiProvider.FUGU;
       case AiCapability.TRANSCRIPTION:
         return AiProvider.OPENAI;
       case AiCapability.EMBEDDINGS:

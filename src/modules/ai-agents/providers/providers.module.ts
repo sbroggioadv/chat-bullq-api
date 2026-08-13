@@ -9,6 +9,8 @@ import { OpenAiCompatibleAdapter } from './openai-compatible.adapter';
 import { OpenAiLlmAdapter } from './openai-llm.adapter';
 import { ProviderResolverService } from './provider-resolver.service';
 import { ZaiLlmAdapter } from './zai-llm.adapter';
+import { FuguLlmAdapter } from './fugu-llm.adapter';
+import { QwenLlmAdapter } from './qwen-llm.adapter';
 
 /**
  * Módulo agregador dos providers de IA (S18/W2).
@@ -32,6 +34,8 @@ import { ZaiLlmAdapter } from './zai-llm.adapter';
     GeminiLlmAdapter,
     KimiLlmAdapter,
     ZaiLlmAdapter,
+    FuguLlmAdapter,
+    QwenLlmAdapter,
     AiLlmRouterService,
   ],
   exports: [
@@ -42,6 +46,8 @@ import { ZaiLlmAdapter } from './zai-llm.adapter';
     GeminiLlmAdapter,
     KimiLlmAdapter,
     ZaiLlmAdapter,
+    FuguLlmAdapter,
+    QwenLlmAdapter,
   ],
 })
 export class AiProvidersModule {}

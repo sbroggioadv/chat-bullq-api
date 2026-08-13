@@ -47,6 +47,11 @@ export const DEFAULT_ALLOWED_PROVIDER_HOSTS: ReadonlySet<string> = new Set<strin
   'open.bigmodel.cn',
   'openrouter.ai',
   'generativelanguage.googleapis.com',
+  'api.sakana.ai',
+  'dashscope-intl.aliyuncs.com',
+  'dashscope.aliyuncs.com',
+  'dashscope-us.aliyuncs.com',
+  'token-plan.ap-southeast-1.maas.aliyuncs.com',
 ]);
 
 /**
