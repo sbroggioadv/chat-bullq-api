@@ -84,8 +84,16 @@ export class JarvisDeskService {
         contactId,
         deletedAt: null,
       },
-      select: { id: true },
+      select: { id: true, status: true, isArchived: true },
     });
+
+    if (conversation && (conversation.status !== ConversationStatus.OPEN || conversation.isArchived)) {
+      conversation = await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { status: ConversationStatus.OPEN, isArchived: false },
+        select: { id: true, status: true, isArchived: true },
+      });
+    }
 
     if (!conversation) {
       conversation = await this.prisma.conversation.create({
@@ -97,7 +105,7 @@ export class JarvisDeskService {
           aiEnabled: true,
           subject: 'Jarvis',
         },
-        select: { id: true },
+        select: { id: true, status: true, isArchived: true },
       });
       await this.seedWelcome(conversation.id);
       this.logger.log(`Jarvis desk created org=${organizationId} conv=${conversation.id}`);

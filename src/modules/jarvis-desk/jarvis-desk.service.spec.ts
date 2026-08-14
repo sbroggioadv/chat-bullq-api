@@ -16,7 +16,11 @@ describe('JarvisDeskService.ensureDesk', () => {
       },
       contact: { create: jest.fn() },
       conversation: {
-        findFirst: jest.fn().mockResolvedValue({ id: 'cv1' }),
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'cv1',
+          status: 'OPEN',
+          isArchived: false,
+        }),
         create: jest.fn(),
         update: jest.fn(),
       },
@@ -31,6 +35,42 @@ describe('JarvisDeskService.ensureDesk', () => {
     });
     expect(prisma.channel.create).not.toHaveBeenCalled();
     expect(prisma.conversation.create).not.toHaveBeenCalled();
+  });
+
+  it('reabre conversa encerrada ou arquivada', async () => {
+    const update = jest.fn().mockResolvedValue({
+      id: 'cv1',
+      status: 'OPEN',
+      isArchived: false,
+    });
+    const prisma = {
+      channel: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'ch1' }),
+        create: jest.fn(),
+      },
+      contactChannel: {
+        findFirst: jest.fn().mockResolvedValue({ contact: { id: 'ct1' } }),
+      },
+      contact: { create: jest.fn() },
+      conversation: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'cv1',
+          status: 'CLOSED',
+          isArchived: true,
+        }),
+        create: jest.fn(),
+        update,
+      },
+      message: { create: jest.fn() },
+    } as unknown as PrismaService;
+
+    const desk = await new JarvisDeskService(prisma).ensureDesk('org1');
+    expect(desk.conversationId).toBe('cv1');
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { status: 'OPEN', isArchived: false },
+      }),
+    );
   });
 
   it('reconhece ChannelType.JARVIS', () => {
