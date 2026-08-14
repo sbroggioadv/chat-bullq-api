@@ -13,6 +13,9 @@ import { JARVIS_TOOL_DEFINITIONS, JarvisDeskTools } from './jarvis-desk.tools';
 
 const MAX_ITERS = 6;
 const MAX_HISTORY = 24;
+const LLM_CALL_TIMEOUT_MS = 25_000;
+const RUN_BUDGET_MS = 50_000;
+const TYPING_ETA_MS = 25_000;
 
 @Injectable()
 export class JarvisDeskRunner {
@@ -31,6 +34,8 @@ export class JarvisDeskRunner {
     trigger: Message;
   }): Promise<void> {
     const { organizationId, conversationId, trigger } = params;
+    this.emitTyping(conversationId);
+    const startedAt = Date.now();
     try {
       const history = await this.prisma.message.findMany({
         where: { conversationId },
@@ -56,13 +61,21 @@ export class JarvisDeskRunner {
 
       let reply = '';
       for (let i = 0; i < MAX_ITERS; i += 1) {
-        const result = await this.llm.complete({
-          organizationId,
-          modelId: 'fugu-ultra',
-          messages,
-          tools: JARVIS_TOOL_DEFINITIONS,
-          maxTokens: 1200,
-        });
+        if (Date.now() - startedAt > RUN_BUDGET_MS) {
+          this.logger.warn(`Jarvis desk budget exceeded conv=${conversationId}`);
+          break;
+        }
+        const result = await withTimeout(
+          this.llm.complete({
+            organizationId,
+            modelId: 'fugu-ultra',
+            messages,
+            tools: JARVIS_TOOL_DEFINITIONS,
+            maxTokens: 1200,
+          }),
+          LLM_CALL_TIMEOUT_MS,
+          'Jarvis LLM',
+        );
 
         if (result.stopReason === 'tool_calls' && result.message.toolCalls?.length) {
           messages.push(result.message);
@@ -122,7 +135,10 @@ export class JarvisDeskRunner {
       where: { id: conversationId },
       data: { lastMessageAt: new Date() },
     });
-    this.realtime.emitToConversation(conversationId, 'message:new', { message });
+    this.realtime.emitToConversation(conversationId, 'message:new', {
+      message,
+      conversationId,
+    });
     const conv = await this.prisma.conversation.findUnique({
       where: { id: conversationId },
       select: { channelId: true, contactId: true },
@@ -135,6 +151,30 @@ export class JarvisDeskRunner {
       });
     }
   }
+
+  private emitTyping(conversationId: string) {
+    this.realtime.emitToConversation(conversationId, 'ai:typing', {
+      agentId: 'jarvis',
+      agentName: 'Jarvis',
+      etaMs: TYPING_ETA_MS,
+      conversationId,
+    });
+  }
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer!));
 }
 
 function preview(content: unknown): string {

@@ -69,6 +69,7 @@ describe('OpenAiCompatibleAdapter', () => {
     expect(url).toBe('https://api.example.com/v1/chat/completions');
     expect(init.method).toBe('POST');
     expect(init.headers.Authorization).toBe('Bearer sk-test-key');
+    expect(init.signal).toBeDefined();
     expect(out.message.content).toBe('olá');
     expect(out.stopReason).toBe('stop');
     expect(out.usage.inputTokens).toBe(10);

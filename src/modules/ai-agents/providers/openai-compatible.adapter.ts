@@ -93,10 +93,16 @@ export class OpenAiCompatibleAdapter {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        // Sem isso uma LLM presa deixa o Jarvis/atendimento mudo pra sempre.
+        signal: AbortSignal.timeout(60_000),
       });
     } catch (err) {
+      const name = (err as Error).name;
+      const timedOut = name === 'TimeoutError' || name === 'AbortError';
       throw new InternalServerErrorException(
-        `${cfg.providerLabel} request failed: ${(err as Error).message}`,
+        timedOut
+          ? `${cfg.providerLabel} request timed out after 60s`
+          : `${cfg.providerLabel} request failed: ${(err as Error).message}`,
       );
     }
 
