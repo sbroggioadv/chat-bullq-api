@@ -66,7 +66,7 @@ export class JarvisDeskRunner {
           break;
         }
         const result = await withTimeout(
-          this.llm.complete({
+          this.llm.completeAttendance({
             organizationId,
             modelId: 'fugu-ultra',
             messages,

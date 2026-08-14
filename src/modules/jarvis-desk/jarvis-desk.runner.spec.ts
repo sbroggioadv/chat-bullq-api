@@ -2,7 +2,7 @@ import { MessageDirection, MessageStatus } from '@prisma/client';
 import { JarvisDeskRunner } from './jarvis-desk.runner';
 
 describe('JarvisDeskRunner', () => {
-  function build(overrides?: { complete?: jest.Mock }) {
+  function build(overrides?: { completeAttendance?: jest.Mock }) {
     const persist = {
       id: 'm-in',
       conversationId: 'cv1',
@@ -29,10 +29,12 @@ describe('JarvisDeskRunner', () => {
       },
     };
     const llm = {
-      complete: overrides?.complete ?? jest.fn().mockResolvedValue({
-        stopReason: 'stop',
-        message: { role: 'assistant', content: 'Olá, estou aqui.' },
-      }),
+      completeAttendance:
+        overrides?.completeAttendance ??
+        jest.fn().mockResolvedValue({
+          stopReason: 'stop',
+          message: { role: 'assistant', content: 'Olá, estou aqui.' },
+        }),
     };
     const tools = { execute: jest.fn() };
     const realtime = {
@@ -49,7 +51,7 @@ describe('JarvisDeskRunner', () => {
   }
 
   it('emite ai:typing antes de chamar a LLM e persiste a resposta', async () => {
-    const { runner, realtime, prisma } = build();
+    const { runner, realtime, prisma, llm } = build();
     await runner.handleOperatorMessage({
       organizationId: 'org1',
       conversationId: 'cv1',
@@ -64,6 +66,7 @@ describe('JarvisDeskRunner', () => {
         conversationId: 'cv1',
       }),
     );
+    expect(llm.completeAttendance).toHaveBeenCalled();
     expect(prisma.message.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -82,9 +85,7 @@ describe('JarvisDeskRunner', () => {
 
   it('grava fallback quando a LLM estoura o timeout', async () => {
     const { runner, prisma } = build({
-      complete: jest.fn(
-        () => new Promise(() => undefined),
-      ),
+      completeAttendance: jest.fn(() => new Promise(() => undefined)),
     });
     jest.useFakeTimers();
     const done = runner.handleOperatorMessage({

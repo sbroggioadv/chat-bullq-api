@@ -8,7 +8,10 @@ import { KimiLlmAdapter } from './kimi-llm.adapter';
 import { ZaiLlmAdapter } from './zai-llm.adapter';
 import { FuguLlmAdapter } from './fugu-llm.adapter';
 import { QwenLlmAdapter } from './qwen-llm.adapter';
-import { ProviderResolverService } from './provider-resolver.service';
+import {
+  ProviderResolverService,
+  type ResolvedCredential,
+} from './provider-resolver.service';
 
 /**
  * Entry-point unificado pra completion LLM.
@@ -50,7 +53,58 @@ export class AiLlmRouterService {
       );
     }
 
-    // Override modelId se o routing tiver modelOverride configurado.
+    return this.dispatch(resolved, req);
+  }
+
+  /**
+   * Atendimento (Jarvis desk + canal de inbox): Fugu Ultra, Qwen 3.7 Max se
+   * o Fugu falhar. Ignora OrganizationCapabilityRouting — um LLM_AGENT=ZAI
+   * sem saldo não pode silenciar o Jarvis.
+   */
+  async completeAttendance(
+    req: LlmCompletionRequest,
+  ): Promise<LlmCompletionResponse> {
+    if (!req.organizationId) {
+      throw new InternalServerErrorException(
+        'completeAttendance requires organizationId',
+      );
+    }
+
+    const chain: Array<{ provider: AiProvider; modelId: string }> = [
+      { provider: AiProvider.FUGU, modelId: FuguLlmAdapter.DEFAULT_MODEL },
+      { provider: AiProvider.QWEN, modelId: QwenLlmAdapter.DEFAULT_MODEL },
+    ];
+
+    const errors: string[] = [];
+    for (const step of chain) {
+      const resolved = await this.resolver.resolveProvider(
+        req.organizationId,
+        step.provider,
+      );
+      if (resolved.source === 'NONE' || !resolved.apiKey) {
+        errors.push(`${step.provider}: no credential`);
+        continue;
+      }
+      try {
+        return await this.dispatch(resolved, { ...req, modelId: step.modelId });
+      } catch (err) {
+        const msg = (err as Error).message;
+        this.logger.warn(
+          `Attendance LLM ${step.provider} failed for org=${req.organizationId}: ${msg}`,
+        );
+        errors.push(`${step.provider}: ${msg}`);
+      }
+    }
+
+    throw new InternalServerErrorException(
+      `Attendance LLM unavailable (Fugu then Qwen): ${errors.join('; ')}`,
+    );
+  }
+
+  private dispatch(
+    resolved: ResolvedCredential,
+    req: LlmCompletionRequest,
+  ): Promise<LlmCompletionResponse> {
     const effectiveReq: LlmCompletionRequest = resolved.modelOverride
       ? { ...req, modelId: resolved.modelOverride }
       : req;
@@ -59,7 +113,6 @@ export class AiLlmRouterService {
       case AiProvider.ANTHROPIC:
         return this.anthropic.complete({
           ...effectiveReq,
-          // Repassa apiKey como propriedade in-band (LlmService aceita).
           ...(resolved.source === 'ORG' ? { apiKey: resolved.apiKey } : {}),
         } as LlmCompletionRequest & { apiKey?: string });
 

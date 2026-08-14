@@ -32,6 +32,7 @@ function makeResolver(opts: {
   return {
     service: new ProviderResolverService(prisma, config, credentials, events),
     getDecryptedCredential,
+    findUnique,
   };
 }
 
@@ -132,6 +133,19 @@ describe('ProviderResolverService — baseUrl resolution', () => {
     const r = await service.resolveForLlm('org1');
     expect(r.source).toBe('ENV');
     expect(r.baseUrl).toBeNull();
+  });
+
+  it('resolveProvider ignora routing e pega a credencial do provider pedido', async () => {
+    const { service, findUnique } = makeResolver({
+      provider: AiProvider.ZAI,
+      orgCred: { apiKey: 'sk-fugu', baseUrl: 'https://api.sakana.ai/v1' },
+    });
+    const r = await service.resolveProvider('org1', AiProvider.FUGU);
+    expect(r.provider).toBe(AiProvider.FUGU);
+    expect(r.source).toBe('ORG');
+    expect(r.apiKey).toBe('sk-fugu');
+    expect(r.baseUrl).toBe('https://api.sakana.ai/v1');
+    expect(findUnique).not.toHaveBeenCalled();
   });
 
   it('sem cred e sem env → source NONE, apiKey e baseUrl null', async () => {

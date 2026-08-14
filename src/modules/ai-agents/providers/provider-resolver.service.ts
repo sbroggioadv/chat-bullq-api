@@ -78,6 +78,14 @@ export class ProviderResolverService implements OnModuleInit {
     return this.resolveByCapability(organizationId, AiCapability.LLM_AGENT);
   }
 
+  /** Resolve a credential for a specific provider (org then env), ignoring routing. */
+  async resolveProvider(
+    organizationId: string,
+    provider: AiProvider,
+  ): Promise<ResolvedCredential> {
+    return this.lookupCredential(organizationId, provider, null);
+  }
+
   async resolveForTranscription(organizationId: string): Promise<ResolvedCredential> {
     return this.resolveByCapability(organizationId, AiCapability.TRANSCRIPTION);
   }
@@ -96,8 +104,15 @@ export class ProviderResolverService implements OnModuleInit {
     });
     const provider = routing?.providerSelected ?? this.defaultProvider(capability);
     const modelOverride = routing?.modelOverride ?? null;
+    return this.lookupCredential(organizationId, provider, modelOverride, capability);
+  }
 
-    // 2. Tenta credential org-level
+  private async lookupCredential(
+    organizationId: string,
+    provider: AiProvider,
+    modelOverride: string | null,
+    capability?: AiCapability,
+  ): Promise<ResolvedCredential> {
     const cacheKey = this.cacheKey(organizationId, provider);
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
@@ -115,9 +130,6 @@ export class ProviderResolverService implements OnModuleInit {
       provider,
     );
     if (orgCred) {
-      // Precedência: baseUrl custom da credencial → default do provider.
-      // Fail-closed contra SSRF: se um baseUrl legado/inválido escapou da
-      // validação de write, aborta ANTES de qualquer fetch downstream.
       const baseUrl = this.assertSafeBaseUrl(
         provider,
         orgCred.baseUrl ?? this.defaultBaseUrl(provider),
@@ -130,10 +142,8 @@ export class ProviderResolverService implements OnModuleInit {
       return { provider, apiKey: orgCred.apiKey, source: 'ORG', modelOverride, baseUrl };
     }
 
-    // 3. Fallback pra env
     const envKey = this.envKeyFor(provider);
     if (envKey) {
-      // Precedência: env override (ex: KIMI_BASE_URL) → default do provider.
       const baseUrl = this.assertSafeBaseUrl(
         provider,
         this.envBaseUrl(provider) ?? this.defaultBaseUrl(provider),
@@ -142,7 +152,7 @@ export class ProviderResolverService implements OnModuleInit {
     }
 
     this.logger.warn(
-      `No credential found for org=${organizationId} capability=${capability} provider=${provider} (org and env both empty)`,
+      `No credential found for org=${organizationId} capability=${capability ?? 'direct'} provider=${provider} (org and env both empty)`,
     );
     return { provider, apiKey: null, source: 'NONE', modelOverride, baseUrl: null };
   }
