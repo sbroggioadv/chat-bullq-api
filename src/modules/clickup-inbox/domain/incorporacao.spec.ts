@@ -7,6 +7,8 @@ import {
   mimePermitido,
   montarHistorico,
   sanitizarFilename,
+  urlUploadHostIndevido,
+  urlUploadInterna,
   validarIncorporacao,
 } from './incorporacao';
 
@@ -47,6 +49,26 @@ describe('incorporação W3', () => {
     expect(filenameComOrigem('contrato.pdf', 'msg-file')).toBe('contrato.bqx-msg-file.pdf');
     expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg-file', 12, 12)).toBe(true);
     expect(anexoDaOrigem('contrato.pdf', 'msg-file')).toBe(false);
+    expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg', 12, 12)).toBe(false);
+    expect(anexoDaOrigem('contrato.bqx-msg.pdf', 'msg-file', 12, 12)).toBe(false);
+    expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg-file', null, 12)).toBe(false);
+    expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg-file', undefined, 12)).toBe(false);
+    expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg-file', 11, 12)).toBe(false);
+  });
+
+  it('URL interna é path relativo ou mesmo origin; host arbitrário com o marcador é indevido', () => {
+    const app = 'https://bullq.test';
+    expect(urlUploadInterna('/api/v1/uploads/documents/2026-08-25/file.pdf')).toBe(true);
+    expect(urlUploadInterna('/uploads/documents/2026-08-25/file.pdf')).toBe(true);
+    expect(urlUploadInterna('https://bullq.test/api/v1/uploads/documents/x.pdf', app)).toBe(true);
+    expect(urlUploadInterna('https://evil.example/api/v1/uploads/x', app)).toBe(false);
+    expect(urlUploadInterna('https://evil.example/api/v1/uploads/x')).toBe(false);
+    expect(urlUploadInterna('https://evil.example/cdn?next=/api/v1/uploads/x', app)).toBe(false);
+    expect(urlUploadHostIndevido('https://evil.example/api/v1/uploads/x', app)).toBe(true);
+    expect(urlUploadHostIndevido('https://evil.example/cdn?next=/api/v1/uploads/x', app)).toBe(true);
+    expect(urlUploadHostIndevido('/api/v1/uploads/documents/x.pdf', app)).toBe(false);
+    expect(urlUploadHostIndevido('https://bullq.test/api/v1/uploads/x', app)).toBe(false);
+    expect(urlUploadHostIndevido('https://files.test/contrato.pdf', app)).toBe(false);
   });
 
   it('histórico usa tz America/Sao_Paulo e recusa texto sensível', () => {

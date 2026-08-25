@@ -480,6 +480,100 @@ describe('SPEC-009 W3 incorporations', () => {
     expect(attachmentPosts(fetchFn).length).toBe(1);
   });
 
+  it('host arbitrário com /api/v1/uploads/ é 422 e zero fetch', async () => {
+    const evil = 'https://evil.example/api/v1/uploads/documents/2026-08-25/file.pdf';
+    const { service, fetchFn, mediaFetch } = w3Harness({
+      messages: [
+        fileMessage('msg-ssrf', {
+          content: { url: evil, mimeType: 'application/pdf', fileName: 'file.pdf' },
+        }),
+      ],
+    });
+    await expectHttp(
+      service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-ssrf',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
+    expect(mediaFetch).not.toHaveBeenCalled();
+    expect(attachmentPosts(fetchFn).length).toBe(0);
+
+    const query = w3Harness({
+      messages: [
+        fileMessage('msg-ssrf-q', {
+          content: {
+            url: 'https://evil.example/cdn?next=/api/v1/uploads/x',
+            mimeType: 'application/pdf',
+            fileName: 'file.pdf',
+          },
+        }),
+      ],
+    });
+    await expectHttp(
+      query.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-ssrf-q',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
+    expect(query.mediaFetch).not.toHaveBeenCalled();
+    expect(attachmentPosts(query.fetchFn).length).toBe(0);
+  });
+
+  it('mesmo origin de APP_URL com /api/v1/uploads/ pode ler internamente', async () => {
+    const prev = process.env.APP_URL;
+    process.env.APP_URL = 'https://bullq.test';
+    const url = 'https://bullq.test/api/v1/uploads/documents/2026-08-25/ok.pdf';
+    try {
+      const store = emptyWorkbenchStore([projectTask('task-hold', 'list-holding')]);
+      store.media = { [url]: { bytes: Buffer.from('%PDF-same-origin'), mime: 'application/pdf' } };
+      const { service, fetchFn, mediaFetch } = w3Harness({
+        store,
+        messages: [
+          fileMessage('msg-origin', {
+            content: { url, mimeType: 'application/pdf', fileName: 'ok.pdf' },
+          }),
+        ],
+      });
+      const out = await service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-origin',
+      });
+      expect(out.ok).toBe(true);
+      expect(mediaFetch).toHaveBeenCalled();
+      expect(attachmentPosts(fetchFn).length).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = prev;
+    }
+  });
+
+  it('F-03 marker exato: prefixo de originId e size ausente não recuperam', async () => {
+    const bytes = Buffer.from('%PDF-new-bytes');
+    const store = emptyWorkbenchStore([
+      projectTask('task-hold', 'list-holding', {
+        attachments: [
+          { id: 'att-prefix', title: 'contrato.bqx-msg.pdf', size: bytes.byteLength },
+          { id: 'att-nosize', title: 'contrato.bqx-msg-file.pdf' },
+        ],
+      }),
+    ]);
+    store.media = {
+      'https://files.test/contrato.pdf': { bytes, mime: 'application/pdf' },
+    };
+    const { service, fetchFn } = w3Harness({ store });
+    const created = await service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+      kind: 'attachment',
+      messageId: 'msg-file',
+    });
+    expect(created.id).not.toBe('att-prefix');
+    expect(created.id).not.toBe('att-nosize');
+    expect(attachmentPosts(fetchFn).length).toBe(1);
+  });
+
   it('AC-19 matriz 401/403/404/409/429/5xx/timeout/config e cap exato 25 MiB', async () => {
     for (const status of [401, 403, 404, 409, 429, 500]) {
       const row = w3Harness();

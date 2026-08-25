@@ -165,6 +165,9 @@ export function marcadorOrigem(kind: IncorporateKind, originId: string): string 
   return `bullq-origin:${kind}:${originId}`;
 }
 
+export const UPLOAD_API_PREFIX = '/api/v1/uploads/';
+export const UPLOAD_LEGACY_PREFIX = '/uploads/';
+
 export function filenameComOrigem(filename: string, originId: string): string {
   const safe = sanitizarFilename(filename);
   const marker = `.bqx-${originId}`;
@@ -173,15 +176,69 @@ export function filenameComOrigem(filename: string, originId: string): string {
   return `${safe.slice(0, dot)}${marker}${safe.slice(dot)}`;
 }
 
+function origemNoTitulo(title: string): string | null {
+  const base = title.replace(/\\/g, '/').split('/').pop() ?? title;
+  const match = base.match(/\.bqx-([^./]+)(?:\.[^./]+)?$/);
+  return match?.[1] ?? null;
+}
+
 export function anexoDaOrigem(
   title: string,
   originId: string,
   size?: number | null,
   expectedSize?: number | null,
 ): boolean {
-  if (!title.includes(`.bqx-${originId}`)) return false;
-  if (expectedSize != null && size != null && size !== expectedSize) return false;
+  if (!originId || origemNoTitulo(title) !== originId) return false;
+  if (expectedSize != null && size !== expectedSize) return false;
   return true;
+}
+
+function pathnameEhUpload(pathname: string): boolean {
+  return pathname.startsWith(UPLOAD_API_PREFIX) || pathname.startsWith(UPLOAD_LEGACY_PREFIX);
+}
+
+function origemPublica(publicBaseUrl?: string | null): URL | null {
+  const raw = (publicBaseUrl ?? '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw.includes('://') ? raw : `https://${raw}`);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function urlUploadInterna(url: string, publicBaseUrl?: string | null): boolean {
+  const raw = url.trim();
+  if (!raw || raw.startsWith('//')) return false;
+  if (pathnameEhUpload(raw)) return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  if (!pathnameEhUpload(parsed.pathname)) return false;
+  const allowed = origemPublica(publicBaseUrl);
+  if (!allowed) return false;
+  return parsed.protocol === allowed.protocol && parsed.host === allowed.host;
+}
+
+export function urlUploadHostIndevido(url: string, publicBaseUrl?: string | null): boolean {
+  const raw = url.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+  const temMarcador =
+    raw.includes(UPLOAD_API_PREFIX) || parsed.pathname.startsWith(UPLOAD_LEGACY_PREFIX);
+  if (!temMarcador) return false;
+  return !urlUploadInterna(raw, publicBaseUrl);
 }
 
 export function bytesExecutaveis(bytes: Buffer): boolean {

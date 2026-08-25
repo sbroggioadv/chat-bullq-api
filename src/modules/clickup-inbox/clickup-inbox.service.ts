@@ -29,6 +29,8 @@ import {
   sanitizarFilename,
   textoDaMensagem,
   urlDaMensagem,
+  urlUploadHostIndevido,
+  urlUploadInterna,
   validarIncorporacao,
 } from './domain/incorporacao';
 import {
@@ -1111,6 +1113,9 @@ export class ClickUpInboxService {
     inline: Buffer | null,
   ): Promise<{ bytes: Buffer; mime: string | null }> {
     if (inline) return { bytes: inline, mime: null };
+    if (urlUploadHostIndevido(url, process.env.APP_URL)) {
+      invalidValue('URL de anexo inválida');
+    }
     const local = this.localUploadPath(url);
     if (local) {
       try {
@@ -1130,6 +1135,9 @@ export class ClickUpInboxService {
   }
 
   private async fetchOriginBytes(url: string): Promise<{ bytes: Buffer; mime: string | null }> {
+    if (urlUploadHostIndevido(url, process.env.APP_URL)) {
+      invalidValue('URL de anexo inválida');
+    }
     const internal = this.isInternalUploadUrl(url);
     if (!internal && !HTTPS.test(url) && !url.startsWith('https://files.test/')) {
       invalidValue('URL de anexo inválida');
@@ -1166,42 +1174,31 @@ export class ClickUpInboxService {
   }
 
   private isInternalUploadUrl(url: string): boolean {
-    return url.includes('/api/v1/uploads/') || url.startsWith('/uploads/') || url.startsWith('/api/v1/uploads/');
+    return urlUploadInterna(url, process.env.APP_URL);
   }
 
   private uploadKeyFromUrl(url: string): string | null {
+    if (!this.isInternalUploadUrl(url)) return null;
     let pathname = url;
     try {
       if (/^https?:\/\//i.test(url)) pathname = new URL(url).pathname;
     } catch {
       return null;
     }
-    const marker = pathname.includes('/api/v1/uploads/')
+    const marker = pathname.startsWith('/api/v1/uploads/')
       ? '/api/v1/uploads/'
       : pathname.startsWith('/uploads/')
         ? '/uploads/'
         : null;
     if (!marker) return null;
-    const rel = pathname.slice(pathname.indexOf(marker) + marker.length);
+    const rel = pathname.slice(marker.length);
     if (!rel || rel.includes('..')) return null;
     return rel;
   }
 
   private localUploadPath(url: string): string | null {
-    let pathname = url;
-    try {
-      if (/^https?:\/\//i.test(url)) pathname = new URL(url).pathname;
-    } catch {
-      return null;
-    }
-    const marker = pathname.includes('/api/v1/uploads/')
-      ? '/api/v1/uploads/'
-      : pathname.startsWith('/uploads/')
-        ? '/uploads/'
-        : null;
-    if (!marker) return null;
-    const rel = pathname.slice(pathname.indexOf(marker) + marker.length);
-    if (!rel || rel.includes('..')) return null;
+    const rel = this.uploadKeyFromUrl(url);
+    if (!rel) return null;
     const root = resolvePath(process.env.UPLOADS_DIR || join(process.cwd(), 'uploads'));
     const abs = resolvePath(join(root, rel));
     if (!abs.startsWith(root)) return null;
