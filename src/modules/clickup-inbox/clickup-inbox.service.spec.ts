@@ -7,6 +7,7 @@ import {
   RedisAtividadeKv,
   limparRecuperacoesAtividade,
 } from './domain/criacao-atividade';
+import { MemoryW2Store, w2ReceiptKey } from './clickup-inbox-w2.store';
 import {
   buildHarness,
   convA,
@@ -18,6 +19,15 @@ import {
   TEST_PROFILE,
   testEnv,
 } from './clickup-inbox.test-harness';
+
+const KEY_A = '11111111-1111-4111-8111-111111111111';
+const KEY_B = '22222222-2222-4222-8222-222222222222';
+
+function leadCreates(fetchFn: { mock: { calls: any[] } }) {
+  return fetchFn.mock.calls.filter(
+    (c: any) => String(c[0]).includes('/list/list-leads/task') && (c[1]?.method ?? 'GET') === 'POST',
+  );
+}
 
 const DROP_OPS = [
   { id: 'opt-novo', rotulo: 'Novo', cor: null },
@@ -561,6 +571,116 @@ describe('ClickUpInboxService W1', () => {
       });
       const out = await service.resolve('org-a', 'conv-a');
       expect(out.status).toBe(STATUS.FORA_DO_PADRAO);
+      expect(fetchFn.mock.calls.length).toBe(0);
+    });
+  });
+
+  describe('W2 criar card AC-14..17', () => {
+    it('sem_card + nome cria na lista principal com nome e telefone', async () => {
+      const { service, fetchFn, store } = buildHarness({
+        conv: convA(),
+        store: emptyStore([]),
+      });
+      const out = await service.createTask('org-a', 'conv-a', KEY_A);
+      expect(out.ok).toBe(true);
+      expect(out.status).toBe(STATUS.UNICO);
+      expect(out.card.nome).toBe('Maria');
+      const write = leadCreates(fetchFn)[0];
+      expect(write).toBeTruthy();
+      const payload = JSON.parse(String(write[1].body));
+      expect(payload.name).toBe('Maria');
+      expect(payload.custom_fields).toEqual([{ id: 'field-wa', value: '551198765432' }]);
+      expect(String(write[0])).toContain('/list/list-leads/task');
+      expect(store.tasks[out.card.taskId].list.id).toBe('list-leads');
+    });
+
+    it('grupo, recusado, N, 1 e nome vazio fazem zero POST', async () => {
+      const cases = [
+        convA({ isGroup: true }),
+        convA({ contact: { name: 'Maria', phone: '+1 415 555 0000' } }),
+        convA({ contact: { name: '', phone: '+55 11 99876-5432' } }),
+      ];
+      for (const conv of cases) {
+        const { service, fetchFn } = buildHarness({ conv, store: emptyStore([]) });
+        await expect(service.createTask('org-a', 'conv-a', KEY_A)).rejects.toBeInstanceOf(
+          HttpException,
+        );
+        expect(leadCreates(fetchFn).length).toBe(0);
+      }
+
+      const unico = buildHarness({
+        conv: convA(),
+        store: emptyStore([leadTask('task-1', '+55 11 99876-5432')]),
+      });
+      await expectHttp(
+        unico.service.createTask('org-a', 'conv-a', KEY_A),
+        409,
+        'CLICKUP_MATCH_CONFLICT',
+      );
+      expect(leadCreates(unico.fetchFn).length).toBe(0);
+
+      const n = buildHarness({
+        conv: convA(),
+        store: emptyStore([
+          leadTask('a1', '+55 11 99876-5432'),
+          leadTask('b2', '11 9876-5432'),
+        ]),
+      });
+      await expectHttp(n.service.createTask('org-a', 'conv-a', KEY_A), 409, 'CLICKUP_MATCH_CONFLICT');
+      expect(leadCreates(n.fetchFn).length).toBe(0);
+    });
+
+    it('concorrência com keys diferentes cria uma task; retry da mesma key devolve o mesmo id', async () => {
+      const w2 = new MemoryW2Store();
+      const { service, fetchFn } = buildHarness({
+        conv: convA(),
+        store: emptyStore([]),
+        w2Store: w2,
+      });
+      const settled = await Promise.allSettled([
+        service.createTask('org-a', 'conv-a', KEY_A),
+        service.createTask('org-a', 'conv-a', KEY_B),
+      ]);
+      const ok = settled.filter((r) => r.status === 'fulfilled') as PromiseFulfilledResult<any>[];
+      const bad = settled.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+      expect(ok.length).toBe(1);
+      expect(bad.length).toBe(1);
+      expect(bad[0].reason.getStatus()).toBe(409);
+      expect(leadCreates(fetchFn).length).toBe(1);
+      const taskId = ok[0].value.card.taskId;
+      fetchFn.mockClear();
+      const usedKey = w2.receipts.has(w2ReceiptKey('org-a', '551198765432', KEY_A)) ? KEY_A : KEY_B;
+      const retry = await service.createTask('org-a', 'conv-a', usedKey);
+      expect(retry.card.taskId).toBe(taskId);
+      expect(leadCreates(fetchFn).length).toBe(0);
+    });
+
+    it('card surgindo antes do POST gera 409 e zero criação', async () => {
+      const store = emptyStore([]);
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      store.tasks['task-late'] = leadTask('task-late', '+55 11 99876-5432');
+      store.listTasks['list-leads'] = ['task-late'];
+      await expectHttp(
+        service.createTask('org-a', 'conv-a', KEY_A),
+        409,
+        'CLICKUP_MATCH_CONFLICT',
+      );
+      expect(leadCreates(fetchFn).length).toBe(0);
+    });
+
+    it('Redis indisponível falha antes de qualquer chamada ClickUp', async () => {
+      const w2 = new MemoryW2Store();
+      w2.failReady = true;
+      const { service, fetchFn } = buildHarness({
+        conv: convA(),
+        store: emptyStore([]),
+        w2Store: w2,
+      });
+      await expectHttp(
+        service.createTask('org-a', 'conv-a', KEY_A),
+        503,
+        'CLICKUP_STORE_UNAVAILABLE',
+      );
       expect(fetchFn.mock.calls.length).toBe(0);
     });
   });

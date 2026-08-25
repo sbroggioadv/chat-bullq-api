@@ -17,15 +17,22 @@ import {
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
-import { CLICKUP_ATIVIDADE_KV } from './clickup-inbox.tokens';
+import { listaPrincipal } from './domain/perfil';
+import { CLICKUP_ATIVIDADE_KV, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
+import type { ClickUpW2Store } from './clickup-inbox-w2.store';
 import {
   activitiesUnavailable,
   conversationNotFound,
   invalidValue,
   mapUpstream,
+  matchConflict,
   orgForbidden,
+  storeUnavailable,
   taskNotBound,
 } from './clickup-inbox.errors';
+
+const IDEMPOTENCY_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const HTTPS = /^https:\/\//i;
 
@@ -37,6 +44,7 @@ export class ClickUpInboxService {
     private readonly http: ClickUpInboxHttpClient,
     private readonly match: ClickUpMatchService,
     @Inject(CLICKUP_ATIVIDADE_KV) private readonly atividadeKv: AtividadeKv,
+    @Inject(CLICKUP_W2_STORE) private readonly w2Store: ClickUpW2Store,
   ) {}
 
   async resolve(organizationId: string, conversationId: string) {
@@ -277,6 +285,96 @@ export class ClickUpInboxService {
     }
   }
 
+  async createTask(organizationId: string, conversationId: string, idempotencyKey: string) {
+    this.assertOrg(organizationId);
+    if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
+      invalidValue('Idempotency-Key inválida');
+    }
+    const key = String(idempotencyKey).trim();
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (conv.isGroup) invalidValue('grupo não cria card');
+    const phone = canonico(conv.contact.phone);
+    if (!phone.ok) invalidValue('telefone fora do padrão');
+    const nome = String(conv.contact.name ?? '').trim();
+    if (!nome) invalidValue('nomeie o contato antes de criar no ClickUp');
+
+    try {
+      await this.w2Store.assertReady();
+    } catch (err) {
+      if ((err as { redis?: boolean })?.redis) storeUnavailable();
+      throw err;
+    }
+
+    const existing = await this.w2Store.getReceipt(organizationId, phone.canonico, key);
+    if (existing) {
+      await this.ensureRemote();
+      const card = await this.cardCompleto(existing, conv.contact.phone);
+      return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
+    }
+
+    let token: string;
+    try {
+      token = await this.w2Store.acquireLock(organizationId, phone.canonico);
+    } catch (err) {
+      if ((err as { redis?: boolean })?.redis) storeUnavailable();
+      throw err;
+    }
+
+    try {
+      const replay = await this.w2Store.getReceipt(organizationId, phone.canonico, key);
+      if (replay) {
+        await this.ensureRemote();
+        const card = await this.cardCompleto(replay, conv.contact.phone);
+        return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
+      }
+
+      await this.ensureRemote();
+      const rematch = await this.match.resolverTelefone(organizationId, conv.contact.phone, {
+        force: true,
+      });
+      if (rematch.status === STATUS.UNICO || rematch.status === STATUS.AMBIGUO) {
+        matchConflict({ ...this.publicMatch(rematch, conv.id) });
+      }
+      if (rematch.status !== STATUS.SEM_CARD) invalidValue('não é possível criar neste estado');
+
+      const profile = this.config.profile();
+      const listId = listaPrincipal(profile);
+      const criado = await this.http.write(`/list/${encodeURIComponent(listId)}/task`, {
+        name: nome,
+        custom_fields: [{ id: profile.whatsappFieldId, value: phone.canonico }],
+      });
+      const taskId = String(criado?.id ?? '');
+      if (!idSeguro(taskId)) {
+        const erro = new Error('ClickUp não devolveu um id válido') as Error & { status: number };
+        erro.status = 502;
+        throw erro;
+      }
+      const relido = await this.http.taskBruta(taskId);
+      if (String(relido.list?.id) !== listId) {
+        await this.http.apagarTask(taskId).catch(() => undefined);
+        const erro = new Error('task criada fora da lista principal') as Error & { status: number };
+        erro.status = 502;
+        throw erro;
+      }
+      const got = canonico(phoneFromTask(relido, profile.whatsappFieldId));
+      if (!got.ok || got.canonico !== phone.canonico) {
+        await this.http.apagarTask(taskId).catch(() => undefined);
+        const erro = new Error('telefone da task criada não confere') as Error & { status: number };
+        erro.status = 502;
+        throw erro;
+      }
+      await this.w2Store.setReceipt(organizationId, phone.canonico, key, taskId);
+      this.match.invalidate(organizationId);
+      const card = await this.cardCompleto(taskId, conv.contact.phone);
+      return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    } finally {
+      await this.w2Store.releaseLock(organizationId, phone.canonico, token);
+    }
+  }
+
   async completeActivity(
     organizationId: string,
     conversationId: string,
@@ -312,6 +410,24 @@ export class ClickUpInboxService {
     const snap = this.config.snapshot();
     if (snap.ok && snap.organizationId !== organizationId) orgForbidden();
     if (!snap.ok) this.config.assertLocal();
+  }
+
+  private publicMatch(
+    rematch: {
+      status: string;
+      canonico?: string;
+      taskId?: string;
+      taskIds?: string[];
+    },
+    conversationId: string,
+  ) {
+    return {
+      status: rematch.status,
+      conversationId,
+      canonico: rematch.canonico,
+      taskId: rematch.taskId,
+      taskIds: rematch.taskIds,
+    };
   }
 
   private async ensureRemote() {

@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpInboxService } from './clickup-inbox.service';
+import { MemoryW2Store, type ClickUpW2Store } from './clickup-inbox-w2.store';
 import { ClickUpMatchService } from './clickup-match.service';
 import {
   MemoryAtividadeKv,
@@ -187,18 +188,34 @@ export function createClickUpFetch(store: CuStore) {
 
     if (listTasks && method === 'POST') {
       const listId = listTasks[1];
-      const id = `act-${Object.keys(store.tasks).length + 1}`;
+      if (listId === 'list-acts') {
+        const id = `act-${Object.keys(store.tasks).length + 1}`;
+        store.tasks[id] = {
+          id,
+          name: body.name,
+          list: { id: listId, name: 'Atividades' },
+          status: { status: 'novo', type: 'open' },
+          custom_fields: [
+            {
+              id: 'field-rel',
+              value: body.custom_fields?.[0]?.value?.add ?? [],
+            },
+          ],
+        };
+        store.listTasks[listId] = [...(store.listTasks[listId] ?? []), id];
+        return ok({ id });
+      }
+      const id = `task-new-${Object.keys(store.tasks).length + 1}`;
       store.tasks[id] = {
         id,
         name: body.name,
-        list: { id: listId, name: 'Atividades' },
+        url: `https://app.clickup.test/t/${id}`,
+        list: { id: listId, name: listId === 'list-leads' ? 'Leads' : listId },
         status: { status: 'novo', type: 'open' },
-        custom_fields: [
-          {
-            id: 'field-rel',
-            value: body.custom_fields?.[0]?.value?.add ?? [],
-          },
-        ],
+        custom_fields: (body.custom_fields ?? []).map((campo: { id: string; value: unknown }) => ({
+          id: campo.id,
+          value: campo.value,
+        })),
       };
       store.listTasks[listId] = [...(store.listTasks[listId] ?? []), id];
       return ok({ id });
@@ -286,6 +303,7 @@ export function buildHarness(opts: {
   store?: CuStore;
   fetchFn?: jest.Mock;
   atividadeKv?: AtividadeKv;
+  w2Store?: ClickUpW2Store;
 }) {
   limparRecuperacoesAtividade();
   const env = opts.env ?? testEnv();
@@ -298,8 +316,16 @@ export function buildHarness(opts: {
   const match = new ClickUpMatchService(config, http);
   const prisma = makePrisma(opts.conv);
   const atividadeKv = opts.atividadeKv ?? new MemoryAtividadeKv();
-  const service = new ClickUpInboxService(prisma as any, config, http, match, atividadeKv);
-  return { service, config, http, match, prisma, fetchFn, store, atividadeKv };
+  const w2Store = opts.w2Store ?? new MemoryW2Store();
+  const service = new ClickUpInboxService(
+    prisma as any,
+    config,
+    http,
+    match,
+    atividadeKv,
+    w2Store,
+  );
+  return { service, config, http, match, prisma, fetchFn, store, atividadeKv, w2Store };
 }
 
 export function mutationCalls(fetchFn: jest.Mock) {

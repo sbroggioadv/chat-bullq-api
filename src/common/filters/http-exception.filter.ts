@@ -48,10 +48,16 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       );
     }
 
+    const match =
+      typeof exceptionResponse === 'object' && exceptionResponse && !Array.isArray(exceptionResponse)
+        ? (exceptionResponse as Record<string, unknown>).match
+        : undefined;
+
     response.status(status).json({
       statusCode: status,
       message,
       ...(code ? { code } : {}),
+      ...(match && typeof match === 'object' && !Array.isArray(match) ? { match } : {}),
       error:
         exception instanceof HttpException
           ? exception.name

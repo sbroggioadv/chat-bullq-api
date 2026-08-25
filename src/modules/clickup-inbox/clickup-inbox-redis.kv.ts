@@ -7,11 +7,13 @@ import {
   type AtividadeKv,
   type AtividadeRegistro,
 } from './domain/criacao-atividade';
+import { RedisW2Store, type ClickUpW2Store } from './clickup-inbox-w2.store';
 
 @Injectable()
-export class ClickUpInboxRedisKv implements AtividadeKv, OnModuleDestroy {
+export class ClickUpInboxRedisKv implements AtividadeKv, ClickUpW2Store, OnModuleDestroy {
   private readonly redis: Redis;
   private readonly inner: RedisAtividadeKv;
+  private readonly w2: RedisW2Store;
 
   constructor(config: ConfigService) {
     this.redis = new Redis(
@@ -21,6 +23,7 @@ export class ClickUpInboxRedisKv implements AtividadeKv, OnModuleDestroy {
       }),
     );
     this.inner = new RedisAtividadeKv(this.redis);
+    this.w2 = new RedisW2Store(this.redis);
   }
 
   get(chave: string) {
@@ -33,6 +36,31 @@ export class ClickUpInboxRedisKv implements AtividadeKv, OnModuleDestroy {
 
   remove(chave: string) {
     return this.inner.remove(chave);
+  }
+
+  assertReady() {
+    return this.w2.assertReady();
+  }
+
+  acquireLock(organizationId: string, telefoneCanonico: string) {
+    return this.w2.acquireLock(organizationId, telefoneCanonico);
+  }
+
+  releaseLock(organizationId: string, telefoneCanonico: string, token: string) {
+    return this.w2.releaseLock(organizationId, telefoneCanonico, token);
+  }
+
+  getReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    return this.w2.getReceipt(organizationId, telefoneCanonico, idempotencyKey);
+  }
+
+  setReceipt(
+    organizationId: string,
+    telefoneCanonico: string,
+    idempotencyKey: string,
+    taskId: string,
+  ) {
+    return this.w2.setReceipt(organizationId, telefoneCanonico, idempotencyKey, taskId);
   }
 
   async onModuleDestroy() {

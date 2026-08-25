@@ -9,6 +9,8 @@ export const CLICKUP_CODES = {
   INVALID_VALUE: 'CLICKUP_INVALID_VALUE',
   UPSTREAM: 'CLICKUP_UPSTREAM',
   TIMEOUT: 'CLICKUP_TIMEOUT',
+  MATCH_CONFLICT: 'CLICKUP_MATCH_CONFLICT',
+  STORE_UNAVAILABLE: 'CLICKUP_STORE_UNAVAILABLE',
 } as const;
 
 export function clickupHttpError(
@@ -49,6 +51,21 @@ export function activitiesUnavailable(message: string): never {
 
 export function invalidValue(message: string): never {
   clickupHttpError(HttpStatus.UNPROCESSABLE_ENTITY, CLICKUP_CODES.INVALID_VALUE, message);
+}
+
+export function storeUnavailable(message = 'armazenamento temporário indisponível'): never {
+  clickupHttpError(HttpStatus.SERVICE_UNAVAILABLE, CLICKUP_CODES.STORE_UNAVAILABLE, message);
+}
+
+export function matchConflict(match: Record<string, unknown>): never {
+  throw new HttpException(
+    {
+      message: 'já existe card para este telefone',
+      code: CLICKUP_CODES.MATCH_CONFLICT,
+      match,
+    },
+    HttpStatus.CONFLICT,
+  );
 }
 
 export function mapUpstream(err: unknown): never {

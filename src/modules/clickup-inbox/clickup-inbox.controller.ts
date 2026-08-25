@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Patch, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import { CurrentOrg, CurrentUser } from '../../common/decorators';
@@ -24,6 +24,16 @@ export class ClickUpInboxController {
     @Param('conversationId') conversationId: string,
   ) {
     return this.service.resolve(orgId, conversationId);
+  }
+
+  @Post('tasks')
+  @ApiOperation({ summary: 'Cria o card ClickUp da conversa quando não há correspondência' })
+  createTask(
+    @CurrentOrg('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Headers('idempotency-key') idempotencyKey: string,
+  ) {
+    return this.service.createTask(orgId, conversationId, idempotencyKey);
   }
 
   @Get('tasks/:taskId')

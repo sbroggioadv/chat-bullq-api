@@ -48,9 +48,9 @@ export class ClickUpMatchService {
     if (!opts.force) {
       const existing = this.caches.get(key);
       if (existing && existing.expiraEm > now) return existing;
+      const pending = this.inflight.get(key);
+      if (pending) return pending;
     }
-    const pending = this.inflight.get(key);
-    if (pending) return pending;
     const promise = this.rebuild(key, now).finally(() => this.inflight.delete(key));
     this.inflight.set(key, promise);
     return promise;
