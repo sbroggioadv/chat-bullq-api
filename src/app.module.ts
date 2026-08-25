@@ -27,6 +27,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { SegmentsModule } from './modules/segments/segments.module';
 import { ProjectsModule } from './modules/projects/projects.module';
+import { ClickUpInboxModule } from './modules/clickup-inbox/clickup-inbox.module';
 import { AutomationsModule } from './modules/automations/automations.module';
 import { HealthModule } from './modules/health/health.module';
 import { StorageModule } from './modules/storage/storage.module';
@@ -83,6 +84,7 @@ import redisConfig, { buildRedisConnectionOptions } from './config/redis.config'
     PipelinesModule,
     SegmentsModule,
     ProjectsModule,
+    ClickUpInboxModule,
     HealthModule,
   ],
 })
