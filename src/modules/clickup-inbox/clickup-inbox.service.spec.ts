@@ -1,4 +1,5 @@
 import { HttpException } from '@nestjs/common';
+import { ClickUpInboxController } from './clickup-inbox.controller';
 import { serializeFieldValue, WRITABLE_FIELD_TYPES } from './domain/campos';
 import { INDEX_TTL_MS } from './clickup-match.service';
 import { STATUS } from './domain/casamento';
@@ -7,7 +8,7 @@ import {
   RedisAtividadeKv,
   limparRecuperacoesAtividade,
 } from './domain/criacao-atividade';
-import { MemoryW2Store, w2ReceiptKey } from './clickup-inbox-w2.store';
+import { MemoryW2Store, parseW2Receipt, w2ReceiptKey } from './clickup-inbox-w2.store';
 import {
   buildHarness,
   convA,
@@ -649,7 +650,9 @@ describe('ClickUpInboxService W1', () => {
       expect(leadCreates(fetchFn).length).toBe(1);
       const taskId = ok[0].value.card.taskId;
       fetchFn.mockClear();
-      const usedKey = w2.receipts.has(w2ReceiptKey('org-a', '551198765432', KEY_A)) ? KEY_A : KEY_B;
+      const usedKey = parseW2Receipt(w2.receipts.get(w2ReceiptKey('org-a', '551198765432', KEY_A)))?.state === 'done'
+        ? KEY_A
+        : KEY_B;
       const retry = await service.createTask('org-a', 'conv-a', usedKey);
       expect(retry.card.taskId).toBe(taskId);
       expect(leadCreates(fetchFn).length).toBe(0);
@@ -682,6 +685,117 @@ describe('ClickUpInboxService W1', () => {
         'CLICKUP_STORE_UNAVAILABLE',
       );
       expect(fetchFn.mock.calls.length).toBe(0);
+    });
+
+    it('GET/SET NX Redis falham em 503 sem ClickUp', async () => {
+      for (const opts of [{ failGet: true }, { failLockSet: true }] as const) {
+        const { service, fetchFn } = buildHarness({
+          conv: convA(),
+          store: emptyStore([]),
+          w2Store: new MemoryW2Store(opts),
+        });
+        await expectHttp(
+          service.createTask('org-a', 'conv-a', KEY_A),
+          503,
+          'CLICKUP_STORE_UNAVAILABLE',
+        );
+        expect(fetchFn.mock.calls.length).toBe(0);
+      }
+    });
+
+    it('falha de receipt após POST: retry da mesma key recupera a task órfã', async () => {
+      const receipts = new Map<string, string>();
+      const store = emptyStore([]);
+      store.failDelete = true;
+      const first = buildHarness({
+        conv: convA(),
+        store,
+        w2Store: new MemoryW2Store({ receipts, failSetReceipt: true }),
+      });
+      await expectHttp(
+        first.service.createTask('org-a', 'conv-a', KEY_A),
+        503,
+        'CLICKUP_STORE_UNAVAILABLE',
+      );
+      expect(leadCreates(first.fetchFn).length).toBe(1);
+      const createdId = Object.keys(store.tasks).find((id) => id.startsWith('task-new-'));
+      expect(createdId).toBeTruthy();
+      const retry = buildHarness({
+        conv: convA(),
+        store,
+        fetchFn: first.fetchFn,
+        w2Store: new MemoryW2Store({ receipts }),
+      });
+      retry.fetchFn.mockClear();
+      const out = await retry.service.createTask('org-a', 'conv-a', KEY_A);
+      expect(out.card.taskId).toBe(createdId);
+      expect(leadCreates(retry.fetchFn).length).toBe(0);
+    });
+
+    it('compensação confirmada remove a órfã antes de nova tentativa', async () => {
+      const receipts = new Map<string, string>();
+      const store = emptyStore([]);
+      const first = buildHarness({
+        conv: convA(),
+        store,
+        w2Store: new MemoryW2Store({ receipts, failSetReceipt: true }),
+      });
+      await expectHttp(
+        first.service.createTask('org-a', 'conv-a', KEY_A),
+        503,
+        'CLICKUP_STORE_UNAVAILABLE',
+      );
+      expect(Object.keys(store.tasks).some((id) => id.startsWith('task-new-'))).toBe(false);
+      const retry = buildHarness({
+        conv: convA(),
+        store,
+        w2Store: new MemoryW2Store({ receipts }),
+      });
+      const out = await retry.service.createTask('org-a', 'conv-a', KEY_A);
+      expect(out.ok).toBe(true);
+      expect(leadCreates(retry.fetchFn).length).toBe(1);
+    });
+
+    it('header Idempotency-Key ausente/malformado é 422 sem ClickUp', async () => {
+      const { service, fetchFn } = buildHarness({ conv: convA(), store: emptyStore([]) });
+      const controller = new ClickUpInboxController(service);
+      await expectHttp(controller.createTask('org-a', 'conv-a', undefined as any), 422, 'CLICKUP_INVALID_VALUE');
+      await expectHttp(controller.createTask('org-a', 'conv-a', 'not-a-uuid'), 422, 'CLICKUP_INVALID_VALUE');
+      expect(fetchFn.mock.calls.length).toBe(0);
+    });
+
+    it('409 preserva match unico e ambiguo', async () => {
+      const unico = buildHarness({
+        conv: convA(),
+        store: emptyStore([leadTask('task-1', '+55 11 99876-5432')]),
+      });
+      try {
+        await unico.service.createTask('org-a', 'conv-a', KEY_A);
+        throw new Error('esperava 409');
+      } catch (err: any) {
+        expect(err.getStatus()).toBe(409);
+        expect(err.getResponse()).toEqual(
+          expect.objectContaining({
+            code: 'CLICKUP_MATCH_CONFLICT',
+            match: expect.objectContaining({ status: STATUS.UNICO, taskId: 'task-1' }),
+          }),
+        );
+      }
+      const n = buildHarness({
+        conv: convA(),
+        store: emptyStore([
+          leadTask('a1', '+55 11 99876-5432'),
+          leadTask('b2', '11 9876-5432'),
+        ]),
+      });
+      try {
+        await n.service.createTask('org-a', 'conv-a', KEY_A);
+        throw new Error('esperava 409');
+      } catch (err: any) {
+        expect(err.getResponse().match).toEqual(
+          expect.objectContaining({ status: STATUS.AMBIGUO, taskIds: ['a1', 'b2'] }),
+        );
+      }
     });
   });
 });

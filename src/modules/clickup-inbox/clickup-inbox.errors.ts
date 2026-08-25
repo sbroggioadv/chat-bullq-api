@@ -57,6 +57,10 @@ export function storeUnavailable(message = 'armazenamento temporário indisponí
   clickupHttpError(HttpStatus.SERVICE_UNAVAILABLE, CLICKUP_CODES.STORE_UNAVAILABLE, message);
 }
 
+export function isRedisFailure(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && (err as { redis?: boolean }).redis);
+}
+
 export function matchConflict(match: Record<string, unknown>): never {
   throw new HttpException(
     {

@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import Redis, { type RedisOptions } from 'ioredis';
 import { buildRedisConnectionOptions } from '../../config/redis.config';
 import {
   RedisAtividadeKv,
@@ -8,6 +8,15 @@ import {
   type AtividadeRegistro,
 } from './domain/criacao-atividade';
 import { RedisW2Store, type ClickUpW2Store } from './clickup-inbox-w2.store';
+
+/** Finite Redis budget: never wait indefinitely for a dead connection. */
+export const CLICKUP_REDIS_REQUEST_OPTIONS: RedisOptions = {
+  maxRetriesPerRequest: 1,
+  connectTimeout: 3_000,
+  commandTimeout: 3_000,
+  enableOfflineQueue: false,
+  enableReadyCheck: true,
+};
 
 @Injectable()
 export class ClickUpInboxRedisKv implements AtividadeKv, ClickUpW2Store, OnModuleDestroy {
@@ -17,10 +26,7 @@ export class ClickUpInboxRedisKv implements AtividadeKv, ClickUpW2Store, OnModul
 
   constructor(config: ConfigService) {
     this.redis = new Redis(
-      buildRedisConnectionOptions(config, {
-        maxRetriesPerRequest: null,
-        enableReadyCheck: false,
-      }),
+      buildRedisConnectionOptions(config, CLICKUP_REDIS_REQUEST_OPTIONS),
     );
     this.inner = new RedisAtividadeKv(this.redis);
     this.w2 = new RedisW2Store(this.redis);
@@ -54,13 +60,21 @@ export class ClickUpInboxRedisKv implements AtividadeKv, ClickUpW2Store, OnModul
     return this.w2.getReceipt(organizationId, telefoneCanonico, idempotencyKey);
   }
 
-  setReceipt(
+  beginReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    return this.w2.beginReceipt(organizationId, telefoneCanonico, idempotencyKey);
+  }
+
+  finalizeReceipt(
     organizationId: string,
     telefoneCanonico: string,
     idempotencyKey: string,
     taskId: string,
   ) {
-    return this.w2.setReceipt(organizationId, telefoneCanonico, idempotencyKey, taskId);
+    return this.w2.finalizeReceipt(organizationId, telefoneCanonico, idempotencyKey, taskId);
+  }
+
+  clearReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    return this.w2.clearReceipt(organizationId, telefoneCanonico, idempotencyKey);
   }
 
   async onModuleDestroy() {

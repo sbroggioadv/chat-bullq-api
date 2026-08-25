@@ -27,6 +27,7 @@ import {
   mapUpstream,
   matchConflict,
   orgForbidden,
+  isRedisFailure,
   storeUnavailable,
   taskNotBound,
 } from './clickup-inbox.errors';
@@ -298,33 +299,18 @@ export class ClickUpInboxService {
     const nome = String(conv.contact.name ?? '').trim();
     if (!nome) invalidValue('nomeie o contato antes de criar no ClickUp');
 
-    try {
-      await this.w2Store.assertReady();
-    } catch (err) {
-      if ((err as { redis?: boolean })?.redis) storeUnavailable();
-      throw err;
-    }
-
-    const existing = await this.w2Store.getReceipt(organizationId, phone.canonico, key);
-    if (existing) {
-      await this.ensureRemote();
-      const card = await this.cardCompleto(existing, conv.contact.phone);
-      return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
-    }
-
-    let token: string;
-    try {
-      token = await this.w2Store.acquireLock(organizationId, phone.canonico);
-    } catch (err) {
-      if ((err as { redis?: boolean })?.redis) storeUnavailable();
-      throw err;
-    }
+    await this.withStore(() => this.w2Store.assertReady());
+    const token = await this.withStore(() =>
+      this.w2Store.acquireLock(organizationId, phone.canonico),
+    );
 
     try {
-      const replay = await this.w2Store.getReceipt(organizationId, phone.canonico, key);
-      if (replay) {
+      const existing = await this.withStore(() =>
+        this.w2Store.getReceipt(organizationId, phone.canonico, key),
+      );
+      if (existing?.state === 'done') {
         await this.ensureRemote();
-        const card = await this.cardCompleto(replay, conv.contact.phone);
+        const card = await this.cardCompleto(existing.taskId, conv.contact.phone);
         return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
       }
 
@@ -332,10 +318,19 @@ export class ClickUpInboxService {
       const rematch = await this.match.resolverTelefone(organizationId, conv.contact.phone, {
         force: true,
       });
+      if (existing?.state === 'pending' && rematch.status === STATUS.UNICO) {
+        await this.withStore(() =>
+          this.w2Store.finalizeReceipt(organizationId, phone.canonico, key, rematch.taskId),
+        );
+        const card = await this.cardCompleto(rematch.taskId, conv.contact.phone);
+        return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
+      }
       if (rematch.status === STATUS.UNICO || rematch.status === STATUS.AMBIGUO) {
         matchConflict({ ...this.publicMatch(rematch, conv.id) });
       }
       if (rematch.status !== STATUS.SEM_CARD) invalidValue('não é possível criar neste estado');
+
+      await this.withStore(() => this.w2Store.beginReceipt(organizationId, phone.canonico, key));
 
       const profile = this.config.profile();
       const listId = listaPrincipal(profile);
@@ -363,15 +358,29 @@ export class ClickUpInboxService {
         erro.status = 502;
         throw erro;
       }
-      await this.w2Store.setReceipt(organizationId, phone.canonico, key, taskId);
+      try {
+        await this.withStore(() =>
+          this.w2Store.finalizeReceipt(organizationId, phone.canonico, key, taskId),
+        );
+      } catch (err) {
+        if (!isRedisFailure(err) && !(err instanceof HttpException && err.getStatus() === 503)) {
+          throw err;
+        }
+        const removed = await this.http.apagarTask(taskId).then(() => true).catch(() => false);
+        if (removed) {
+          await this.w2Store.clearReceipt(organizationId, phone.canonico, key).catch(() => undefined);
+        }
+        storeUnavailable('não foi possível reter o comprovante da criação');
+      }
       this.match.invalidate(organizationId);
       const card = await this.cardCompleto(taskId, conv.contact.phone);
       return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
+      if (isRedisFailure(err)) storeUnavailable();
       mapUpstream(err);
     } finally {
-      await this.w2Store.releaseLock(organizationId, phone.canonico, token);
+      await this.w2Store.releaseLock(organizationId, phone.canonico, token).catch(() => undefined);
     }
   }
 
@@ -403,6 +412,16 @@ export class ClickUpInboxService {
     } catch (err) {
       if (err instanceof HttpException) throw err;
       mapUpstream(err);
+    }
+  }
+
+  private async withStore<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      if (isRedisFailure(err)) storeUnavailable();
+      throw err;
     }
   }
 

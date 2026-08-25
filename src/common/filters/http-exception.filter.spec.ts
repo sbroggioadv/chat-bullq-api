@@ -52,6 +52,28 @@ describe('GlobalExceptionFilter (F-05)', () => {
     expect(json.mock.calls[0][0]).toEqual(expect.objectContaining({ statusCode: status, message, code }));
   });
 
+  it('409 preserva match no envelope', () => {
+    const json = jest.fn();
+    filter.catch(
+      new HttpException(
+        {
+          message: 'já existe card para este telefone',
+          code: 'CLICKUP_MATCH_CONFLICT',
+          match: { status: 'unico', taskId: 'task-1' },
+        },
+        HttpStatus.CONFLICT,
+      ),
+      hostWith(json),
+    );
+    expect(json.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        statusCode: 409,
+        code: 'CLICKUP_MATCH_CONFLICT',
+        match: { status: 'unico', taskId: 'task-1' },
+      }),
+    );
+  });
+
   it('não propaga code inseguro', () => {
     const json = jest.fn();
     filter.catch(

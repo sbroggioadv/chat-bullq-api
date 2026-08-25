@@ -2,6 +2,10 @@ export const W2_LOCK_TTL_MS = 120_000;
 export const W2_LOCK_WAIT_MS = 10_000;
 export const W2_RECEIPT_TTL_SECONDS = 24 * 60 * 60;
 
+export type W2Receipt =
+  | { state: 'pending' }
+  | { state: 'done'; taskId: string };
+
 export type ClickUpW2Store = {
   assertReady(): Promise<void>;
   acquireLock(organizationId: string, telefoneCanonico: string): Promise<string>;
@@ -10,12 +14,22 @@ export type ClickUpW2Store = {
     organizationId: string,
     telefoneCanonico: string,
     idempotencyKey: string,
-  ): Promise<string | null>;
-  setReceipt(
+  ): Promise<W2Receipt | null>;
+  beginReceipt(
+    organizationId: string,
+    telefoneCanonico: string,
+    idempotencyKey: string,
+  ): Promise<W2Receipt>;
+  finalizeReceipt(
     organizationId: string,
     telefoneCanonico: string,
     idempotencyKey: string,
     taskId: string,
+  ): Promise<void>;
+  clearReceipt(
+    organizationId: string,
+    telefoneCanonico: string,
+    idempotencyKey: string,
   ): Promise<void>;
 };
 
@@ -31,27 +45,67 @@ export function w2ReceiptKey(
   return `clickup-inbox:w2-receipt:${organizationId}:${telefoneCanonico}:${idempotencyKey}`;
 }
 
+export function parseW2Receipt(raw: string | null | undefined): W2Receipt | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as W2Receipt;
+    if (parsed?.state === 'pending') return { state: 'pending' };
+    if (parsed?.state === 'done' && typeof parsed.taskId === 'string' && parsed.taskId) {
+      return { state: 'done', taskId: parsed.taskId };
+    }
+  } catch {
+    if (/^[A-Za-z0-9_-]{1,128}$/.test(raw)) return { state: 'done', taskId: raw };
+  }
+  return null;
+}
+
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export function redisUnavailable(cause?: unknown): Error & { redis: true } {
+  const erro = new Error('redis indisponível') as Error & { redis: true; cause?: unknown };
+  erro.redis = true;
+  erro.cause = cause;
+  return erro;
+}
+
+export type MemoryW2Options = {
+  receipts?: Map<string, string>;
+  failReady?: boolean;
+  failGet?: boolean;
+  failSetNx?: boolean;
+  failSetReceipt?: boolean;
+  failLockSet?: boolean;
+};
+
 export class MemoryW2Store implements ClickUpW2Store {
-  readonly receipts = new Map<string, string>();
+  readonly receipts: Map<string, string>;
   readonly locks = new Map<string, string>();
   private tails = new Map<string, Promise<void>>();
   private releasers = new Map<string, () => void>();
-  failReady = false;
+  failReady: boolean;
+  failGet: boolean;
+  failSetNx: boolean;
+  failSetReceipt: boolean;
+  failLockSet: boolean;
+
+  constructor(opts: MemoryW2Options = {}) {
+    this.receipts = opts.receipts ?? new Map();
+    this.failReady = Boolean(opts.failReady);
+    this.failGet = Boolean(opts.failGet);
+    this.failSetNx = Boolean(opts.failSetNx);
+    this.failSetReceipt = Boolean(opts.failSetReceipt);
+    this.failLockSet = Boolean(opts.failLockSet);
+  }
 
   async assertReady() {
-    if (this.failReady) {
-      const erro = new Error('redis indisponível') as Error & { redis: true };
-      erro.redis = true;
-      throw erro;
-    }
+    if (this.failReady) throw redisUnavailable();
   }
 
   async acquireLock(organizationId: string, telefoneCanonico: string): Promise<string> {
     await this.assertReady();
+    if (this.failLockSet) throw redisUnavailable();
     const key = w2LockKey(organizationId, telefoneCanonico);
     let release!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -77,17 +131,36 @@ export class MemoryW2Store implements ClickUpW2Store {
 
   async getReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
     await this.assertReady();
-    return this.receipts.get(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey)) ?? null;
+    if (this.failGet) throw redisUnavailable();
+    return parseW2Receipt(this.receipts.get(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey)));
   }
 
-  async setReceipt(
+  async beginReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    await this.assertReady();
+    if (this.failSetNx) throw redisUnavailable();
+    const key = w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey);
+    const existing = parseW2Receipt(this.receipts.get(key));
+    if (existing) return existing;
+    this.receipts.set(key, JSON.stringify({ state: 'pending' }));
+    return { state: 'pending' as const };
+  }
+
+  async finalizeReceipt(
     organizationId: string,
     telefoneCanonico: string,
     idempotencyKey: string,
     taskId: string,
   ) {
     await this.assertReady();
-    this.receipts.set(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey), taskId);
+    if (this.failSetReceipt) throw redisUnavailable();
+    this.receipts.set(
+      w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey),
+      JSON.stringify({ state: 'done', taskId }),
+    );
+  }
+
+  async clearReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    this.receipts.delete(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey));
   }
 }
 
@@ -95,36 +168,35 @@ export type RedisLockClient = {
   ping(): Promise<unknown>;
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ...extras: unknown[]): Promise<unknown>;
+  del?(key: string): Promise<unknown>;
   eval(script: string, numKeys: number, ...args: (string | number)[]): Promise<unknown>;
 };
 
 export class RedisW2Store implements ClickUpW2Store {
   constructor(private readonly redis: RedisLockClient) {}
 
-  async assertReady() {
+  private async call<T>(fn: () => Promise<T>): Promise<T> {
     try {
-      await this.redis.ping();
+      return await fn();
     } catch (cause) {
-      const erro = new Error('redis indisponível') as Error & { redis: true; cause?: unknown };
-      erro.redis = true;
-      erro.cause = cause;
-      throw erro;
+      throw redisUnavailable(cause);
     }
   }
 
+  async assertReady() {
+    await this.call(() => this.redis.ping());
+  }
+
   async acquireLock(organizationId: string, telefoneCanonico: string): Promise<string> {
-    await this.assertReady();
     const key = w2LockKey(organizationId, telefoneCanonico);
     const start = Date.now();
     while (Date.now() - start < W2_LOCK_WAIT_MS) {
       const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const ok = await this.redis.set(key, token, 'PX', W2_LOCK_TTL_MS, 'NX');
+      const ok = await this.call(() => this.redis.set(key, token, 'PX', W2_LOCK_TTL_MS, 'NX'));
       if (ok === 'OK') return token;
       await delay(25 + Math.floor(Math.random() * 50));
     }
-    const erro = new Error('não foi possível obter o lock de criação') as Error & { redis: true };
-    erro.redis = true;
-    throw erro;
+    throw redisUnavailable(new Error('não foi possível obter o lock de criação'));
   }
 
   async releaseLock(organizationId: string, telefoneCanonico: string, token: string) {
@@ -136,29 +208,52 @@ export class RedisW2Store implements ClickUpW2Store {
       end
     `;
     try {
-      await this.redis.eval(script, 1, w2LockKey(organizationId, telefoneCanonico), token);
+      await this.call(() =>
+        this.redis.eval(script, 1, w2LockKey(organizationId, telefoneCanonico), token),
+      );
     } catch {
       /* lock expires */
     }
   }
 
   async getReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
-    await this.assertReady();
-    return this.redis.get(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey));
+    const raw = await this.call(() =>
+      this.redis.get(w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey)),
+    );
+    return parseW2Receipt(raw);
   }
 
-  async setReceipt(
+  async beginReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    const key = w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey);
+    const ok = await this.call(() =>
+      this.redis.set(key, JSON.stringify({ state: 'pending' }), 'EX', W2_RECEIPT_TTL_SECONDS, 'NX'),
+    );
+    if (ok === 'OK') return { state: 'pending' as const };
+    const existing = await this.getReceipt(organizationId, telefoneCanonico, idempotencyKey);
+    return existing ?? { state: 'pending' as const };
+  }
+
+  async finalizeReceipt(
     organizationId: string,
     telefoneCanonico: string,
     idempotencyKey: string,
     taskId: string,
   ) {
-    await this.assertReady();
-    await this.redis.set(
-      w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey),
-      taskId,
-      'EX',
-      W2_RECEIPT_TTL_SECONDS,
+    await this.call(() =>
+      this.redis.set(
+        w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey),
+        JSON.stringify({ state: 'done', taskId }),
+        'EX',
+        W2_RECEIPT_TTL_SECONDS,
+      ),
     );
+  }
+
+  async clearReceipt(organizationId: string, telefoneCanonico: string, idempotencyKey: string) {
+    const key = w2ReceiptKey(organizationId, telefoneCanonico, idempotencyKey);
+    await this.call(async () => {
+      if (this.redis.del) return this.redis.del(key);
+      return this.redis.set(key, '', 'EX', 1);
+    });
   }
 }

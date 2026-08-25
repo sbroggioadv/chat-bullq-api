@@ -91,6 +91,7 @@ export type CuStore = {
   ignoreFieldWrites?: boolean;
   fieldsByList?: Record<string, any[]>;
   relationListId?: string;
+  failDelete?: boolean;
 };
 
 export function emptyStore(tasks: any[] = []): CuStore {
@@ -236,7 +237,12 @@ export function createClickUpFetch(store: CuStore) {
       return ok(task);
     }
     if (taskGet && method === 'DELETE') {
-      delete store.tasks[taskGet[1]];
+      if (store.failDelete) return { ok: false, status: 500, json: async () => ({}) };
+      const deletedId = taskGet[1];
+      delete store.tasks[deletedId];
+      for (const listId of Object.keys(store.listTasks)) {
+        store.listTasks[listId] = store.listTasks[listId].filter((id) => id !== deletedId);
+      }
       return ok({});
     }
 
