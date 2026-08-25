@@ -48,8 +48,8 @@ export class ClickUpInboxRedisKv implements AtividadeKv, ClickUpW2Store, OnModul
     return this.w2.assertReady();
   }
 
-  acquireLock(organizationId: string, telefoneCanonico: string) {
-    return this.w2.acquireLock(organizationId, telefoneCanonico);
+  acquireLock(organizationId: string, telefoneCanonico: string, ttlMs?: number) {
+    return this.w2.acquireLock(organizationId, telefoneCanonico, ttlMs);
   }
 
   releaseLock(organizationId: string, telefoneCanonico: string, token: string) {

@@ -97,6 +97,8 @@ export type CuStore = {
   spaces?: CuStoreSpace[];
   failCatalogSpace?: string;
   failConfirmAttachment?: boolean;
+  abort?: boolean;
+  chunkOverCap?: boolean;
   media?: Record<string, { bytes: Buffer; mime: string }>;
   failPages?: boolean;
   statusCode?: number;
@@ -128,6 +130,11 @@ export function createClickUpFetch(store: CuStore) {
     const isForm = typeof FormData !== 'undefined' && init?.body instanceof FormData;
     const body = isForm || !init?.body ? undefined : JSON.parse(String(init.body));
 
+    if (store.abort) {
+      const erro = new Error('aborted') as Error & { name: string };
+      erro.name = 'AbortError';
+      throw erro;
+    }
     if (store.statusCode) {
       return { ok: false, status: store.statusCode, json: async () => ({ err: 'nope' }) };
     }
@@ -317,12 +324,14 @@ export function createClickUpFetch(store: CuStore) {
       if (!task) return { ok: false, status: 404, json: async () => ({}) };
       const id = `att-${(task.attachments ?? []).length + 1}`;
       let title = 'anexo';
+      let size: number | undefined;
       if (isForm) {
-        const file = (init?.body as FormData).get('attachment') as { name?: string } | null;
+        const file = (init?.body as FormData).get('attachment') as { name?: string; size?: number } | null;
         if (file?.name) title = file.name;
+        if (typeof file?.size === 'number') size = file.size;
       }
       if (!store.failConfirmAttachment) {
-        task.attachments = [...(task.attachments ?? []), { id, title }];
+        task.attachments = [...(task.attachments ?? []), { id, title, size }];
       }
       return ok({ id });
     }
@@ -465,12 +474,34 @@ export function buildHarness(opts: {
   conversations?: any[];
   messages?: any[];
   attachments?: any[];
+  storage?: any;
 }) {
   limparRecuperacoesAtividade();
   const env = opts.env ?? testEnv();
   const store = opts.store ?? emptyStore();
   const fetchFn = opts.fetchFn ?? createClickUpFetch(store);
   const mediaFetch = jest.fn(async (url: string) => {
+    if (store.chunkOverCap) {
+      let sent = false;
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        arrayBuffer: async () => new ArrayBuffer(0),
+        body: {
+          getReader() {
+            return {
+              async read() {
+                if (sent) return { done: true as const };
+                sent = true;
+                return { done: false as const, value: { byteLength: 25 * 1024 * 1024 + 1 } };
+              },
+              cancel() {},
+            };
+          },
+        },
+      };
+    }
     const item = store.media?.[url];
     if (!item) {
       return {
@@ -518,6 +549,7 @@ export function buildHarness(opts: {
     catalog,
     atividadeKv,
     w2Store,
+    opts.storage,
   );
   return { service, config, http, match, catalog, prisma, fetchFn, mediaFetch, store, atividadeKv, w2Store };
 }

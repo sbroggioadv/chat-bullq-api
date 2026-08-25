@@ -1,4 +1,6 @@
 export const W2_LOCK_TTL_MS = 120_000;
+/** Download 60s + GET 15s + upload 60s + confirm 15s, plus margin. */
+export const W3_LOCK_TTL_MS = 180_000;
 export const W2_LOCK_WAIT_MS = 10_000;
 export const W2_RECEIPT_TTL_SECONDS = 24 * 60 * 60;
 
@@ -8,7 +10,7 @@ export type W2Receipt =
 
 export type ClickUpW2Store = {
   assertReady(): Promise<void>;
-  acquireLock(organizationId: string, telefoneCanonico: string): Promise<string>;
+  acquireLock(organizationId: string, telefoneCanonico: string, ttlMs?: number): Promise<string>;
   releaseLock(organizationId: string, telefoneCanonico: string, token: string): Promise<void>;
   getReceipt(
     organizationId: string,
@@ -103,7 +105,7 @@ export class MemoryW2Store implements ClickUpW2Store {
     if (this.failReady) throw redisUnavailable();
   }
 
-  async acquireLock(organizationId: string, telefoneCanonico: string): Promise<string> {
+  async acquireLock(organizationId: string, telefoneCanonico: string, _ttlMs?: number): Promise<string> {
     await this.assertReady();
     if (this.failLockSet) throw redisUnavailable();
     const key = w2LockKey(organizationId, telefoneCanonico);
@@ -187,12 +189,12 @@ export class RedisW2Store implements ClickUpW2Store {
     await this.call(() => this.redis.ping());
   }
 
-  async acquireLock(organizationId: string, telefoneCanonico: string): Promise<string> {
+  async acquireLock(organizationId: string, telefoneCanonico: string, ttlMs = W2_LOCK_TTL_MS): Promise<string> {
     const key = w2LockKey(organizationId, telefoneCanonico);
     const start = Date.now();
     while (Date.now() - start < W2_LOCK_WAIT_MS) {
       const token = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const ok = await this.call(() => this.redis.set(key, token, 'PX', W2_LOCK_TTL_MS, 'NX'));
+      const ok = await this.call(() => this.redis.set(key, token, 'PX', ttlMs, 'NX'));
       if (ok === 'OK') return token;
       await delay(25 + Math.floor(Math.random() * 50));
     }

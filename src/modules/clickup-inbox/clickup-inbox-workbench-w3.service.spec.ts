@@ -1,3 +1,6 @@
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import {
   buildHarness,
   convA,
@@ -8,7 +11,7 @@ import {
   projectTask,
   workbenchEnv,
 } from './clickup-inbox.test-harness';
-import { MemoryW2Store } from './clickup-inbox-w2.store';
+import { MemoryW2Store, W3_LOCK_TTL_MS } from './clickup-inbox-w2.store';
 import { HISTORICO_PREFIX, MAX_ATTACHMENT_BYTES } from './domain/incorporacao';
 
 const KEY_A = '11111111-1111-4111-8111-111111111111';
@@ -63,6 +66,8 @@ function w3Harness(opts: {
   attachments?: any[];
   store?: ReturnType<typeof emptyWorkbenchStore>;
   w2Store?: MemoryW2Store;
+  storage?: any;
+  env?: Record<string, string>;
 } = {}) {
   const conv = opts.conv ?? boundGroup();
   const project = opts.project === undefined ? null : opts.project;
@@ -77,7 +82,7 @@ function w3Harness(opts: {
     conv,
     project,
     ...buildHarness({
-      env: workbenchEnv(),
+      env: opts.env ?? workbenchEnv(),
       conv,
       conversations: [conv],
       projects: project ? [project] : [],
@@ -86,6 +91,7 @@ function w3Harness(opts: {
       attachments: opts.attachments ?? [],
       store,
       w2Store: opts.w2Store,
+      storage: opts.storage,
     }),
   };
 }
@@ -342,5 +348,196 @@ describe('SPEC-009 W3 incorporations', () => {
       422,
       'CLICKUP_INVALID_VALUE',
     );
+  });
+
+  const uploadsUrl = '/api/v1/uploads/documents/2026-08-25/file.pdf';
+
+  it('F-01 local presente lê o arquivo; S3 cobre local ausente; faltando nos dois é 422', async () => {
+    const root = join(process.cwd(), 'uploads-w3-test');
+    const prev = process.env.UPLOADS_DIR;
+    process.env.UPLOADS_DIR = root;
+    const rel = 'documents/2026-08-25/file.pdf';
+    mkdirSync(join(root, 'documents/2026-08-25'), { recursive: true });
+    writeFileSync(join(root, rel), '%PDF-local');
+    try {
+      const local = w3Harness({
+        messages: [fileMessage('msg-up', { content: { url: uploadsUrl, mimeType: 'application/pdf', fileName: 'file.pdf' } })],
+      });
+      const out = await local.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-up',
+      });
+      expect(out.ok).toBe(true);
+      expect(attachmentPosts(local.fetchFn).length).toBe(1);
+      expect(local.mediaFetch).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      if (prev === undefined) delete process.env.UPLOADS_DIR;
+      else process.env.UPLOADS_DIR = prev;
+    }
+
+    const getObject = jest.fn(async () => Readable.from([Buffer.from('%PDF-s3')]));
+    const s3 = w3Harness({
+      messages: [fileMessage('msg-up', { content: { url: uploadsUrl, mimeType: 'application/pdf', fileName: 'file.pdf' } })],
+      storage: {
+        isReady: () => true,
+        getBucket: () => 'bullq',
+        getClient: () => ({ getObject }),
+      },
+    });
+    const s3Out = await s3.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+      kind: 'attachment',
+      messageId: 'msg-up',
+    });
+    expect(s3Out.ok).toBe(true);
+    expect(getObject).toHaveBeenCalledWith('bullq', 'documents/2026-08-25/file.pdf');
+    expect(attachmentPosts(s3.fetchFn).length).toBe(1);
+
+    const missing = w3Harness({
+      project: projectA(),
+      messages: [fileMessage('msg-up', { content: { url: uploadsUrl, mimeType: 'application/pdf', fileName: 'file.pdf' } })],
+    });
+    await expectHttp(
+      missing.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-up',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
+    expect(missing.mediaFetch).toHaveBeenCalled();
+    expect(attachmentPosts(missing.fetchFn).length).toBe(0);
+
+    const clip = w3Harness({
+      project: null,
+      messages: [fileMessage('msg-up', { content: { url: uploadsUrl, mimeType: 'application/pdf', fileName: 'file.pdf' } })],
+      storage: {
+        isReady: () => true,
+        getBucket: () => 'bullq',
+        getClient: () => ({ getObject: async () => Readable.from([Buffer.from('%PDF-clip')]) }),
+      },
+    });
+    const clipOut = await clip.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+      kind: 'attachment',
+      messageId: 'msg-up',
+    });
+    expect(clipOut.ok).toBe(true);
+    expect(attachmentPosts(clip.fetchFn).length).toBe(1);
+  });
+
+  it('F-02 declaração image/png e bytes MZ/x-msdownload fazem zero POST', async () => {
+    const mz = Buffer.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]);
+    const store = emptyWorkbenchStore([projectTask('task-hold', 'list-holding')]);
+    store.media = {
+      'https://files.test/spoofed.png': { bytes: mz, mime: 'application/x-msdownload' },
+    };
+    const { service, fetchFn } = w3Harness({
+      store,
+      messages: [
+        fileMessage('msg-spoof', {
+          content: {
+            url: 'https://files.test/spoofed.png',
+            mimeType: 'image/png',
+            fileName: 'spoofed.png',
+          },
+        }),
+      ],
+    });
+    await expectHttp(
+      service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-spoof',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
+    expect(attachmentPosts(fetchFn).length).toBe(0);
+  });
+
+  it('F-03 não recupera por filename homônimo; lock cobre o pior caso', async () => {
+    expect(W3_LOCK_TTL_MS).toBeGreaterThanOrEqual(150_000);
+    const store = emptyWorkbenchStore([
+      projectTask('task-hold', 'list-holding', {
+        attachments: [{ id: 'att-old', title: 'contrato.pdf', size: 99 }],
+      }),
+    ]);
+    store.media = {
+      'https://files.test/contrato.pdf': { bytes: Buffer.from('%PDF-new-bytes'), mime: 'application/pdf' },
+    };
+    const { service, fetchFn } = w3Harness({ store });
+    const created = await service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+      kind: 'attachment',
+      messageId: 'msg-file',
+    });
+    expect(created.id).not.toBe('att-old');
+    expect(attachmentPosts(fetchFn).length).toBe(1);
+
+    const again = await service.incorporateWorkbench('org-a', 'conv-a', KEY_B, {
+      kind: 'attachment',
+      messageId: 'msg-file',
+    });
+    expect(again.id).toBe(created.id);
+    expect(attachmentPosts(fetchFn).length).toBe(1);
+  });
+
+  it('AC-19 matriz 401/403/404/409/429/5xx/timeout/config e cap exato 25 MiB', async () => {
+    for (const status of [401, 403, 404, 409, 429, 500]) {
+      const row = w3Harness();
+      row.store.statusCode = status;
+      await expect(row.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'comment',
+        messageId: 'msg-1',
+      })).rejects.toBeTruthy();
+      expect(commentPosts(row.fetchFn).length).toBe(0);
+    }
+
+    const timed = w3Harness();
+    timed.store.abort = true;
+    await expectHttp(
+      timed.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'comment',
+        messageId: 'msg-1',
+      }),
+      504,
+      'CLICKUP_TIMEOUT',
+    );
+
+    const env = workbenchEnv();
+    env.CLICKUP_API_KEY = '';
+    const bare = w3Harness({ env });
+    await expectHttp(
+      bare.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'comment',
+        messageId: 'msg-1',
+      }),
+      503,
+      'CLICKUP_NOT_CONFIGURED',
+    );
+
+    const exact = Buffer.alloc(MAX_ATTACHMENT_BYTES, 1);
+    const cap = w3Harness({
+      messages: [fileMessage('msg-exact', { content: { url: 'https://files.test/exact.pdf', mimeType: 'application/pdf', fileName: 'exact.pdf' } })],
+    });
+    cap.store.media = { 'https://files.test/exact.pdf': { bytes: exact, mime: 'application/pdf' } };
+    const ok = await cap.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+      kind: 'attachment',
+      messageId: 'msg-exact',
+    });
+    expect(ok.ok).toBe(true);
+    expect(attachmentPosts(cap.fetchFn).length).toBe(1);
+
+    const chunked = w3Harness({
+      messages: [fileMessage('msg-chunk')],
+    });
+    chunked.store.chunkOverCap = true;
+    await expectHttp(
+      chunked.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, {
+        kind: 'attachment',
+        messageId: 'msg-chunk',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
+    expect(attachmentPosts(chunked.fetchFn).length).toBe(0);
   });
 });

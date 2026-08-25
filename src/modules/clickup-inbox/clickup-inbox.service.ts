@@ -1,6 +1,7 @@
-import { HttpException, Inject, Injectable } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Optional } from '@nestjs/common';
 import { readFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
+import { StorageService } from '../storage/storage.service';
 import { PrismaService } from '../../database/prisma.service';
 import { STATUS } from './domain/casamento';
 import { canonico } from './domain/telefone';
@@ -15,9 +16,13 @@ import { comentarioSensivel, montarComentario } from './domain/comentario';
 import {
   INCORPORATE_MESSAGE_TYPES,
   MAX_ATTACHMENT_BYTES,
+  anexoDaOrigem,
+  filenameComOrigem,
   historicoSensivel,
+  marcadorOrigem,
   mimeDaOrigem,
   mimeDeFilename,
+  mimeEfetivo,
   mimePermitido,
   montarHistorico,
   nomeDaOrigem,
@@ -44,7 +49,7 @@ import {
 } from './domain/workbench';
 import { extrairTaskRef } from './domain/task-ref';
 import { CLICKUP_ATIVIDADE_KV, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
-import type { ClickUpW2Store } from './clickup-inbox-w2.store';
+import { W3_LOCK_TTL_MS, type ClickUpW2Store } from './clickup-inbox-w2.store';
 import {
   activitiesUnavailable,
   anchorConflict,
@@ -73,6 +78,7 @@ export class ClickUpInboxService {
     private readonly catalog: ClickUpCatalogService,
     @Inject(CLICKUP_ATIVIDADE_KV) private readonly atividadeKv: AtividadeKv,
     @Inject(CLICKUP_W2_STORE) private readonly w2Store: ClickUpW2Store,
+    @Optional() private readonly storage?: StorageService,
   ) {}
 
   async resolve(organizationId: string, conversationId: string) {
@@ -835,7 +841,9 @@ export class ClickUpInboxService {
     const scope = `conv:${conv.id}:w3:${parsed.value.kind}:${originId}`;
 
     await this.withStore(() => this.w2Store.assertReady());
-    const token = await this.withStore(() => this.w2Store.acquireLock(organizationId, scope));
+    const token = await this.withStore(() =>
+      this.w2Store.acquireLock(organizationId, scope, W3_LOCK_TTL_MS),
+    );
     try {
       const existing = await this.withStore(() => this.w2Store.getReceipt(organizationId, scope, key));
       if (existing?.state === 'done') {
@@ -941,10 +949,12 @@ export class ClickUpInboxService {
       senderName: message.senderName,
       direcao: message.direction,
       texto,
+      originId: messageId,
     });
     await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
     const ja = await this.http.comentarios(taskId, 40);
-    const existente = ja.find((comentario) => String(comentario.texto ?? '').includes(texto.slice(0, 80)));
+    const marker = marcadorOrigem('comment', messageId);
+    const existente = ja.find((comentario) => String(comentario.texto ?? '').includes(marker));
     if (existente?.id) {
       await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, String(existente.id)));
       return { ok: true, kind: 'comment' as const, id: String(existente.id) };
@@ -974,32 +984,51 @@ export class ClickUpInboxService {
     taskId: string,
     parsed: { messageId?: string; documentId?: string },
   ) {
+    const originId = parsed.messageId ?? parsed.documentId!;
     const origin = parsed.messageId
       ? await this.originFromMessage(organizationId, conversationId, parsed.messageId)
       : await this.originFromDocument(organizationId, conversationId, parsed.documentId!);
-    if (!mimePermitido(origin.mime, origin.filename)) {
-      invalidValue('tipo de arquivo não permitido');
-    }
     if (origin.declaredSize != null && origin.declaredSize > MAX_ATTACHMENT_BYTES) {
       invalidValue('anexo excede 25 MiB');
     }
-    const bytes = await this.lerBytesOrigem(origin.url, origin.inline);
-    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
+    if (
+      origin.mime
+      && origin.mime !== 'application/octet-stream'
+      && !mimePermitido(origin.mime, origin.filename)
+    ) {
+      invalidValue('tipo de arquivo não permitido');
+    }
+    const lido = await this.lerBytesOrigem(origin.url, origin.inline);
+    if (lido.bytes.byteLength > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
+    const efetivo = mimeEfetivo({
+      declared: origin.mime,
+      served: lido.mime,
+      filename: origin.filename,
+      bytes: lido.bytes,
+    });
+    if (!mimePermitido(efetivo, origin.filename)) {
+      invalidValue('tipo de arquivo não permitido');
+    }
+    const uploadName = filenameComOrigem(origin.filename, originId);
     await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
     const task = await this.http.taskBruta(taskId);
     const ja = Array.isArray(task?.attachments) ? task.attachments : [];
-    const match = ja.find(
-      (item: { id?: string; title?: string; name?: string }) =>
-        sanitizarFilename(String(item.title ?? item.name ?? '')) === origin.filename,
+    const match = ja.find((item: { id?: string; title?: string; name?: string; size?: number }) =>
+      anexoDaOrigem(
+        String(item.title ?? item.name ?? ''),
+        originId,
+        item.size ?? null,
+        lido.bytes.byteLength,
+      ),
     );
     if (match?.id) {
       await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, String(match.id)));
       return { ok: true, kind: 'attachment' as const, id: String(match.id) };
     }
     const criado = await this.http.uploadAttachment(taskId, {
-      filename: origin.filename,
-      mime: origin.mime,
-      bytes,
+      filename: uploadName,
+      mime: efetivo,
+      bytes: lido.bytes,
     });
     const id = String(criado?.id ?? '');
     const relido = await this.http.taskBruta(taskId);
@@ -1077,31 +1106,85 @@ export class ClickUpInboxService {
     return { url: attachment.url, filename, mime, declaredSize: null as number | null, inline: null as Buffer | null };
   }
 
-  private async lerBytesOrigem(url: string, inline: Buffer | null): Promise<Buffer> {
-    if (inline) return inline;
+  private async lerBytesOrigem(
+    url: string,
+    inline: Buffer | null,
+  ): Promise<{ bytes: Buffer; mime: string | null }> {
+    if (inline) return { bytes: inline, mime: null };
     const local = this.localUploadPath(url);
     if (local) {
       try {
         const bytes = await readFile(local);
         if (bytes.byteLength > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
-        return bytes;
+        return { bytes, mime: mimeDeFilename(local) };
       } catch (err) {
         if (err instanceof HttpException) throw err;
-        invalidValue('não foi possível ler o arquivo local');
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code && code !== 'ENOENT') invalidValue('não foi possível ler o arquivo local');
+        const fromStorage = await this.readStorageKey(this.uploadKeyFromUrl(url));
+        if (fromStorage) return fromStorage;
+        return this.fetchOriginBytes(url);
       }
     }
-    if (!HTTPS.test(url) && !url.startsWith('http://files.test/') && !url.startsWith('https://files.test/')) {
+    return this.fetchOriginBytes(url);
+  }
+
+  private async fetchOriginBytes(url: string): Promise<{ bytes: Buffer; mime: string | null }> {
+    const internal = this.isInternalUploadUrl(url);
+    if (!internal && !HTTPS.test(url) && !url.startsWith('https://files.test/')) {
       invalidValue('URL de anexo inválida');
     }
     try {
-      const { bytes } = await this.http.fetchMediaBytes(url, MAX_ATTACHMENT_BYTES);
-      return bytes;
+      return await this.http.fetchMediaBytes(url, MAX_ATTACHMENT_BYTES);
     } catch (err) {
       if (err instanceof HttpException) throw err;
       const status = (err as { status?: number })?.status;
       if (status === 422) invalidValue((err as Error).message || 'anexo inválido');
       throw err;
     }
+  }
+
+  private async readStorageKey(
+    key: string | null,
+  ): Promise<{ bytes: Buffer; mime: string | null } | null> {
+    if (!key || !this.storage?.isReady()) return null;
+    try {
+      const stream = await this.storage.getClient().getObject(this.storage.getBucket(), key);
+      const chunks: Buffer[] = [];
+      let total = 0;
+      for await (const chunk of stream as AsyncIterable<Buffer | Uint8Array | string>) {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buf.byteLength;
+        if (total > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
+        chunks.push(buf);
+      }
+      return { bytes: Buffer.concat(chunks), mime: mimeDeFilename(key) };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      return null;
+    }
+  }
+
+  private isInternalUploadUrl(url: string): boolean {
+    return url.includes('/api/v1/uploads/') || url.startsWith('/uploads/') || url.startsWith('/api/v1/uploads/');
+  }
+
+  private uploadKeyFromUrl(url: string): string | null {
+    let pathname = url;
+    try {
+      if (/^https?:\/\//i.test(url)) pathname = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+    const marker = pathname.includes('/api/v1/uploads/')
+      ? '/api/v1/uploads/'
+      : pathname.startsWith('/uploads/')
+        ? '/uploads/'
+        : null;
+    if (!marker) return null;
+    const rel = pathname.slice(pathname.indexOf(marker) + marker.length);
+    if (!rel || rel.includes('..')) return null;
+    return rel;
   }
 
   private localUploadPath(url: string): string | null {

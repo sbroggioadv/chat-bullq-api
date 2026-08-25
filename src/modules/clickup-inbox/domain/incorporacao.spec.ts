@@ -1,6 +1,9 @@
 import {
+  anexoDaOrigem,
+  filenameComOrigem,
   historicoSensivel,
   MAX_ATTACHMENT_BYTES,
+  mimeEfetivo,
   mimePermitido,
   montarHistorico,
   sanitizarFilename,
@@ -28,6 +31,22 @@ describe('incorporação W3', () => {
     expect(sanitizarFilename('../../etc/passwd')).toBe('passwd');
     expect(sanitizarFilename('')).toBe('anexo');
     expect(MAX_ATTACHMENT_BYTES).toBe(25 * 1024 * 1024);
+  });
+
+  it('MIME efetivo usa o servido/assinatura, não a declaração', () => {
+    const mz = Buffer.from([0x4d, 0x5a, 0x90, 0x00]);
+    expect(
+      mimeEfetivo({
+        declared: 'image/png',
+        served: 'application/x-msdownload',
+        filename: 'spoofed.png',
+        bytes: mz,
+      }),
+    ).toBe('application/x-msdownload');
+    expect(mimePermitido('application/x-msdownload', 'spoofed.png')).toBe(false);
+    expect(filenameComOrigem('contrato.pdf', 'msg-file')).toBe('contrato.bqx-msg-file.pdf');
+    expect(anexoDaOrigem('contrato.bqx-msg-file.pdf', 'msg-file', 12, 12)).toBe(true);
+    expect(anexoDaOrigem('contrato.pdf', 'msg-file')).toBe(false);
   });
 
   it('histórico usa tz America/Sao_Paulo e recusa texto sensível', () => {

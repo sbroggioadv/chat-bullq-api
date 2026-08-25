@@ -161,15 +161,58 @@ function extname(filename: string): string {
   return base.slice(dot).toLowerCase();
 }
 
+export function marcadorOrigem(kind: IncorporateKind, originId: string): string {
+  return `bullq-origin:${kind}:${originId}`;
+}
+
+export function filenameComOrigem(filename: string, originId: string): string {
+  const safe = sanitizarFilename(filename);
+  const marker = `.bqx-${originId}`;
+  const dot = safe.lastIndexOf('.');
+  if (dot <= 0) return `${safe}${marker}`;
+  return `${safe.slice(0, dot)}${marker}${safe.slice(dot)}`;
+}
+
+export function anexoDaOrigem(
+  title: string,
+  originId: string,
+  size?: number | null,
+  expectedSize?: number | null,
+): boolean {
+  if (!title.includes(`.bqx-${originId}`)) return false;
+  if (expectedSize != null && size != null && size !== expectedSize) return false;
+  return true;
+}
+
+export function bytesExecutaveis(bytes: Buffer): boolean {
+  return bytes.length >= 2 && bytes[0] === 0x4d && bytes[1] === 0x5a;
+}
+
+export function mimeEfetivo(input: {
+  declared: string;
+  served: string | null;
+  filename: string;
+  bytes: Buffer;
+}): string {
+  if (bytesExecutaveis(input.bytes)) return 'application/x-msdownload';
+  const served = (input.served ?? '').split(';')[0].trim().toLowerCase();
+  if (served && served !== 'application/octet-stream') return served;
+  if (input.declared && input.declared !== 'application/octet-stream') return input.declared;
+  return mimeDeFilename(input.filename) || served || '';
+}
+
 export function montarHistorico(input: {
   quando: Date;
   senderName?: string | null;
   direcao?: string | null;
   texto: string;
+  originId?: string;
 }): string {
   const quem = (input.senderName && input.senderName.trim()) || direcaoLabel(input.direcao);
   const texto = input.texto.slice(0, COMMENT_TEXT_MAX);
-  return [HISTORICO_PREFIX, '', `[${isoSaoPaulo(input.quando)}] ${quem}: ${texto}`].join('\n');
+  const linhas = [HISTORICO_PREFIX, '', `[${isoSaoPaulo(input.quando)}] ${quem}: ${texto}`];
+  if (input.originId) linhas.push('', marcadorOrigem('comment', input.originId));
+  return linhas.join('\n');
 }
 
 export function historicoSensivel(texto: string): boolean {

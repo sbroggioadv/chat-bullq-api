@@ -28,6 +28,12 @@ export type ClickUpMediaFetch = (
   status: number;
   headers: { get(name: string): string | null };
   arrayBuffer(): Promise<ArrayBuffer>;
+  body?: {
+    getReader(): {
+      read(): Promise<{ done: boolean; value?: ArrayLike<number> & { byteLength: number } }>;
+      cancel(): void | Promise<void>;
+    };
+  } | null;
 }>;
 
 @Injectable()
@@ -136,7 +142,11 @@ export class ClickUpInboxHttpClient {
     const controlador = new AbortController();
     const timer = setTimeout(() => controlador.abort(), CLICKUP_UPLOAD_TIMEOUT_MS);
     try {
-      const resposta = await this.mediaFetch(url, { method: 'GET', signal: controlador.signal });
+      const resposta = await this.mediaFetch(url, {
+        method: 'GET',
+        redirect: 'follow',
+        signal: controlador.signal,
+      });
       if (!resposta.ok) {
         const erro = new Error(`origem do anexo recusou a leitura (HTTP ${resposta.status})`) as Error & {
           status: number;
@@ -150,13 +160,40 @@ export class ClickUpInboxHttpClient {
         erro.status = 422;
         throw erro;
       }
+      const mime = resposta.headers.get('content-type');
+      const reader = resposta.body?.getReader?.();
+      if (reader) {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const len = value?.byteLength ?? 0;
+            total += len;
+            if (total > capBytes) {
+              await Promise.resolve(reader.cancel()).catch(() => undefined);
+              const erro = new Error('anexo excede 25 MiB') as Error & { status: number };
+              erro.status = 422;
+              throw erro;
+            }
+            if (value && typeof (value as { buffer?: unknown }).buffer !== 'undefined') {
+              chunks.push(Buffer.from(value as unknown as Uint8Array));
+            }
+          }
+        } catch (err) {
+          await Promise.resolve(reader.cancel()).catch(() => undefined);
+          throw err;
+        }
+        return { bytes: Buffer.concat(chunks), mime };
+      }
       const buf = Buffer.from(await resposta.arrayBuffer());
       if (buf.byteLength > capBytes) {
         const erro = new Error('anexo excede 25 MiB') as Error & { status: number };
         erro.status = 422;
         throw erro;
       }
-      return { bytes: buf, mime: resposta.headers.get('content-type') };
+      return { bytes: buf, mime };
     } catch (erro) {
       if ((erro as { name?: string })?.name === 'AbortError') {
         const timeout = new Error('tempo limite ao ler o anexo') as Error & { status: number };
