@@ -14,7 +14,7 @@ describe('perfil fechado (F-02)', () => {
     expect(validarPerfil(base)).toEqual(
       expect.objectContaining({
         ok: true,
-        profile: expect.objectContaining({ projectLists: [] }),
+        profile: expect.objectContaining({ projectLists: [], catalogSpaces: [] }),
       }),
     );
   });
@@ -73,5 +73,38 @@ describe('perfil fechado (F-02)', () => {
         lists: [{ id: 'list-leads', label: 'Leads', primary: 'true' }],
       }).ok,
     ).toBe(false);
+  });
+
+  it('aceita catalogSpaces opcional com id+label e recusa extras/duplicatas', () => {
+    const ok = validarPerfil({
+      ...base,
+      catalogSpaces: [
+        { id: 'space-comercial', label: 'Comercial' },
+        { id: 'space-projetos', label: 'Projetos' },
+      ],
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      expect(ok.profile.catalogSpaces.map((space) => space.id)).toEqual([
+        'space-comercial',
+        'space-projetos',
+      ]);
+    }
+    expect(
+      validarPerfil({
+        ...base,
+        catalogSpaces: [{ id: 'space-comercial', label: 'Comercial', extra: true }],
+      }).ok,
+    ).toBe(false);
+    expect(
+      validarPerfil({
+        ...base,
+        catalogSpaces: [
+          { id: 'space-comercial', label: 'A' },
+          { id: 'space-comercial', label: 'B' },
+        ],
+      }).ok,
+    ).toBe(false);
+    expect(validarPerfil({ ...base, catalogSpaces: 'space-comercial' }).ok).toBe(false);
   });
 });

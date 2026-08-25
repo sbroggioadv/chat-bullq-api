@@ -22,7 +22,7 @@ export class ClickUpInboxWorkbenchController {
   }
 
   @Get('catalog')
-  @ApiOperation({ summary: 'Catálogo de atalhos (W0). Árvore live entra em W1.' })
+  @ApiOperation({ summary: 'Catálogo live space → folder → list (atalhos se catalogSpaces vazio)' })
   catalog(
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,
@@ -31,13 +31,14 @@ export class ClickUpInboxWorkbenchController {
   }
 
   @Get('tasks/search')
-  @ApiOperation({ summary: 'Busca tasks ClickUp no catálogo de atalhos' })
+  @ApiOperation({ summary: 'Busca tasks ClickUp no catálogo (atalhos, ou um space allowlisted)' })
   search(
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,
     @Query('q') q: string,
+    @Query('spaceId') spaceId?: string,
   ) {
-    return this.service.searchWorkbenchTasks(orgId, conversationId, q);
+    return this.service.searchWorkbenchTasks(orgId, conversationId, q, spaceId);
   }
 
   @Post('bind')
@@ -52,7 +53,7 @@ export class ClickUpInboxWorkbenchController {
   }
 
   @Post('tasks')
-  @ApiOperation({ summary: 'Cria uma task ClickUp numa lista de atalho e ancora na conversa' })
+  @ApiOperation({ summary: 'Cria uma task ClickUp numa lista autorizada (atalhos ∪ catálogo live)' })
   create(
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,

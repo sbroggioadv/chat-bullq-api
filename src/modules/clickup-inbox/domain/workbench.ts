@@ -40,3 +40,60 @@ export function idsCatalogoAtalhos(profile: {
   for (const lista of profile.projectLists) ids.add(lista.id);
   return ids;
 }
+
+export type LiveCatalogList = {
+  id: string;
+  label: string;
+};
+
+export type LiveCatalogFolder = {
+  id: string;
+  label: string;
+  lists: LiveCatalogList[];
+};
+
+export type LiveCatalogSpace = {
+  id: string;
+  label: string;
+  folders: LiveCatalogFolder[];
+  lists: LiveCatalogList[];
+};
+
+export type LiveCatalogTree = {
+  spaces: LiveCatalogSpace[];
+};
+
+export function idsCatalogoLive(tree: LiveCatalogTree | null | undefined): Set<string> {
+  const ids = new Set<string>();
+  if (!tree) return ids;
+  for (const space of tree.spaces) {
+    for (const lista of space.lists) ids.add(lista.id);
+    for (const folder of space.folders) {
+      for (const lista of folder.lists) ids.add(lista.id);
+    }
+  }
+  return ids;
+}
+
+export function idsCatalogoUniao(
+  profile: {
+    lists: Array<{ id: string }>;
+    projectLists: Array<{ id: string }>;
+  },
+  tree?: LiveCatalogTree | null,
+): Set<string> {
+  const ids = idsCatalogoAtalhos(profile);
+  for (const id of idsCatalogoLive(tree)) ids.add(id);
+  return ids;
+}
+
+export function listsDoSpace(tree: LiveCatalogTree, spaceId: string): string[] {
+  const space = tree.spaces.find((item) => item.id === spaceId);
+  if (!space) return [];
+  const ids: string[] = [];
+  for (const lista of space.lists) ids.push(lista.id);
+  for (const folder of space.folders) {
+    for (const lista of folder.lists) ids.push(lista.id);
+  }
+  return ids;
+}

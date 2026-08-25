@@ -17,8 +17,15 @@ import {
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
+import { ClickUpCatalogService } from './clickup-catalog.service';
 import { listaPrincipal } from './domain/perfil';
-import { catalogoAtalhos, idsCatalogoAtalhos, WORKBENCH_STATUS } from './domain/workbench';
+import {
+  catalogoAtalhos,
+  idsCatalogoAtalhos,
+  idsCatalogoUniao,
+  listsDoSpace,
+  WORKBENCH_STATUS,
+} from './domain/workbench';
 import { extrairTaskRef } from './domain/task-ref';
 import { CLICKUP_ATIVIDADE_KV, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
 import type { ClickUpW2Store } from './clickup-inbox-w2.store';
@@ -48,6 +55,7 @@ export class ClickUpInboxService {
     private readonly config: ClickUpInboxConfigService,
     private readonly http: ClickUpInboxHttpClient,
     private readonly match: ClickUpMatchService,
+    private readonly catalog: ClickUpCatalogService,
     @Inject(CLICKUP_ATIVIDADE_KV) private readonly atividadeKv: AtividadeKv,
     @Inject(CLICKUP_W2_STORE) private readonly w2Store: ClickUpW2Store,
   ) {}
@@ -496,8 +504,8 @@ export class ClickUpInboxService {
     const conv = await this.loadConversation(organizationId, conversationId);
     if (conv.clickupTaskId === taskId) {
       await this.ensureRemote();
-      await this.assertTaskOnAuthorizedLists(taskId, idsCatalogoAtalhos(this.config.profile()));
-      return { kind: 'conversation' as const, conv };
+      await this.assertTaskOnAuthorizedLists(taskId, await this.authorizedListIds(organizationId));
+      return { kind: 'conversation' as const, conv, organizationId };
     }
     if (conv.clickupTaskId) {
       taskNotBound('task não vinculada a esta conversa');
@@ -505,7 +513,7 @@ export class ClickUpInboxService {
     if (!conv.isGroup) {
       await this.ensureRemote();
       await this.assertTaskBound(taskId, conv.contact.phone);
-      return { kind: 'phone' as const, conv };
+      return { kind: 'phone' as const, conv, organizationId };
     }
     taskNotBound('task não vinculada a esta conversa');
   }
@@ -530,7 +538,10 @@ export class ClickUpInboxService {
     if (conv.clickupTaskId) {
       try {
         await this.ensureRemote();
-        const card = await this.cardPorListas(conv.clickupTaskId, idsCatalogoAtalhos(profile));
+        const card = await this.cardPorListas(
+          conv.clickupTaskId,
+          await this.authorizedListIds(organizationId),
+        );
         return {
           ...base,
           status: WORKBENCH_STATUS.TASK_VINCULADA,
@@ -560,17 +571,43 @@ export class ClickUpInboxService {
   async catalogWorkbench(organizationId: string, conversationId: string) {
     this.assertOrg(organizationId);
     await this.loadConversation(organizationId, conversationId);
-    return { catalogShortcuts: catalogoAtalhos(this.config.profile()) };
+    const profile = this.config.profile();
+    const catalogShortcuts = catalogoAtalhos(profile);
+    if (profile.catalogSpaces.length === 0) {
+      return { catalogShortcuts, spaces: [] as const };
+    }
+    await this.ensureRemote();
+    try {
+      const cache = await this.catalog.garantirArvore(organizationId);
+      return { catalogShortcuts, spaces: cache.tree.spaces };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
   }
 
-  async searchWorkbenchTasks(organizationId: string, conversationId: string, q: string) {
+  async searchWorkbenchTasks(
+    organizationId: string,
+    conversationId: string,
+    q: string,
+    spaceId?: string,
+  ) {
     this.assertOrg(organizationId);
     const conv = await this.loadConversation(organizationId, conversationId);
     const query = String(q ?? '').trim();
     if (!query) invalidValue('informe um id, URL ou termo de busca');
-    const allow = idsCatalogoAtalhos(this.config.profile());
+    const profile = this.config.profile();
+    const space = String(spaceId ?? '').trim();
+    if (space) {
+      if (!profile.catalogSpaces.some((item) => item.id === space)) {
+        invalidValue('space fora do catálogo autorizado');
+      }
+    }
     await this.ensureRemote();
     try {
+      const allow = space
+        ? new Set(listsDoSpace((await this.catalog.garantirArvore(organizationId)).tree, space))
+        : idsCatalogoAtalhos(profile);
       const direto = pareceIdDeTask(query);
       if (direto) {
         try {
@@ -607,16 +644,17 @@ export class ClickUpInboxService {
     const conv = await this.loadConversation(organizationId, conversationId);
     const taskId = extrairTaskRef(dto.taskRef);
     if (!taskId) invalidValue('referência de task inválida');
-    const allow = idsCatalogoAtalhos(this.config.profile());
     const project = await this.loadLinkedProject(organizationId, conversationId);
 
     if (conv.clickupTaskId === taskId) {
       await this.ensureRemote();
+      const allow = await this.authorizedListIds(organizationId);
       const card = await this.cardPorListas(taskId, allow);
       return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
     }
     if (conv.clickupTaskId && dto.confirmSwitch !== true) {
       await this.ensureRemote();
+      const allow = await this.authorizedListIds(organizationId);
       const card = await this.safeCard(conv.clickupTaskId, allow);
       anchorConflict(card);
     }
@@ -632,15 +670,18 @@ export class ClickUpInboxService {
           await this.ancorarConversacao(relido, existing.taskId);
         }
         await this.ensureRemote();
+        const allow = await this.authorizedListIds(organizationId);
         const card = await this.cardPorListas(existing.taskId, allow);
         return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
       }
       if (relido.clickupTaskId && relido.clickupTaskId !== taskId && dto.confirmSwitch !== true) {
         await this.ensureRemote();
+        const allow = await this.authorizedListIds(organizationId);
         const card = await this.safeCard(relido.clickupTaskId, allow);
         anchorConflict(card);
       }
       await this.ensureRemote();
+      const allow = await this.authorizedListIds(organizationId);
       await this.assertTaskOnAuthorizedLists(taskId, allow);
       await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
       await this.ancorarConversacao(relido, taskId);
@@ -672,8 +713,16 @@ export class ClickUpInboxService {
     const listId = String(dto.listId ?? '').trim();
     const name = String(dto.name ?? '').trim();
     if (!name) invalidValue('nome da task é obrigatório');
-    const allow = idsCatalogoAtalhos(this.config.profile());
-    if (!allow.has(listId)) invalidValue('lista fora do catálogo autorizado');
+    if (!idSeguro(listId)) invalidValue('lista fora do catálogo autorizado');
+    const shortcuts = idsCatalogoAtalhos(this.config.profile());
+    if (!shortcuts.has(listId)) {
+      if (this.config.profile().catalogSpaces.length === 0) {
+        invalidValue('lista fora do catálogo autorizado');
+      }
+      await this.ensureRemote();
+      const allow = await this.authorizedListIds(organizationId);
+      if (!allow.has(listId)) invalidValue('lista fora do catálogo autorizado');
+    }
 
     const project = await this.loadLinkedProject(organizationId, conversationId);
 
@@ -689,16 +738,20 @@ export class ClickUpInboxService {
           await this.ancorarConversacao(relido, existing.taskId);
         }
         await this.ensureRemote();
+        const allow = await this.authorizedListIds(organizationId);
         const card = await this.cardPorListas(existing.taskId, allow);
         return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
       }
       if (relido.clickupTaskId && dto.confirmSwitch !== true) {
         await this.ensureRemote();
+        const allow = await this.authorizedListIds(organizationId);
         const card = await this.safeCard(relido.clickupTaskId, allow);
         anchorConflict(card);
       }
 
       await this.ensureRemote();
+      const allow = await this.authorizedListIds(organizationId);
+      if (!allow.has(listId)) invalidValue('lista fora do catálogo autorizado');
       await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
       const criado = await this.http.write(`/list/${encodeURIComponent(listId)}/task`, { name });
       const taskId = String(criado?.id ?? '');
@@ -948,12 +1001,24 @@ export class ClickUpInboxService {
     return task;
   }
 
+  private async authorizedListIds(organizationId: string): Promise<Set<string>> {
+    const profile = this.config.profile();
+    const shortcuts = idsCatalogoAtalhos(profile);
+    if (profile.catalogSpaces.length === 0) return shortcuts;
+    try {
+      const cache = await this.catalog.garantirArvore(organizationId);
+      return idsCatalogoUniao(profile, cache.tree);
+    } catch {
+      return shortcuts;
+    }
+  }
+
   private async assertTaskForBound(
     bound: Awaited<ReturnType<ClickUpInboxService['prepareBound']>>,
     taskId: string,
   ) {
     if (bound.kind === 'conversation') {
-      return this.assertTaskOnAuthorizedLists(taskId, idsCatalogoAtalhos(this.config.profile()));
+      return this.assertTaskOnAuthorizedLists(taskId, await this.authorizedListIds(bound.organizationId));
     }
     return this.assertTaskBound(taskId, bound.conv.contact.phone);
   }
@@ -963,7 +1028,7 @@ export class ClickUpInboxService {
     taskId: string,
   ) {
     if (bound.kind === 'conversation') {
-      return this.cardPorListas(taskId, idsCatalogoAtalhos(this.config.profile()));
+      return this.cardPorListas(taskId, await this.authorizedListIds(bound.organizationId));
     }
     return this.cardCompleto(taskId, bound.conv.contact.phone);
   }

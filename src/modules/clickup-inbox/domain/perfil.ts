@@ -12,6 +12,11 @@ export type ClickUpProjectList = {
   label: string;
 };
 
+export type ClickUpCatalogSpace = {
+  id: string;
+  label: string;
+};
+
 export type ClickUpInboxActivities = {
   listId: string;
   relationFieldId: string;
@@ -20,6 +25,7 @@ export type ClickUpInboxActivities = {
 export type ClickUpInboxProfile = {
   lists: ClickUpInboxList[];
   projectLists: ClickUpProjectList[];
+  catalogSpaces: ClickUpCatalogSpace[];
   whatsappFieldId: string;
   blockedFieldIds: string[];
   tag: string | null;
@@ -28,9 +34,11 @@ export type ClickUpInboxProfile = {
 
 const LIST_KEYS = ['id', 'label', 'primary'];
 const PROJECT_LIST_KEYS = ['id', 'label'];
+const CATALOG_SPACE_KEYS = ['id', 'label'];
 const PROFILE_KEYS = [
   'lists',
   'projectLists',
+  'catalogSpaces',
   'whatsappFieldId',
   'blockedFieldIds',
   'tag',
@@ -118,6 +126,33 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
     }
   }
 
+  const catalogSpaces: ClickUpCatalogSpace[] = [];
+  if (raw.catalogSpaces != null) {
+    if (!Array.isArray(raw.catalogSpaces)) {
+      return { ok: false, erro: 'catalogSpaces deve ser uma lista' };
+    }
+    const seenSpaces = new Set<string>();
+    for (const space of raw.catalogSpaces as Array<Record<string, unknown>>) {
+      if (extras(space, CATALOG_SPACE_KEYS).length) {
+        return { ok: false, erro: 'um space do catálogo contém campos extras' };
+      }
+      if (!idSeguro(space?.id)) {
+        return { ok: false, erro: 'o perfil contém um space inválido' };
+      }
+      if (!labelValido(space.label)) {
+        return { ok: false, erro: 'cada space precisa de um rótulo textual' };
+      }
+      if (seenSpaces.has(space.id)) {
+        return { ok: false, erro: 'o perfil contém spaces duplicados' };
+      }
+      seenSpaces.add(space.id);
+      catalogSpaces.push({
+        id: space.id,
+        label: space.label.trim().slice(0, 160),
+      });
+    }
+  }
+
   if (!idSeguro(raw.whatsappFieldId)) {
     return { ok: false, erro: 'selecione um campo de telefone válido' };
   }
@@ -150,6 +185,7 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
     profile: {
       lists,
       projectLists,
+      catalogSpaces,
       whatsappFieldId: raw.whatsappFieldId,
       blockedFieldIds,
       tag,
@@ -168,6 +204,7 @@ export function fingerprintPerfil(profile: ClickUpInboxProfile): string {
       .map((lista) => [lista.id, Boolean(lista.primary)] as const)
       .sort(([a], [b]) => a.localeCompare(b)),
     projectLists: profile.projectLists.map((lista) => lista.id).sort(),
+    catalogSpaces: profile.catalogSpaces.map((space) => space.id).sort(),
     whatsappFieldId: profile.whatsappFieldId,
     blocked: [...profile.blockedFieldIds].sort(),
     tag: profile.tag ?? '',

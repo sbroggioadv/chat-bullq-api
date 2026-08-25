@@ -4,6 +4,7 @@ import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpInboxService } from './clickup-inbox.service';
 import { MemoryW2Store, type ClickUpW2Store } from './clickup-inbox-w2.store';
 import { ClickUpMatchService } from './clickup-match.service';
+import { ClickUpCatalogService } from './clickup-catalog.service';
 import {
   MemoryAtividadeKv,
   limparRecuperacoesAtividade,
@@ -81,11 +82,20 @@ export function leadTaskWritable(id: string, phone: string) {
   });
 }
 
+export type CuStoreSpace = {
+  id: string;
+  name: string;
+  folders: Array<{ id: string; name: string; lists: Array<{ id: string; name: string }> }>;
+  lists: Array<{ id: string; name: string }>;
+};
+
 export type CuStore = {
   listsInTeam: string[];
   tasks: Record<string, any>;
   listTasks: Record<string, string[]>;
   comments: Record<string, Array<{ id: string; comment_text: string }>>;
+  spaces?: CuStoreSpace[];
+  failCatalogSpace?: string;
   failPages?: boolean;
   statusCode?: number;
   ignoreFieldWrites?: boolean;
@@ -126,15 +136,34 @@ export function createClickUpFetch(store: CuStore) {
       return ok({ teams: [{ id: 'team-test', name: 'Sbroggioadv-test' }] });
     }
     if (path === '/team/team-test/space' && method === 'GET') {
+      if (store.spaces) {
+        return ok({ spaces: store.spaces.map((space) => ({ id: space.id, name: space.name })) });
+      }
       return ok({ spaces: [{ id: 'space-1', name: 'Espaço' }] });
     }
-    if (path === '/space/space-1/folder' && method === 'GET') {
-      return ok({ folders: [] });
+    const spaceFolder = path.match(/^\/space\/([^/]+)\/folder$/);
+    if (spaceFolder && method === 'GET') {
+      const spaceId = spaceFolder[1];
+      if (store.failCatalogSpace === spaceId) {
+        return { ok: false, status: 500, json: async () => ({ err: 'space down' }) };
+      }
+      const space = store.spaces?.find((item) => item.id === spaceId);
+      if (space) return ok({ folders: space.folders });
+      if (spaceId === 'space-1') return ok({ folders: [] });
     }
-    if (path === '/space/space-1/list' && method === 'GET') {
-      return ok({
-        lists: store.listsInTeam.map((id) => ({ id, name: id, task_count: 0 })),
-      });
+    const spaceList = path.match(/^\/space\/([^/]+)\/list$/);
+    if (spaceList && method === 'GET') {
+      const spaceId = spaceList[1];
+      if (store.failCatalogSpace === spaceId) {
+        return { ok: false, status: 500, json: async () => ({ err: 'space down' }) };
+      }
+      const space = store.spaces?.find((item) => item.id === spaceId);
+      if (space) return ok({ lists: space.lists });
+      if (spaceId === 'space-1') {
+        return ok({
+          lists: store.listsInTeam.map((id) => ({ id, name: id, task_count: 0 })),
+        });
+      }
     }
 
     if (path === '/team/team-test/task' && method === 'GET') {
@@ -393,6 +422,7 @@ export function buildHarness(opts: {
   } as ConfigService);
   const http = new ClickUpInboxHttpClient(config, fetchFn as any);
   const match = new ClickUpMatchService(config, http);
+  const catalog = new ClickUpCatalogService(config, http);
   const prisma = makePrisma(opts.conv, undefined, {
     conversations: opts.conversations,
     projects: opts.projects,
@@ -405,10 +435,11 @@ export function buildHarness(opts: {
     config,
     http,
     match,
+    catalog,
     atividadeKv,
     w2Store,
   );
-  return { service, config, http, match, prisma, fetchFn, store, atividadeKv, w2Store };
+  return { service, config, http, match, catalog, prisma, fetchFn, store, atividadeKv, w2Store };
 }
 
 export function mutationCalls(fetchFn: jest.Mock) {
@@ -508,6 +539,78 @@ export function emptyWorkbenchStore(tasks: any[] = []): CuStore {
     .filter((t) => t.list?.id === 'list-consultivo')
     .map((t) => t.id);
   store.listTasks['list-iniciais'] = tasks.filter((t) => t.list?.id === 'list-iniciais').map((t) => t.id);
+  return store;
+}
+
+export const LIVE_CATALOG_PROFILE = {
+  ...WORKBENCH_PROFILE,
+  catalogSpaces: [
+    { id: 'space-comercial', label: 'Comercial' },
+    { id: 'space-projetos', label: 'Projetos' },
+  ],
+};
+
+export function liveCatalogSpaces(): CuStoreSpace[] {
+  return [
+    {
+      id: 'space-comercial',
+      name: 'Comercial',
+      folders: [],
+      lists: [
+        { id: 'list-vendas', name: 'Processo de Vendas' },
+        { id: 'list-consultivo-comercial', name: 'Consultivo' },
+        { id: 'list-acts', name: 'Atividades' },
+      ],
+    },
+    {
+      id: 'space-projetos',
+      name: 'Projetos',
+      folders: [
+        {
+          id: 'folder-iniciais',
+          name: 'Iniciais',
+          lists: [
+            { id: 'list-iniciais', name: 'Iniciais Judiciais a Distribuir' },
+            { id: 'list-iniciais-live', name: 'Iniciais a Confeccionar' },
+          ],
+        },
+      ],
+      lists: [
+        { id: 'list-holding', name: 'Holding' },
+        { id: 'list-holding-live', name: 'Holding Extra' },
+        { id: 'list-consultivo', name: 'Consultivo' },
+        { id: 'list-consultivo-projetos', name: 'Consultivo' },
+      ],
+    },
+  ];
+}
+
+export function emptyLiveCatalogStore(tasks: any[] = []): CuStore {
+  const store = emptyWorkbenchStore(tasks);
+  store.spaces = liveCatalogSpaces();
+  store.listsInTeam = [
+    'list-vendas',
+    'list-acts',
+    'list-holding',
+    'list-consultivo',
+    'list-iniciais',
+    'list-consultivo-comercial',
+    'list-holding-live',
+    'list-iniciais-live',
+    'list-consultivo-projetos',
+  ];
+  store.listTasks['list-consultivo-comercial'] = tasks
+    .filter((t) => t.list?.id === 'list-consultivo-comercial')
+    .map((t) => t.id);
+  store.listTasks['list-holding-live'] = tasks
+    .filter((t) => t.list?.id === 'list-holding-live')
+    .map((t) => t.id);
+  store.listTasks['list-iniciais-live'] = tasks
+    .filter((t) => t.list?.id === 'list-iniciais-live')
+    .map((t) => t.id);
+  store.listTasks['list-consultivo-projetos'] = tasks
+    .filter((t) => t.list?.id === 'list-consultivo-projetos')
+    .map((t) => t.id);
   return store;
 }
 

@@ -6,6 +6,7 @@ import { ClickUpInboxService } from './clickup-inbox.service';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
+import { ClickUpCatalogService } from './clickup-catalog.service';
 import { CLICKUP_ATIVIDADE_KV, CLICKUP_FETCH, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
 import { ClickUpInboxRedisKv } from './clickup-inbox-redis.kv';
 
@@ -28,6 +29,7 @@ import { ClickUpInboxRedisKv } from './clickup-inbox-redis.kv';
     ClickUpInboxConfigService,
     ClickUpInboxHttpClient,
     ClickUpMatchService,
+    ClickUpCatalogService,
     ClickUpInboxService,
   ],
   exports: [ClickUpInboxService],

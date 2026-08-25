@@ -2,6 +2,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { idSeguro } from './domain/ids';
 import type { CampoMeta } from './domain/campos';
 import type { ClickUpInboxActivities } from './domain/perfil';
+import type { LiveCatalogList, LiveCatalogTree } from './domain/workbench';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { CLICKUP_FETCH } from './clickup-inbox.tokens';
 import { notConfigured } from './clickup-inbox.errors';
@@ -161,6 +162,55 @@ export class ClickUpInboxHttpClient {
     }));
   }
 
+  async catalogoDosSpaces(spaceIds: string[]): Promise<LiveCatalogTree> {
+    const local = this.config.assertLocal();
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of spaceIds) {
+      if (!idSeguro(raw) || seen.has(raw)) {
+        const erro = new Error('space do catálogo inválido') as Error & { status: number };
+        erro.status = 422;
+        throw erro;
+      }
+      seen.add(raw);
+      unique.push(raw);
+    }
+
+    const { spaces = [] } = await this.get(
+      `/team/${encodeURIComponent(local.teamId)}/space?archived=false`,
+    );
+    const byId = new Map(
+      (spaces as Array<{ id?: string; name?: string }>).map((space) => [String(space.id), space]),
+    );
+
+    const tree: LiveCatalogTree = { spaces: [] };
+    for (const id of unique) {
+      const space = byId.get(id);
+      if (!space) {
+        const erro = new Error('space do perfil não pertence ao team') as Error & { status: number };
+        erro.status = 412;
+        throw erro;
+      }
+      const [{ folders = [] }, { lists = [] }] = await Promise.all([
+        this.get(`/space/${encodeURIComponent(id)}/folder?archived=false`),
+        this.get(`/space/${encodeURIComponent(id)}/list?archived=false`),
+      ]);
+      tree.spaces.push({
+        id,
+        label: String(space.name ?? ''),
+        folders: (folders as any[])
+          .filter((folder) => idSeguro(folder?.id))
+          .map((folder) => ({
+            id: String(folder.id),
+            label: String(folder.name ?? ''),
+            lists: listasDoClickUp(folder.lists),
+          })),
+        lists: listasDoClickUp(lists),
+      });
+    }
+    return tree;
+  }
+
   async listasDoTime(teamId: string): Promise<Array<{ id: string; nome: string }>> {
     if (!idSeguro(teamId)) throw new Error('workspace inválido');
     const { spaces = [] } = await this.get(
@@ -248,6 +298,18 @@ export class ClickUpInboxHttpClient {
       throw new Error('CLICKUP_TEAM_ID inacessível');
     }
 
+    if (local.profile.catalogSpaces.length) {
+      const { spaces = [] } = await this.get(
+        `/team/${encodeURIComponent(local.teamId)}/space?archived=false`,
+      );
+      const spaceIds = new Set((spaces as Array<{ id?: string }>).map((space) => String(space.id)));
+      for (const space of local.profile.catalogSpaces) {
+        if (!spaceIds.has(space.id)) {
+          throw new Error('space do perfil não pertence ao team');
+        }
+      }
+    }
+
     const listas = await this.listasDoTime(local.teamId);
     const idsNoTeam = new Set(listas.map((lista) => lista.id));
     const required = [
@@ -271,4 +333,14 @@ export class ClickUpInboxHttpClient {
       await this.validarRelacaoAtividade(local.profile.activities);
     }
   }
+}
+
+function listasDoClickUp(raw: unknown): LiveCatalogList[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((lista) => idSeguro((lista as { id?: unknown })?.id))
+    .map((lista: { id: string; name?: string }) => ({
+      id: String(lista.id),
+      label: String(lista.name ?? ''),
+    }));
 }
