@@ -137,6 +137,16 @@ export function createClickUpFetch(store: CuStore) {
       });
     }
 
+    if (path === '/team/team-test/task' && method === 'GET') {
+      const listIds = parsed.searchParams.getAll('list_ids[]');
+      const allow = new Set(listIds);
+      const tasks = Object.values(store.tasks).filter((task: any) => {
+        if (allow.size === 0) return true;
+        return allow.has(String(task.list?.id));
+      });
+      return ok({ tasks, last_page: true });
+    }
+
     const listGet = path.match(/^\/list\/([^/]+)$/);
     if (listGet && method === 'GET') {
       const listId = listGet[1];
@@ -278,27 +288,70 @@ function ok(corpo: unknown) {
   return { ok: true, status: 200, json: async () => corpo };
 }
 
-export function makePrisma(conv: any, user: any = { name: 'Ana', email: 'ana@test' }) {
+export function makePrisma(
+  conv: any,
+  user: any = { name: 'Ana', email: 'ana@test' },
+  extra: {
+    conversations?: any[];
+    projects?: any[];
+    links?: Array<{ conversationId: string; projectId: string }>;
+  } = {},
+) {
+  const conversations = extra.conversations ?? (conv ? [conv] : []);
+  const projects = extra.projects ?? [];
+  const links = extra.links ?? [];
   return {
     conversation: {
       findFirst: jest.fn(async ({ where }: any) => {
-        if (
-          conv
-          && conv.id === where.id
-          && conv.organizationId === where.organizationId
-          && conv.deletedAt == null
-        ) {
-          return {
-            id: conv.id,
-            isGroup: conv.isGroup,
-            contact: conv.contact,
-          };
-        }
-        return null;
+        const found = conversations.find(
+          (row) =>
+            row
+            && row.id === where.id
+            && row.organizationId === where.organizationId
+            && row.deletedAt == null,
+        );
+        if (!found) return null;
+        return {
+          id: found.id,
+          isGroup: found.isGroup,
+          contact: found.contact,
+        };
       }),
     },
     user: {
       findUnique: jest.fn(async () => user),
+    },
+    projectConversation: {
+      findFirst: jest.fn(async ({ where }: any) => {
+        const link = links.find((row) => row.conversationId === where.conversationId);
+        if (!link) return null;
+        const project = projects.find((row) => row.id === link.projectId);
+        if (!project || project.deletedAt) return null;
+        const org = where.project?.organizationId;
+        if (org && project.organizationId !== org) return null;
+        return { conversationId: link.conversationId, projectId: link.projectId, project };
+      }),
+    },
+    project: {
+      findFirst: jest.fn(async ({ where }: any) => {
+        return (
+          projects.find(
+            (row) =>
+              row.id === where.id
+              && row.organizationId === where.organizationId
+              && !row.deletedAt,
+          ) ?? null
+        );
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const row = projects.find((item) => item.id === where.id);
+        if (!row) throw new Error('project not found');
+        if (where.organizationId && row.organizationId !== where.organizationId) {
+          throw new Error('project org mismatch');
+        }
+        Object.assign(row, data);
+        return row;
+      }),
     },
   };
 }
@@ -310,6 +363,9 @@ export function buildHarness(opts: {
   fetchFn?: jest.Mock;
   atividadeKv?: AtividadeKv;
   w2Store?: ClickUpW2Store;
+  projects?: any[];
+  links?: Array<{ conversationId: string; projectId: string }>;
+  conversations?: any[];
 }) {
   limparRecuperacoesAtividade();
   const env = opts.env ?? testEnv();
@@ -320,7 +376,11 @@ export function buildHarness(opts: {
   } as ConfigService);
   const http = new ClickUpInboxHttpClient(config, fetchFn as any);
   const match = new ClickUpMatchService(config, http);
-  const prisma = makePrisma(opts.conv);
+  const prisma = makePrisma(opts.conv, undefined, {
+    conversations: opts.conversations,
+    projects: opts.projects,
+    links: opts.links,
+  });
   const atividadeKv = opts.atividadeKv ?? new MemoryAtividadeKv();
   const w2Store = opts.w2Store ?? new MemoryW2Store();
   const service = new ClickUpInboxService(
@@ -350,6 +410,52 @@ export function convA(overrides: Record<string, unknown> = {}) {
     contact: { name: 'Maria', phone: '+55 11 99876-5432' },
     ...overrides,
   };
+}
+
+export const GROUP_PROFILE = {
+  ...TEST_PROFILE,
+  projectLists: [
+    { id: 'list-holding', label: 'Holding' },
+    { id: 'list-contencioso', label: 'Contencioso Judicial' },
+  ],
+};
+
+export function projectA(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'proj-a',
+    organizationId: 'org-a',
+    name: 'Holding Silva',
+    clickupTaskId: null as string | null,
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
+export function projectTask(id: string, listId: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    name: extra.name ?? `Dossiê ${id}`,
+    url: `https://app.clickup.test/t/${id}`,
+    list: { id: listId, name: listId },
+    status: { status: 'novo', type: 'open' },
+    custom_fields: extra.custom_fields ?? [],
+    tags: [],
+    ...extra,
+  };
+}
+
+export function groupEnv(profile: Record<string, unknown> = GROUP_PROFILE) {
+  return testEnv('org-a', profile);
+}
+
+export function emptyGroupStore(tasks: any[] = []): CuStore {
+  const store = emptyStore(tasks);
+  store.listsInTeam = ['list-leads', 'list-acts', 'list-holding', 'list-contencioso'];
+  store.listTasks['list-holding'] = tasks.filter((t) => t.list?.id === 'list-holding').map((t) => t.id);
+  store.listTasks['list-contencioso'] = tasks
+    .filter((t) => t.list?.id === 'list-contencioso')
+    .map((t) => t.id);
+  return store;
 }
 
 export async function expectHttp(promise: Promise<unknown>, status: number, code: string) {

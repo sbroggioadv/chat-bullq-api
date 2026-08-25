@@ -7,6 +7,11 @@ export type ClickUpInboxList = {
   primary: boolean;
 };
 
+export type ClickUpProjectList = {
+  id: string;
+  label: string;
+};
+
 export type ClickUpInboxActivities = {
   listId: string;
   relationFieldId: string;
@@ -14,6 +19,7 @@ export type ClickUpInboxActivities = {
 
 export type ClickUpInboxProfile = {
   lists: ClickUpInboxList[];
+  projectLists: ClickUpProjectList[];
   whatsappFieldId: string;
   blockedFieldIds: string[];
   tag: string | null;
@@ -21,7 +27,15 @@ export type ClickUpInboxProfile = {
 };
 
 const LIST_KEYS = ['id', 'label', 'primary'];
-const PROFILE_KEYS = ['lists', 'whatsappFieldId', 'blockedFieldIds', 'tag', 'activities'];
+const PROJECT_LIST_KEYS = ['id', 'label'];
+const PROFILE_KEYS = [
+  'lists',
+  'projectLists',
+  'whatsappFieldId',
+  'blockedFieldIds',
+  'tag',
+  'activities',
+];
 const ACTIVITIES_KEYS = ['listId', 'relationFieldId'];
 
 function extras(valor: unknown, permitidas: string[]): string[] {
@@ -76,6 +90,34 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
   if (lists.filter((lista) => lista.primary).length !== 1) {
     return { ok: false, erro: 'deve existir exatamente uma lista principal' };
   }
+
+  const projectLists: ClickUpProjectList[] = [];
+  if (raw.projectLists != null) {
+    if (!Array.isArray(raw.projectLists)) {
+      return { ok: false, erro: 'projectLists deve ser uma lista' };
+    }
+    const seenProjects = new Set<string>();
+    for (const lista of raw.projectLists as Array<Record<string, unknown>>) {
+      if (extras(lista, PROJECT_LIST_KEYS).length) {
+        return { ok: false, erro: 'uma lista de projeto contém campos extras' };
+      }
+      if (!idSeguro(lista?.id)) {
+        return { ok: false, erro: 'o perfil contém uma lista de projeto inválida' };
+      }
+      if (!labelValido(lista.label)) {
+        return { ok: false, erro: 'cada lista de projeto precisa de um rótulo textual' };
+      }
+      if (seenProjects.has(lista.id)) {
+        return { ok: false, erro: 'o perfil contém listas de projeto duplicadas' };
+      }
+      seenProjects.add(lista.id);
+      projectLists.push({
+        id: lista.id,
+        label: lista.label.trim().slice(0, 160),
+      });
+    }
+  }
+
   if (!idSeguro(raw.whatsappFieldId)) {
     return { ok: false, erro: 'selecione um campo de telefone válido' };
   }
@@ -107,6 +149,7 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
     ok: true,
     profile: {
       lists,
+      projectLists,
       whatsappFieldId: raw.whatsappFieldId,
       blockedFieldIds,
       tag,
@@ -124,6 +167,7 @@ export function fingerprintPerfil(profile: ClickUpInboxProfile): string {
     lists: profile.lists
       .map((lista) => [lista.id, Boolean(lista.primary)] as const)
       .sort(([a], [b]) => a.localeCompare(b)),
+    projectLists: profile.projectLists.map((lista) => lista.id).sort(),
     whatsappFieldId: profile.whatsappFieldId,
     blocked: [...profile.blockedFieldIds].sort(),
     tag: profile.tag ?? '',

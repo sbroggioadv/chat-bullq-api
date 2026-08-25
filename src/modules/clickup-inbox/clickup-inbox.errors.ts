@@ -61,6 +61,10 @@ export function isRedisFailure(err: unknown): boolean {
   return Boolean(err && typeof err === 'object' && (err as { redis?: boolean }).redis);
 }
 
+export function notImplemented(code: string, message: string): never {
+  clickupHttpError(HttpStatus.NOT_IMPLEMENTED, code, message);
+}
+
 export function matchConflict(match: Record<string, unknown>): never {
   throw new HttpException(
     {

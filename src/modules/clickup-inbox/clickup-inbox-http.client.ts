@@ -112,6 +112,39 @@ export class ClickUpInboxHttpClient {
     return this.get(`/task/${encodeURIComponent(taskId)}?include_subtasks=false&include_closed=true`);
   }
 
+  async buscarNasListas(listIds: string[], q: string): Promise<any[]> {
+    const local = this.config.assertLocal();
+    const allow = new Set(listIds.filter((id) => idSeguro(id)));
+    if (allow.size === 0) return [];
+    const needle = q.trim().toLowerCase();
+    const saida: any[] = [];
+    const vistos = new Set<string>();
+    const params = [...allow].map((id) => `list_ids[]=${encodeURIComponent(id)}`).join('&');
+    let pagina = 0;
+    while (saida.length < 20 && pagina <= 20) {
+      const resposta = await this.get(
+        `/team/${encodeURIComponent(local.teamId)}/task?include_closed=true&subtasks=false&page=${pagina}&${params}`,
+      );
+      const tarefas = Array.isArray(resposta.tasks) ? resposta.tasks : [];
+      if (tarefas.length === 0) break;
+      for (const task of tarefas) {
+        const id = String(task?.id ?? '');
+        if (!idSeguro(id) || vistos.has(id)) continue;
+        if (!allow.has(String(task.list?.id))) continue;
+        const nome = String(task.name ?? '');
+        if (needle && !id.toLowerCase().includes(needle) && !nome.toLowerCase().includes(needle)) {
+          continue;
+        }
+        vistos.add(id);
+        saida.push(task);
+        if (saida.length >= 20) break;
+      }
+      if (resposta.last_page === true) break;
+      pagina += 1;
+    }
+    return saida;
+  }
+
   async camposDaLista(listId: string): Promise<CampoMeta[]> {
     if (!idSeguro(listId)) throw new Error('lista inválida');
     const { fields = [] } = await this.get(`/list/${encodeURIComponent(listId)}/field`);
@@ -219,6 +252,7 @@ export class ClickUpInboxHttpClient {
     const idsNoTeam = new Set(listas.map((lista) => lista.id));
     const required = [
       ...local.profile.lists.map((lista) => lista.id),
+      ...local.profile.projectLists.map((lista) => lista.id),
       ...(local.profile.activities ? [local.profile.activities.listId] : []),
     ];
     for (const id of required) {

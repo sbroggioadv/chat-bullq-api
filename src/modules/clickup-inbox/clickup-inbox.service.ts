@@ -18,6 +18,8 @@ import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
 import { listaPrincipal } from './domain/perfil';
+import { GROUP_STATUS, catalogoProjeto, idsCatalogoProjeto } from './domain/grupo';
+import { extrairTaskRef } from './domain/task-ref';
 import { CLICKUP_ATIVIDADE_KV, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
 import type { ClickUpW2Store } from './clickup-inbox-w2.store';
 import {
@@ -30,6 +32,7 @@ import {
   isRedisFailure,
   storeUnavailable,
   taskNotBound,
+  notImplemented,
 } from './clickup-inbox.errors';
 
 const IDEMPOTENCY_UUID =
@@ -100,10 +103,10 @@ export class ClickUpInboxService {
 
   async getTask(organizationId: string, conversationId: string, taskId: string) {
     this.assertOrg(organizationId);
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
     try {
-      const card = await this.cardCompleto(taskId, conv.contact.phone);
-      return { status: STATUS.UNICO, conversationId: conv.id, card };
+      const card = await this.cardFromBound(bound, taskId);
+      return { status: STATUS.UNICO, conversationId: bound.conv.id, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       mapUpstream(err);
@@ -117,14 +120,14 @@ export class ClickUpInboxService {
     status: string,
   ) {
     this.assertOrg(organizationId);
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
     try {
-      const cardAntes = await this.cardCompleto(taskId, conv.contact.phone);
+      const cardAntes = await this.cardFromBound(bound, taskId);
       if (!cardAntes.etapas.includes(status)) {
         invalidValue('status fora da lista permitida');
       }
       await this.http.write(`/task/${encodeURIComponent(taskId)}`, { status }, 'PUT');
-      const card = await this.cardCompleto(taskId, conv.contact.phone);
+      const card = await this.cardFromBound(bound, taskId);
       if (card.etapa !== status) {
         const erro = new Error('não foi possível confirmar o status por leitura') as Error & {
           status: number;
@@ -148,10 +151,11 @@ export class ClickUpInboxService {
   ) {
     this.assertOrg(organizationId);
     if (!idSeguro(fieldId)) invalidValue('campo inválido');
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
+    const conv = bound.conv;
     const profile = this.config.profile();
     try {
-      const task = await this.assertTaskBound(taskId, conv.contact.phone);
+      const task = await this.assertTaskForBound(bound, taskId);
       const onTask = (task.custom_fields ?? []).some((item: { id?: string }) => item.id === fieldId);
       if (!onTask) taskNotBound('campo ausente da task');
       const metadados = await this.http.camposDaLista(String(task.list?.id));
@@ -180,16 +184,18 @@ export class ClickUpInboxService {
         erro.status = 502;
         throw erro;
       }
-      const stillBound = phonesMatch(conv.contact.phone, phoneFromTask(relido, profile.whatsappFieldId));
-      if (!stillBound) {
-        return {
-          ok: true,
-          valor: persistido ?? null,
-          unbound: true,
-          match: await this.resolve(organizationId, conversationId),
-        };
+      if (bound.kind === 'phone') {
+        const stillBound = phonesMatch(conv.contact.phone, phoneFromTask(relido, profile.whatsappFieldId));
+        if (!stillBound) {
+          return {
+            ok: true,
+            valor: persistido ?? null,
+            unbound: true,
+            match: await this.resolve(organizationId, conversationId),
+          };
+        }
       }
-      const card = await this.cardCompleto(taskId, conv.contact.phone);
+      const card = await this.cardFromBound(bound, taskId);
       return { ok: true, valor: persistido ?? null, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -205,7 +211,8 @@ export class ClickUpInboxService {
     dto: { oQue: string; proximoPasso: string },
   ) {
     this.assertOrg(organizationId);
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
+    const conv = bound.conv;
     if (comentarioSensivel(dto)) invalidValue('o texto parece conter informação sensível');
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -218,7 +225,7 @@ export class ClickUpInboxService {
       proximoPasso: dto.proximoPasso,
     });
     try {
-      await this.cardCompleto(taskId, conv.contact.phone);
+      await this.cardFromBound(bound, taskId);
       const criado = await this.http.write(`/task/${encodeURIComponent(taskId)}/comment`, {
         comment_text: texto,
         notify_all: false,
@@ -245,7 +252,7 @@ export class ClickUpInboxService {
     dto: { name: string; dueDate?: string },
   ) {
     this.assertOrg(organizationId);
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
     const activities = this.config.profile().activities;
     if (!activities) activitiesUnavailable('atividades não estão configuradas');
     const dueDate = dto.dueDate ? new Date(`${dto.dueDate}T12:00:00-03:00`).getTime() : null;
@@ -261,7 +268,7 @@ export class ClickUpInboxService {
           dueDate,
         },
         validar: async () => {
-          await this.assertTaskBound(taskId, conv.contact.phone);
+          await this.assertTaskForBound(bound, taskId);
           const destino = await this.validarDestinoAtividade(taskId);
           if (destino.listaId !== activities.listId || destino.campoId !== activities.relationFieldId) {
             activitiesUnavailable('destino de atividades mudou durante a validação');
@@ -275,7 +282,7 @@ export class ClickUpInboxService {
           }),
         confirmar: async (atividadeId) => {
           await this.atividadePermitida(atividadeId, taskId);
-          const card = await this.cardCompleto(taskId, conv.contact.phone);
+          const card = await this.cardFromBound(bound, taskId);
           return { ok: true, atividadeId, card };
         },
         compensar: (atividadeId) => this.http.apagarTask(atividadeId),
@@ -392,7 +399,7 @@ export class ClickUpInboxService {
   ) {
     this.assertOrg(organizationId);
     if (!idSeguro(activityId)) invalidValue('atividade inválida');
-    const conv = await this.prepareBound(organizationId, conversationId, taskId);
+    const bound = await this.prepareBound(organizationId, conversationId, taskId);
     const activities = this.config.profile().activities;
     if (!activities) activitiesUnavailable('atividades não estão configuradas');
     try {
@@ -407,7 +414,7 @@ export class ClickUpInboxService {
         erro.status = 502;
         throw erro;
       }
-      const card = await this.cardCompleto(taskId, conv.contact.phone);
+      const card = await this.cardFromBound(bound, taskId);
       return { ok: true, status: confirmacao.status?.status ?? concluido, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
@@ -457,10 +464,313 @@ export class ClickUpInboxService {
     this.assertOrg(organizationId);
     if (!idSeguro(taskId)) invalidValue('task inválida');
     const conv = await this.loadConversation(organizationId, conversationId);
-    if (conv.isGroup) taskNotBound('grupo não casa com um único card');
+    if (conv.isGroup) {
+      const project = await this.loadLinkedProject(organizationId, conversationId);
+      if (!project?.clickupTaskId || project.clickupTaskId !== taskId) {
+        taskNotBound('grupo sem task vinculada neste dossiê');
+      }
+      await this.ensureRemote();
+      await this.assertTaskOnProjectLists(taskId);
+      return { kind: 'dossie' as const, conv, project };
+    }
     await this.ensureRemote();
     await this.assertTaskBound(taskId, conv.contact.phone);
-    return conv;
+    return { kind: 'phone' as const, conv };
+  }
+
+  async resolveGroup(organizationId: string, conversationId: string) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    const project = await this.loadLinkedProject(organizationId, conversationId);
+    if (!project) {
+      return {
+        status: GROUP_STATUS.SEM_DOSSIE,
+        conversationId: conv.id,
+      };
+    }
+    const publicProject = this.publicProject(project);
+    const lists = catalogoProjeto(this.config.profile());
+    if (!project.clickupTaskId) {
+      return {
+        status: GROUP_STATUS.DOSSIE_SEM_TASK,
+        conversationId: conv.id,
+        project: publicProject,
+        projectLists: lists,
+      };
+    }
+    try {
+      await this.ensureRemote();
+      const card = await this.cardPorListas(project.clickupTaskId, idsCatalogoProjeto(this.config.profile()));
+      return {
+        status: GROUP_STATUS.TASK_VINCULADA,
+        conversationId: conv.id,
+        project: publicProject,
+        card,
+      };
+    } catch (err) {
+      if (err instanceof HttpException && err.getStatus() === 404) {
+        return {
+          status: GROUP_STATUS.BINDING_INVALIDO,
+          conversationId: conv.id,
+          project: publicProject,
+          projectLists: lists,
+        };
+      }
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
+  }
+
+  async searchGroupTasks(organizationId: string, conversationId: string, q: string) {
+    this.assertOrg(organizationId);
+    const { conv } = await this.requireGroupWithProject(organizationId, conversationId);
+    const query = String(q ?? '').trim();
+    if (!query) invalidValue('informe um id, URL ou termo de busca');
+    const allow = idsCatalogoProjeto(this.config.profile());
+    await this.ensureRemote();
+    try {
+      const direto = pareceIdDeTask(query);
+      if (direto) {
+        try {
+          const task = await this.http.taskBruta(direto);
+          if (allow.has(String(task.list?.id))) {
+            return { conversationId: conv.id, candidatos: [this.candidatoDeTask(task)] };
+          }
+        } catch (err) {
+          if (!isTaskMissing(err)) throw err;
+        }
+      }
+      const encontrados = await this.http.buscarNasListas([...allow], query);
+      return {
+        conversationId: conv.id,
+        candidatos: encontrados.map((task) => this.candidatoDeTask(task)),
+      };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
+  }
+
+  async bindGroupTask(organizationId: string, conversationId: string, taskRef: string) {
+    this.assertOrg(organizationId);
+    const { conv, project } = await this.requireGroupWithProject(organizationId, conversationId);
+    const taskId = extrairTaskRef(taskRef);
+    if (!taskId) invalidValue('referência de task inválida');
+    if (project.clickupTaskId && project.clickupTaskId === taskId) {
+      await this.ensureRemote();
+      const card = await this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
+      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+    }
+    await this.ensureRemote();
+    try {
+      await this.assertTaskOnProjectLists(taskId);
+      await this.ancorarDossie(project, taskId);
+      const card = await this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
+      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
+  }
+
+  async createGroupTask(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { listId: string; name: string },
+  ) {
+    this.assertOrg(organizationId);
+    if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
+      invalidValue('Idempotency-Key inválida');
+    }
+    const key = String(idempotencyKey).trim();
+    const { conv, project } = await this.requireGroupWithProject(organizationId, conversationId);
+    const listId = String(dto.listId ?? '').trim();
+    const name = String(dto.name ?? '').trim();
+    if (!name) invalidValue('nome da task é obrigatório');
+    const allow = idsCatalogoProjeto(this.config.profile());
+    if (!allow.has(listId)) invalidValue('lista fora do catálogo de projetos');
+
+    const scope = `dossie:${project.id}`;
+    await this.withStore(() => this.w2Store.assertReady());
+    const token = await this.withStore(() => this.w2Store.acquireLock(organizationId, scope));
+
+    try {
+      const existing = await this.withStore(() => this.w2Store.getReceipt(organizationId, scope, key));
+      const relido = await this.loadProjectById(organizationId, project.id);
+      if (existing?.state === 'done') {
+        if (relido.clickupTaskId && relido.clickupTaskId !== existing.taskId) {
+          invalidValue('dossiê já possui outra task vinculada');
+        }
+        if (!relido.clickupTaskId) {
+          await this.ancorarDossie(relido, existing.taskId);
+        }
+        await this.ensureRemote();
+        const card = await this.cardPorListas(existing.taskId, allow);
+        return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+      }
+      if (relido.clickupTaskId) {
+        if (existing?.state === 'pending') {
+          await this.withStore(() =>
+            this.w2Store.finalizeReceipt(organizationId, scope, key, relido.clickupTaskId!),
+          );
+        }
+        await this.ensureRemote();
+        const card = await this.cardPorListas(relido.clickupTaskId, allow);
+        return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+      }
+
+      await this.ensureRemote();
+      await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
+      const criado = await this.http.write(`/list/${encodeURIComponent(listId)}/task`, { name });
+      const taskId = String(criado?.id ?? '');
+      if (!idSeguro(taskId)) {
+        const erro = new Error('ClickUp não devolveu um id válido') as Error & { status: number };
+        erro.status = 502;
+        throw erro;
+      }
+      const bruta = await this.http.taskBruta(taskId);
+      if (String(bruta.list?.id) !== listId || !allow.has(String(bruta.list?.id))) {
+        await this.http.apagarTask(taskId).catch(() => undefined);
+        const erro = new Error('task criada fora da lista escolhida') as Error & { status: number };
+        erro.status = 502;
+        throw erro;
+      }
+      try {
+        await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, taskId));
+      } catch (err) {
+        if (!isRedisFailure(err) && !(err instanceof HttpException && err.getStatus() === 503)) {
+          throw err;
+        }
+        const removed = await this.http.apagarTask(taskId).then(() => true).catch(() => false);
+        if (removed) {
+          await this.w2Store.clearReceipt(organizationId, scope, key).catch(() => undefined);
+        }
+        storeUnavailable('não foi possível reter o comprovante da criação');
+      }
+      try {
+        await this.ancorarDossie(relido, taskId);
+      } catch (err) {
+        await this.http.apagarTask(taskId).catch(() => undefined);
+        throw err;
+      }
+      const card = await this.cardPorListas(taskId, allow);
+      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      if (isRedisFailure(err)) storeUnavailable();
+      mapUpstream(err);
+    } finally {
+      await this.w2Store.releaseLock(organizationId, scope, token).catch(() => undefined);
+    }
+  }
+
+  async incorporateGroup() {
+    notImplemented('CLICKUP_INCORPORATE_NOT_READY', 'incorporar fica na próxima wave');
+  }
+
+  private publicProject(project: { id: string; name: string; clickupTaskId: string | null }) {
+    return {
+      id: project.id,
+      name: project.name,
+      clickupTaskId: project.clickupTaskId,
+    };
+  }
+
+  private async requireGroupWithProject(organizationId: string, conversationId: string) {
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    const project = await this.loadLinkedProject(organizationId, conversationId);
+    if (!project) invalidValue('crie ou ligue um dossiê na aba Projeto');
+    return { conv, project };
+  }
+
+  private async loadLinkedProject(organizationId: string, conversationId: string) {
+    const link = await this.prisma.projectConversation.findFirst({
+      where: {
+        conversationId,
+        project: { organizationId, deletedAt: null },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        project: {
+          select: { id: true, name: true, clickupTaskId: true, organizationId: true },
+        },
+      },
+    });
+    return link?.project ?? null;
+  }
+
+  private async loadProjectById(organizationId: string, projectId: string) {
+    const project = await this.prisma.project.findFirst({
+      where: { id: projectId, organizationId, deletedAt: null },
+      select: { id: true, name: true, clickupTaskId: true, organizationId: true },
+    });
+    if (!project) invalidValue('dossiê não encontrado');
+    return project;
+  }
+
+  private async ancorarDossie(
+    project: { id: string; organizationId: string },
+    taskId: string,
+  ) {
+    await this.prisma.project.update({
+      where: { id: project.id },
+      data: { clickupTaskId: taskId },
+    });
+  }
+
+  private async assertTaskOnProjectLists(taskId: string) {
+    let task: any;
+    try {
+      task = await this.http.taskBruta(taskId);
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
+    const allow = idsCatalogoProjeto(this.config.profile());
+    if (!task?.id || !allow.has(String(task.list?.id))) {
+      taskNotBound('task fora das listas de projeto autorizadas');
+    }
+    return task;
+  }
+
+  private async assertTaskForBound(
+    bound: Awaited<ReturnType<ClickUpInboxService['prepareBound']>>,
+    taskId: string,
+  ) {
+    if (bound.kind === 'dossie') return this.assertTaskOnProjectLists(taskId);
+    return this.assertTaskBound(taskId, bound.conv.contact.phone);
+  }
+
+  private async cardFromBound(
+    bound: Awaited<ReturnType<ClickUpInboxService['prepareBound']>>,
+    taskId: string,
+  ) {
+    if (bound.kind === 'dossie') {
+      return this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
+    }
+    return this.cardCompleto(taskId, bound.conv.contact.phone);
+  }
+
+  private async cardPorListas(taskId: string, allow: Set<string>) {
+    const profile = this.config.profile();
+    const blocked = new Set(profile.blockedFieldIds);
+    const task = await this.assertTaskOnProjectLists(taskId);
+    if (!allow.has(String(task.list?.id))) {
+      taskNotBound('task fora das listas de projeto autorizadas');
+    }
+    return this.montarCard(task, blocked);
+  }
+
+  private candidatoDeTask(task: any) {
+    return {
+      taskId: String(task.id),
+      nome: String(task.name ?? ''),
+      status: task.status?.status ?? null,
+      lista: task.list?.name ?? null,
+    };
   }
 
   private async loadConversation(organizationId: string, conversationId: string) {
@@ -512,6 +822,10 @@ export class ClickUpInboxService {
     const profile = this.config.profile();
     const blocked = new Set(profile.blockedFieldIds);
     const task = await this.assertTaskBound(taskId, conversationPhone);
+    return this.montarCard(task, blocked);
+  }
+
+  private async montarCard(task: any, blocked: Set<string>) {
     const listId = String(task.list?.id);
     const [metadados, lista, atividades, comentarios] = await Promise.all([
       this.http.camposDaLista(listId),
@@ -594,6 +908,19 @@ export class ClickUpInboxService {
     }
     return atividade;
   }
+}
+
+function pareceIdDeTask(query: string): string | null {
+  const id = extrairTaskRef(query);
+  if (!id) return null;
+  if (/^https:\/\//i.test(query.trim())) return id;
+  return /\d/.test(id) ? id : null;
+}
+
+function isTaskMissing(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status === 404) return true;
+  return err instanceof HttpException && err.getStatus() === 404;
 }
 
 function phoneFromTask(task: any, whatsappFieldId: string): unknown {

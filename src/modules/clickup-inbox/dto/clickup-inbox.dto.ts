@@ -23,6 +23,24 @@ export class PostCommentDto {
   proximoPasso!: string;
 }
 
+export class BindGroupTaskDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  taskRef!: string;
+}
+
+export class CreateGroupTaskDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{1,128}$/)
+  listId!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  name!: string;
+}
+
 export class PostActivityDto {
   @IsString()
   @MinLength(1)

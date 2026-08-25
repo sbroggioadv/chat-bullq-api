@@ -540,6 +540,7 @@ model Project {
   name              String
   description       String?
   hoppeId           String?   @map("hoppe_id")
+  clickupTaskId     String?   @map("clickup_task_id")
   responsibleUserId String?   @map("responsible_user_id")
   status            String?   @default("TODO")
   metadata          Json      @default("{}")
@@ -556,6 +557,7 @@ model Project {
   conversations ProjectConversation[]
 
   @@index([organizationId, hoppeId], name: "idx_project_org_hoppe")
+  @@index([organizationId, clickupTaskId], name: "idx_project_org_clickup")
   @@index([organizationId, responsibleUserId], name: "idx_project_org_responsible")
   @@index([organizationId, status], name: "idx_project_org_status")
   @@map("projects")
