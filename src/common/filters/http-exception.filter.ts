@@ -48,16 +48,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       );
     }
 
-    const match =
+    const payload =
       typeof exceptionResponse === 'object' && exceptionResponse && !Array.isArray(exceptionResponse)
-        ? (exceptionResponse as Record<string, unknown>).match
+        ? (exceptionResponse as Record<string, unknown>)
         : undefined;
+    const match = publicObject(payload?.match);
+    const card = publicObject(payload?.card);
 
     response.status(status).json({
       statusCode: status,
       message,
       ...(code ? { code } : {}),
-      ...(match && typeof match === 'object' && !Array.isArray(match) ? { match } : {}),
+      ...(match ? { match } : {}),
+      ...(card ? { card } : {}),
       error:
         exception instanceof HttpException
           ? exception.name
@@ -66,4 +69,10 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       path: request.url,
     });
   }
+}
+
+function publicObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { token: _token, ...rest } = value as Record<string, unknown>;
+  return rest;
 }

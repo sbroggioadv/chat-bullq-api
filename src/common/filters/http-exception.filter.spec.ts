@@ -74,6 +74,29 @@ describe('GlobalExceptionFilter (F-05)', () => {
     );
   });
 
+  it('409 de troca de âncora preserva card no envelope', () => {
+    const json = jest.fn();
+    filter.catch(
+      new HttpException(
+        {
+          message: 'esta conversa já tem uma task vinculada',
+          code: 'CLICKUP_ANCHOR_SWITCH_REQUIRED',
+          card: { taskId: 'task-consultivo', nome: 'Consultivo', token: 'secret' },
+        },
+        HttpStatus.CONFLICT,
+      ),
+      hostWith(json),
+    );
+    expect(json.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        statusCode: 409,
+        code: 'CLICKUP_ANCHOR_SWITCH_REQUIRED',
+        card: expect.objectContaining({ taskId: 'task-consultivo' }),
+      }),
+    );
+    expect(json.mock.calls[0][0].card.token).toBeUndefined();
+  });
+
   it('não propaga code inseguro', () => {
     const json = jest.fn();
     filter.catch(

@@ -626,6 +626,38 @@ describe('ClickUpInboxService W1', () => {
       expect(boundConv.clickupTaskId).toBe('task-consultivo');
     });
 
+    it('AC-13b lead: falha ao gravar âncora apaga a task, limpa receipt e não reancora o id morto', async () => {
+      const conv = convA();
+      const { service, prisma, fetchFn, w2Store, store } = buildHarness({
+        conv,
+        store: emptyStore([]),
+      });
+      const orig = prisma.conversation.update.getMockImplementation()!;
+      let failOnce = true;
+      prisma.conversation.update.mockImplementation(async (args: any) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('db down');
+        }
+        return orig(args);
+      });
+      await expect(service.createTask('org-a', 'conv-a', KEY_A)).rejects.toBeTruthy();
+      expect(conv.clickupTaskId).toBeNull();
+      const deletes = fetchFn.mock.calls.filter((c: any) => (c[1]?.method ?? 'GET') === 'DELETE');
+      expect(deletes.length).toBe(1);
+      const deadId = String(deletes[0][0]).match(/\/task\/([^/?]+)/)?.[1];
+      expect(deadId).toBeTruthy();
+      expect(store.tasks[deadId!]).toBeUndefined();
+      expect(await w2Store.getReceipt('org-a', '551198765432', KEY_A)).not.toEqual(
+        expect.objectContaining({ state: 'done' }),
+      );
+      const postsBeforeRetry = leadCreates(fetchFn).length;
+      const retry = await service.createTask('org-a', 'conv-a', KEY_A);
+      expect(leadCreates(fetchFn).length).toBe(postsBeforeRetry + 1);
+      expect(conv.clickupTaskId).toBe(retry.card.taskId);
+      expect(store.tasks[retry.card.taskId]).toBeDefined();
+    });
+
     it('grupo, recusado, N, 1 e nome vazio fazem zero POST', async () => {
       const cases = [
         convA({ isGroup: true }),

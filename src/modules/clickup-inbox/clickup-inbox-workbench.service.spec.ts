@@ -360,14 +360,21 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       ]);
       const conv = groupConv({ clickupTaskId: 'task-consultivo' });
       const { service, fetchFn } = workbenchHarness({ conv, store });
-      await expectHttp(
-        service.createWorkbenchTask('org-a', 'conv-a', KEY_A, {
+      try {
+        await service.createWorkbenchTask('org-a', 'conv-a', KEY_A, {
           listId: 'list-iniciais',
           name: 'Inicial',
-        }),
-        409,
-        'CLICKUP_ANCHOR_SWITCH_REQUIRED',
-      );
+        });
+        throw new Error('esperava HttpException');
+      } catch (err: any) {
+        expect(err.getStatus?.()).toBe(409);
+        expect(err.getResponse?.()).toEqual(
+          expect.objectContaining({
+            code: 'CLICKUP_ANCHOR_SWITCH_REQUIRED',
+            card: expect.objectContaining({ taskId: 'task-consultivo' }),
+          }),
+        );
+      }
       expect(shortcutCreates(fetchFn).length).toBe(0);
       expect(conv.clickupTaskId).toBe('task-consultivo');
       expect(store.tasks['task-consultivo']).toBeDefined();
@@ -457,6 +464,43 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       expect((rejected[0] as PromiseRejectedResult).reason.getStatus()).toBe(409);
       expect(shortcutCreates(fetchFn).length).toBe(1);
       expect(conv.clickupTaskId).toBe((ok[0] as PromiseFulfilledResult<any>).value.card.taskId);
+    });
+
+    it('AC-13b falha ao gravar âncora apaga a task, limpa receipt e não reancora o id morto', async () => {
+      const store = emptyWorkbenchStore([]);
+      const { service, conv, prisma, fetchFn, w2Store } = workbenchHarness({ store });
+      const orig = prisma.conversation.update.getMockImplementation()!;
+      let failOnce = true;
+      prisma.conversation.update.mockImplementation(async (args: any) => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('db down');
+        }
+        return orig(args);
+      });
+      await expect(
+        service.createWorkbenchTask('org-a', 'conv-a', KEY_A, {
+          listId: 'list-holding',
+          name: 'Holding Silva',
+        }),
+      ).rejects.toBeTruthy();
+      expect(conv.clickupTaskId).toBeNull();
+      const deletes = fetchFn.mock.calls.filter((c: any) => (c[1]?.method ?? 'GET') === 'DELETE');
+      expect(deletes.length).toBe(1);
+      const deadId = String(deletes[0][0]).match(/\/task\/([^/?]+)/)?.[1];
+      expect(deadId).toBeTruthy();
+      expect(store.tasks[deadId!]).toBeUndefined();
+      expect(await w2Store.getReceipt('org-a', `conv:${conv.id}`, KEY_A)).not.toEqual(
+        expect.objectContaining({ state: 'done' }),
+      );
+      const postsBeforeRetry = shortcutCreates(fetchFn).length;
+      const retry = await service.createWorkbenchTask('org-a', 'conv-a', KEY_A, {
+        listId: 'list-holding',
+        name: 'Holding Silva',
+      });
+      expect(shortcutCreates(fetchFn).length).toBe(postsBeforeRetry + 1);
+      expect(conv.clickupTaskId).toBe(retry.card.taskId);
+      expect(store.tasks[retry.card.taskId]).toBeDefined();
     });
 
     it('falha no comprovante apaga a task ClickUp e não ancora', async () => {

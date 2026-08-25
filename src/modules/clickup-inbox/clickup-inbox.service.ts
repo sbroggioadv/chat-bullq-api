@@ -404,7 +404,10 @@ export class ClickUpInboxService {
       try {
         await this.ancorarConversacao(conv, taskId);
       } catch (err) {
-        await this.http.apagarTask(taskId).catch(() => undefined);
+        const removed = await this.http.apagarTask(taskId).then(() => true).catch(() => false);
+        if (removed) {
+          await this.w2Store.clearReceipt(organizationId, phone.canonico, key).catch(() => undefined);
+        }
         throw err;
       }
       const card = await this.cardCompleto(taskId, conv.contact.phone);
@@ -726,7 +729,10 @@ export class ClickUpInboxService {
       try {
         await this.ancorarConversacao(relido, taskId);
       } catch (err) {
-        await this.http.apagarTask(taskId).catch(() => undefined);
+        const removed = await this.http.apagarTask(taskId).then(() => true).catch(() => false);
+        if (removed) {
+          await this.w2Store.clearReceipt(organizationId, scope, key).catch(() => undefined);
+        }
         throw err;
       }
       await this.maybeCrossLink(project, taskId, dto.crossLinkDossier);
