@@ -5,6 +5,12 @@ import {
   serializeFieldValue,
 } from './campos';
 
+const OPCOES = [
+  { id: 'opt-1', rotulo: 'Um', cor: null },
+  { id: 'l1', rotulo: 'L1', cor: null },
+  { id: 'l2', rotulo: 'L2', cor: null },
+];
+
 describe('matriz de campos W1 (AC-05)', () => {
   it.each([
     ['drop_down', 'opt-1', 'opt-1'],
@@ -19,7 +25,12 @@ describe('matriz de campos W1 (AC-05)', () => {
     ['short_text', ' oi ', 'oi'],
     ['text', ' bloco ', 'bloco'],
   ] as const)('%s serializa %j', (tipo, input, expected) => {
-    expect(serializeFieldValue(tipo, input)).toEqual({ ok: true, value: expected });
+    expect(serializeFieldValue(tipo, input, OPCOES)).toEqual({ ok: true, value: expected });
+  });
+
+  it('recusa option id forjado em drop_down e labels', () => {
+    expect(serializeFieldValue('drop_down', 'opt-forjado', OPCOES).ok).toBe(false);
+    expect(serializeFieldValue('labels', ['l1', 'nope'], OPCOES).ok).toBe(false);
   });
 
   it.each([...READONLY_FIELD_TYPES, 'mystery_type'])(

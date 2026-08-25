@@ -2,16 +2,31 @@ import { HttpException } from '@nestjs/common';
 import { serializeFieldValue, WRITABLE_FIELD_TYPES } from './domain/campos';
 import { INDEX_TTL_MS } from './clickup-match.service';
 import { STATUS } from './domain/casamento';
-import { limparRecuperacoesAtividade } from './domain/criacao-atividade';
+import {
+  MemoryRedis,
+  RedisAtividadeKv,
+  limparRecuperacoesAtividade,
+} from './domain/criacao-atividade';
 import {
   buildHarness,
   convA,
   emptyStore,
   expectHttp,
   leadTask,
+  leadTaskWritable,
+  mutationCalls,
   TEST_PROFILE,
   testEnv,
 } from './clickup-inbox.test-harness';
+
+const DROP_OPS = [
+  { id: 'opt-novo', rotulo: 'Novo', cor: null },
+  { id: 'opt-qualif', rotulo: 'Qualificado', cor: null },
+];
+const LABEL_OPS = [
+  { id: 'lab-a', rotulo: 'A', cor: null },
+  { id: 'lab-b', rotulo: 'B', cor: null },
+];
 
 describe('ClickUpInboxService W1', () => {
   beforeEach(() => limparRecuperacoesAtividade());
@@ -88,6 +103,48 @@ describe('ClickUpInboxService W1', () => {
       expect(fetchFn.mock.calls.length).toBe(0);
     });
 
+    it('403 de credencial degrada em 503 permanente; 5xx permite retry', async () => {
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      store.statusCode = 403;
+      const forbidden = buildHarness({ conv: convA(), store });
+      await expectHttp(forbidden.service.resolve('org-a', 'conv-a'), 503, 'CLICKUP_NOT_CONFIGURED');
+      const calls = forbidden.fetchFn.mock.calls.length;
+      await expectHttp(forbidden.service.resolve('org-a', 'conv-a'), 503, 'CLICKUP_NOT_CONFIGURED');
+      expect(forbidden.fetchFn.mock.calls.length).toBe(calls);
+
+      const five = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      five.statusCode = 500;
+      const boom = buildHarness({ conv: convA(), store: five });
+      await expectHttp(boom.service.resolve('org-a', 'conv-a'), 502, 'CLICKUP_UPSTREAM');
+      const n = boom.fetchFn.mock.calls.length;
+      await expectHttp(boom.service.resolve('org-a', 'conv-a'), 502, 'CLICKUP_UPSTREAM');
+      expect(boom.fetchFn.mock.calls.length).toBeGreaterThan(n);
+    });
+
+    it('whatsapp ausente na lista secundária → 503 e zero task', async () => {
+      const profile = {
+        ...TEST_PROFILE,
+        lists: [
+          { id: 'list-leads', label: 'Leads', primary: true },
+          { id: 'list-two', label: 'Outros', primary: false },
+        ],
+      };
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      store.listsInTeam = ['list-leads', 'list-two', 'list-acts'];
+      store.fieldsByList = {
+        'list-two': [{ id: 'field-other', name: 'X', type: 'text' }],
+      };
+      const { service, fetchFn } = buildHarness({
+        env: testEnv('org-a', profile),
+        conv: convA(),
+        store,
+      });
+      await expectHttp(service.resolve('org-a', 'conv-a'), 503, 'CLICKUP_NOT_CONFIGURED');
+      const urls = fetchFn.mock.calls.map((c: any) => String(c[0]));
+      expect(urls.some((u: string) => u.includes('/task/'))).toBe(false);
+      expect(urls.some((u: string) => /\/list\/list-leads\/task/.test(u))).toBe(false);
+    });
+
     it('lista fora do team → 503 e zero chamada útil de task', async () => {
       const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
       store.listsInTeam = ['list-outra'];
@@ -142,24 +199,24 @@ describe('ClickUpInboxService W1', () => {
 
   describe('AC-05 + AC-09 campos', () => {
     it('grava cada tipo da matriz com payload exato', async () => {
-      const task = leadTask('task-1', '+55 11 99876-5432');
+      const task = leadTaskWritable('task-1', '+55 11 99876-5432');
       const store = emptyStore([task]);
       const { service, fetchFn } = buildHarness({ conv: convA(), store });
       await service.resolve('org-a', 'conv-a');
       fetchFn.mockClear();
 
-      const cases: Array<[string, string, unknown]> = [
-        ['field-drop', 'drop_down', 'opt-qualif'],
-        ['field-labels', 'labels', ['lab-a']],
-        ['field-date', 'date', '2026-08-25'],
-        ['field-currency', 'currency', '10.50'],
-        ['field-email', 'email', 'a@b.test'],
-        ['field-phone', 'phone', '1199'],
-        ['field-url', 'url', 'https://example.test'],
-        ['field-short', 'short_text', 'oi'],
-        ['field-text', 'text', 'bloco'],
+      const cases: Array<[string, string, unknown, ReturnType<typeof serializeFieldValue>]> = [
+        ['field-drop', 'drop_down', 'opt-qualif', serializeFieldValue('drop_down', 'opt-qualif', DROP_OPS)],
+        ['field-labels', 'labels', ['lab-a'], serializeFieldValue('labels', ['lab-a'], LABEL_OPS)],
+        ['field-date', 'date', '2026-08-25', serializeFieldValue('date', '2026-08-25')],
+        ['field-currency', 'currency', '10.50', serializeFieldValue('currency', '10.50')],
+        ['field-email', 'email', 'a@b.test', serializeFieldValue('email', 'a@b.test')],
+        ['field-phone', 'phone', '1199', serializeFieldValue('phone', '1199')],
+        ['field-url', 'url', 'https://example.test', serializeFieldValue('url', 'https://example.test')],
+        ['field-short', 'short_text', 'oi', serializeFieldValue('short_text', 'oi')],
+        ['field-text', 'text', 'bloco', serializeFieldValue('text', 'bloco')],
       ];
-      for (const [fieldId, tipo, value] of cases) {
+      for (const [fieldId, , value, serialized] of cases) {
         fetchFn.mockClear();
         await service.patchField('org-a', 'conv-a', 'task-1', fieldId, value);
         const write = fetchFn.mock.calls.find(
@@ -167,15 +224,65 @@ describe('ClickUpInboxService W1', () => {
         );
         expect(write).toBeTruthy();
         const payload = JSON.parse(String(write[1].body));
-        expect(payload).toEqual({ value: serializeFieldValue(tipo, value).ok
-          ? (serializeFieldValue(tipo, value) as { value: unknown }).value
-          : null });
+        expect(payload).toEqual({ value: serialized.ok ? serialized.value : null });
       }
       expect(WRITABLE_FIELD_TYPES).toHaveLength(9);
     });
 
+    it('campo só na lista, write-noop, option forjada e telefone desvinculado', async () => {
+      const onlyWa = leadTask('task-1', '+55 11 99876-5432');
+      const store = emptyStore([onlyWa]);
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      await service.resolve('org-a', 'conv-a');
+      fetchFn.mockClear();
+      await expectHttp(
+        service.patchField('org-a', 'conv-a', 'task-1', 'field-short', 'oi'),
+        404,
+        'CLICKUP_TASK_NOT_BOUND',
+      );
+      expect(mutationCalls(fetchFn).length).toBe(0);
+
+      const full = emptyStore([leadTaskWritable('task-1', '+55 11 99876-5432')]);
+      full.ignoreFieldWrites = true;
+      const noop = buildHarness({ conv: convA(), store: full });
+      await noop.service.resolve('org-a', 'conv-a');
+      await expectHttp(
+        noop.service.patchField('org-a', 'conv-a', 'task-1', 'field-short', 'oi'),
+        502,
+        'CLICKUP_UPSTREAM',
+      );
+
+      const forged = buildHarness({
+        conv: convA(),
+        store: emptyStore([leadTaskWritable('task-1', '+55 11 99876-5432')]),
+      });
+      await forged.service.resolve('org-a', 'conv-a');
+      forged.fetchFn.mockClear();
+      await expectHttp(
+        forged.service.patchField('org-a', 'conv-a', 'task-1', 'field-drop', 'opt-forjado'),
+        422,
+        'CLICKUP_INVALID_VALUE',
+      );
+      expect(mutationCalls(forged.fetchFn).length).toBe(0);
+
+      const unbind = buildHarness({
+        conv: convA(),
+        store: emptyStore([leadTaskWritable('task-1', '+55 11 99876-5432')]),
+      });
+      await unbind.service.resolve('org-a', 'conv-a');
+      const out = await unbind.service.patchField(
+        'org-a',
+        'conv-a',
+        'task-1',
+        'field-wa',
+        '21988881111',
+      );
+      expect(out.unbound).toBe(true);
+      expect(out.match?.status).toBe(STATUS.SEM_CARD);
+    });
+
     it('tipo somente leitura, bloqueado e fieldId ausente: zero escrita', async () => {
-      const task = leadTask('task-1', '+55 11 99876-5432');
+      const task = leadTaskWritable('task-1', '+55 11 99876-5432');
       const store = emptyStore([task]);
       const { service, fetchFn } = buildHarness({ conv: convA(), store });
       await service.resolve('org-a', 'conv-a');
@@ -270,13 +377,29 @@ describe('ClickUpInboxService W1', () => {
       expect(payload.comment_text).toContain('Enviar proposta');
       expect(out.comentarios.some((c: any) => c.id === out.comentarioId)).toBe(true);
     });
+
+    it('recusa termo sensível só no próximo passo sem POST', async () => {
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      await service.resolve('org-a', 'conv-a');
+      fetchFn.mockClear();
+      await expectHttp(
+        service.postComment('org-a', 'conv-a', 'task-1', 'user-1', {
+          oQue: 'Falei com a cliente',
+          proximoPasso: 'revelar a margem combinada',
+        }),
+        422,
+        'CLICKUP_INVALID_VALUE',
+      );
+      expect(mutationCalls(fetchFn).length).toBe(0);
+    });
   });
 
   describe('AC-09 binding', () => {
-    it('task em lista errada ou telefone diferente falha sem mutação', async () => {
-      const other = leadTask('task-x', '+55 21 98888-1111');
+    it('lista errada com telefone igual falha sem mutação', async () => {
+      const other = leadTask('task-x', '+55 11 99876-5432');
       other.list = { id: 'list-outra', name: 'Outra' };
-      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432'), other]);
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
       store.tasks['task-x'] = other;
       const { service, fetchFn } = buildHarness({ conv: convA(), store });
       await service.resolve('org-a', 'conv-a');
@@ -286,8 +409,138 @@ describe('ClickUpInboxService W1', () => {
         404,
         'CLICKUP_TASK_NOT_BOUND',
       );
-      const writes = fetchFn.mock.calls.filter((c: any) => (c[1]?.method ?? 'GET') !== 'GET');
-      expect(writes.length).toBe(0);
+      expect(mutationCalls(fetchFn).length).toBe(0);
+    });
+
+    it('lista permitida com telefone diferente falha sem mutação', async () => {
+      const other = leadTask('task-y', '+55 21 98888-1111');
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432'), other]);
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      await service.resolve('org-a', 'conv-a');
+      fetchFn.mockClear();
+      await expectHttp(
+        service.patchStatus('org-a', 'conv-a', 'task-y', 'andamento'),
+        404,
+        'CLICKUP_TASK_NOT_BOUND',
+      );
+      expect(mutationCalls(fetchFn).length).toBe(0);
+    });
+
+    it('atividade em lista errada, relação errada e destino incompatível', async () => {
+      const lead = leadTaskWritable('task-1', '+55 11 99876-5432');
+      const store = emptyStore([lead]);
+      const wrongList = {
+        id: 'act-wrong-list',
+        name: 'X',
+        list: { id: 'list-leads', name: 'Leads' },
+        status: { status: 'novo', type: 'open' },
+        custom_fields: [{ id: 'field-rel', value: ['task-1'] }],
+      };
+      const wrongRel = {
+        id: 'act-wrong-rel',
+        name: 'Y',
+        list: { id: 'list-acts', name: 'Atividades' },
+        status: { status: 'novo', type: 'open' },
+        custom_fields: [{ id: 'field-rel', value: ['outra'] }],
+      };
+      store.tasks['act-wrong-list'] = wrongList;
+      store.tasks['act-wrong-rel'] = wrongRel;
+      store.listTasks['list-acts'].push('act-wrong-rel');
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      await service.resolve('org-a', 'conv-a');
+      fetchFn.mockClear();
+      await expectHttp(
+        service.completeActivity('org-a', 'conv-a', 'task-1', 'act-wrong-list'),
+        404,
+        'CLICKUP_TASK_NOT_BOUND',
+      );
+      expect(mutationCalls(fetchFn).length).toBe(0);
+      fetchFn.mockClear();
+      await expectHttp(
+        service.completeActivity('org-a', 'conv-a', 'task-1', 'act-wrong-rel'),
+        404,
+        'CLICKUP_TASK_NOT_BOUND',
+      );
+      expect(mutationCalls(fetchFn).length).toBe(0);
+
+      store.relationListId = 'list-outra';
+      fetchFn.mockClear();
+      await expectHttp(
+        service.postActivity('org-a', 'conv-a', 'task-1', { name: 'Não criar' }),
+        412,
+        'CLICKUP_ACTIVITIES_UNAVAILABLE',
+      );
+      expect(
+        fetchFn.mock.calls.filter((c: any) => (c[1]?.method ?? 'GET') === 'POST').length,
+      ).toBe(0);
+    });
+  });
+
+  describe('F-03 tenant-first e remoto transitório', () => {
+    it('org B com fieldId inválido é 403 sem Prisma/fetch', async () => {
+      const { service, fetchFn, prisma } = buildHarness({ conv: convA() });
+      await expectHttp(
+        service.patchField('org-b', 'conv-a', 'task-1', '!', 'x'),
+        403,
+        'CLICKUP_ORG_FORBIDDEN',
+      );
+      expect(prisma.conversation.findFirst).not.toHaveBeenCalled();
+      expect(fetchFn.mock.calls.length).toBe(0);
+    });
+
+    it('timeout de validação remota é 504 e a próxima request tenta de novo', async () => {
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      store.statusCode = 504;
+      const { service, fetchFn } = buildHarness({ conv: convA(), store });
+      await expectHttp(service.resolve('org-a', 'conv-a'), 504, 'CLICKUP_TIMEOUT');
+      const first = fetchFn.mock.calls.length;
+      expect(first).toBeGreaterThan(0);
+      await expectHttp(service.resolve('org-a', 'conv-a'), 504, 'CLICKUP_TIMEOUT');
+      expect(fetchFn.mock.calls.length).toBeGreaterThan(first);
+    });
+  });
+
+  describe('F-04 receipt durável', () => {
+    it('retry em nova instância reusa o id sem novo POST', async () => {
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      const redis = new MemoryRedis();
+      const kv = new RedisAtividadeKv(redis);
+      const first = buildHarness({ conv: convA(), store, atividadeKv: kv });
+      const created = await first.service.postActivity('org-a', 'conv-a', 'task-1', {
+        name: 'Retorno',
+      });
+      const posts = first.fetchFn.mock.calls.filter(
+        (c: any) => String(c[0]).includes('/list/list-acts/task') && c[1]?.method === 'POST',
+      ).length;
+      expect(posts).toBe(1);
+      const second = buildHarness({
+        conv: convA(),
+        store,
+        fetchFn: first.fetchFn,
+        atividadeKv: new RedisAtividadeKv(redis),
+      });
+      second.fetchFn.mockClear();
+      const retry = await second.service.postActivity('org-a', 'conv-a', 'task-1', {
+        name: 'Retorno',
+      });
+      expect(retry.atividadeId).toBe(created.atividadeId);
+      expect(
+        second.fetchFn.mock.calls.filter(
+          (c: any) => String(c[0]).includes('/list/list-acts/task') && c[1]?.method === 'POST',
+        ).length,
+      ).toBe(0);
+    });
+
+    it('falha real de retenção Redis executa compensação', async () => {
+      const store = emptyStore([leadTask('task-1', '+55 11 99876-5432')]);
+      const kv = new RedisAtividadeKv(new MemoryRedis(new Map(), true));
+      const { service } = buildHarness({ conv: convA(), store, atividadeKv: kv });
+      await expectHttp(
+        service.postActivity('org-a', 'conv-a', 'task-1', { name: 'Compensar' }),
+        502,
+        'CLICKUP_UPSTREAM',
+      );
+      expect(Object.keys(store.tasks).some((id) => id.startsWith('act-'))).toBe(false);
     });
   });
 

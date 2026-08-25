@@ -65,3 +65,16 @@ export function mapUpstream(err: unknown): never {
   }
   clickupHttpError(HttpStatus.BAD_GATEWAY, CLICKUP_CODES.UPSTREAM, 'ClickUp indisponível');
 }
+
+const PERMANENT_REMOTE = /inacessível|não pertence|incompatível|WhatsApp|CLICKUP_TEAM|perfil/i;
+
+export function isPermanentRemoteFailure(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  if (status === 401 || status === 403) return true;
+  if (status === 504 || (err as { name?: string })?.name === 'AbortError') return false;
+  if (typeof status === 'number' && status >= 500) return false;
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (PERMANENT_REMOTE.test(message)) return true;
+  if (err instanceof HttpException && err.getStatus() === HttpStatus.SERVICE_UNAVAILABLE) return true;
+  return typeof status === 'number' && status >= 400 && status < 500;
+}

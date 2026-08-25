@@ -3,7 +3,11 @@ import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpInboxService } from './clickup-inbox.service';
 import { ClickUpMatchService } from './clickup-match.service';
-import { limparRecuperacoesAtividade } from './domain/criacao-atividade';
+import {
+  MemoryAtividadeKv,
+  limparRecuperacoesAtividade,
+  type AtividadeKv,
+} from './domain/criacao-atividade';
 
 export const TEST_PROFILE = {
   lists: [{ id: 'list-leads', label: 'Leads', primary: true }],
@@ -67,6 +71,15 @@ export function leadTask(id: string, phone: string, extra: Record<string, unknow
   };
 }
 
+export function leadTaskWritable(id: string, phone: string) {
+  return leadTask(id, phone, {
+    custom_fields: LEAD_FIELDS.map((campo) => ({
+      id: campo.id,
+      value: campo.id === 'field-wa' ? phone : campo.id === 'field-drop' ? 0 : campo.id === 'field-labels' ? [] : null,
+    })),
+  });
+}
+
 export type CuStore = {
   listsInTeam: string[];
   tasks: Record<string, any>;
@@ -74,6 +87,9 @@ export type CuStore = {
   comments: Record<string, Array<{ id: string; comment_text: string }>>;
   failPages?: boolean;
   statusCode?: number;
+  ignoreFieldWrites?: boolean;
+  fieldsByList?: Record<string, any[]>;
+  relationListId?: string;
 };
 
 export function emptyStore(tasks: any[] = []): CuStore {
@@ -136,13 +152,16 @@ export function createClickUpFetch(store: CuStore) {
     const listFields = path.match(/^\/list\/([^/]+)\/field$/);
     if (listFields && method === 'GET') {
       const listId = listFields[1];
+      if (store.fieldsByList?.[listId]) {
+        return ok({ fields: store.fieldsByList[listId] });
+      }
       if (listId === 'list-acts') {
         return ok({
           fields: [
             {
               id: 'field-rel',
               type: 'list_relationship',
-              type_config: { list_id: 'list-leads' },
+              type_config: { list_id: store.relationListId ?? 'list-leads' },
               applied_objects: [{ object_type: 19, object_id: 0 }],
             },
           ],
@@ -206,11 +225,13 @@ export function createClickUpFetch(store: CuStore) {
 
     const fieldPath = path.match(/^\/task\/([^/]+)\/field\/([^/]+)$/);
     if (fieldPath && method === 'POST') {
-      const task = store.tasks[fieldPath[1]];
-      const fieldId = fieldPath[2];
-      const existing = (task.custom_fields ?? []).find((c: any) => c.id === fieldId);
-      if (existing) existing.value = body.value;
-      else task.custom_fields.push({ id: fieldId, value: body.value });
+      if (!store.ignoreFieldWrites) {
+        const task = store.tasks[fieldPath[1]];
+        const fieldId = fieldPath[2];
+        const existing = (task.custom_fields ?? []).find((c: any) => c.id === fieldId);
+        if (existing) existing.value = body.value;
+        else task.custom_fields.push({ id: fieldId, value: body.value });
+      }
       return ok({});
     }
 
@@ -264,6 +285,7 @@ export function buildHarness(opts: {
   conv?: any;
   store?: CuStore;
   fetchFn?: jest.Mock;
+  atividadeKv?: AtividadeKv;
 }) {
   limparRecuperacoesAtividade();
   const env = opts.env ?? testEnv();
@@ -275,8 +297,16 @@ export function buildHarness(opts: {
   const http = new ClickUpInboxHttpClient(config, fetchFn as any);
   const match = new ClickUpMatchService(config, http);
   const prisma = makePrisma(opts.conv);
-  const service = new ClickUpInboxService(prisma as any, config, http, match);
-  return { service, config, http, match, prisma, fetchFn, store };
+  const atividadeKv = opts.atividadeKv ?? new MemoryAtividadeKv();
+  const service = new ClickUpInboxService(prisma as any, config, http, match, atividadeKv);
+  return { service, config, http, match, prisma, fetchFn, store, atividadeKv };
+}
+
+export function mutationCalls(fetchFn: jest.Mock) {
+  return fetchFn.mock.calls.filter((c: any) => {
+    const method = (c[1]?.method ?? 'GET').toUpperCase();
+    return method !== 'GET';
+  });
 }
 
 export function convA(overrides: Record<string, unknown> = {}) {

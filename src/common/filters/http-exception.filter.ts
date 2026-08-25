@@ -32,6 +32,15 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         ? exceptionResponse
         : (exceptionResponse as Record<string, unknown>).message || 'Internal server error';
 
+    const rawCode =
+      typeof exceptionResponse === 'object' && exceptionResponse
+        ? (exceptionResponse as Record<string, unknown>).code
+        : undefined;
+    const code =
+      typeof rawCode === 'string' && /^[A-Z][A-Z0-9_]{1,80}$/.test(rawCode)
+        ? rawCode
+        : undefined;
+
     if (status >= 500) {
       this.logger.error(
         `${request.method} ${request.url} ${status}`,
@@ -42,6 +51,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     response.status(status).json({
       statusCode: status,
       message,
+      ...(code ? { code } : {}),
       error:
         exception instanceof HttpException
           ? exception.name

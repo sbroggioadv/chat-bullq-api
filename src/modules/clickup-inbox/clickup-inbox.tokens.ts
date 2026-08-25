@@ -1,1 +1,2 @@
 export const CLICKUP_FETCH = Symbol('CLICKUP_FETCH');
+export const CLICKUP_ATIVIDADE_KV = Symbol('CLICKUP_ATIVIDADE_KV');

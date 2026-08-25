@@ -1,7 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { idSeguro } from './domain/ids';
 import type { CampoMeta } from './domain/campos';
-import { listaPrincipal, type ClickUpInboxActivities } from './domain/perfil';
+import type { ClickUpInboxActivities } from './domain/perfil';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { CLICKUP_FETCH } from './clickup-inbox.tokens';
 import { notConfigured } from './clickup-inbox.errors';
@@ -227,10 +227,11 @@ export class ClickUpInboxHttpClient {
       }
     }
 
-    const primary = listaPrincipal(local.profile);
-    const campos = await this.camposDaLista(primary);
-    if (!campos.some((campo) => campo.id === local.profile.whatsappFieldId)) {
-      throw new Error('campo WhatsApp inacessível');
+    for (const lista of local.profile.lists) {
+      const campos = await this.camposDaLista(lista.id);
+      if (!campos.some((campo) => campo.id === local.profile.whatsappFieldId)) {
+        throw new Error('campo WhatsApp inacessível');
+      }
     }
     if (local.profile.activities) {
       await this.validarRelacaoAtividade(local.profile.activities);

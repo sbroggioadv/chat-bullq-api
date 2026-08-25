@@ -4,7 +4,8 @@ import { ClickUpInboxService } from './clickup-inbox.service';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
-import { CLICKUP_FETCH } from './clickup-inbox.tokens';
+import { CLICKUP_ATIVIDADE_KV, CLICKUP_FETCH } from './clickup-inbox.tokens';
+import { ClickUpInboxRedisKv } from './clickup-inbox-redis.kv';
 
 @Module({
   controllers: [ClickUpInboxController],
@@ -12,6 +13,10 @@ import { CLICKUP_FETCH } from './clickup-inbox.tokens';
     {
       provide: CLICKUP_FETCH,
       useValue: globalThis.fetch.bind(globalThis),
+    },
+    {
+      provide: CLICKUP_ATIVIDADE_KV,
+      useClass: ClickUpInboxRedisKv,
     },
     ClickUpInboxConfigService,
     ClickUpInboxHttpClient,

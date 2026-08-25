@@ -7,7 +7,7 @@ import {
   type ClickUpInboxProfile,
 } from './domain/perfil';
 import { idSeguro } from './domain/ids';
-import { notConfigured } from './clickup-inbox.errors';
+import { isPermanentRemoteFailure, mapUpstream, notConfigured } from './clickup-inbox.errors';
 
 export type LocalConfigOk = {
   ok: true;
@@ -76,9 +76,12 @@ export class ClickUpInboxConfigService {
       await run();
       this.remote = { ok: true };
     } catch (err) {
-      const reason = extractReason(err);
-      this.remote = { ok: false, reason };
-      notConfigured(reason);
+      if (isPermanentRemoteFailure(err)) {
+        const reason = extractReason(err);
+        this.remote = { ok: false, reason };
+        notConfigured(reason);
+      }
+      mapUpstream(err);
     }
   }
 }

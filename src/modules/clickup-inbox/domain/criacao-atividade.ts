@@ -169,3 +169,65 @@ export class MemoryAtividadeKv implements AtividadeKv {
     this.dados.delete(chave);
   }
 }
+
+export type RedisLike = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ...extras: unknown[]): Promise<unknown>;
+  del(key: string): Promise<unknown>;
+};
+
+const REDIS_PREFIX = 'clickup-inbox:';
+export const ATIVIDADE_REDIS_TTL_SECONDS = Math.ceil(RECUPERACAO_TTL_MS / 1000);
+
+export class RedisAtividadeKv implements AtividadeKv {
+  constructor(
+    private readonly redis: RedisLike,
+    private readonly ttlSeconds = ATIVIDADE_REDIS_TTL_SECONDS,
+  ) {}
+
+  private key(chave: string) {
+    return `${REDIS_PREFIX}${chave}`;
+  }
+
+  async get(chave: string) {
+    const bruto = await this.redis.get(this.key(chave));
+    if (!bruto) return { [chave]: undefined };
+    try {
+      return { [chave]: JSON.parse(bruto) as AtividadeRegistro };
+    } catch {
+      return { [chave]: undefined };
+    }
+  }
+
+  async set(objeto: Record<string, AtividadeRegistro>) {
+    for (const [chave, valor] of Object.entries(objeto)) {
+      await this.redis.set(this.key(chave), JSON.stringify(valor), 'EX', this.ttlSeconds);
+    }
+  }
+
+  async remove(chave: string) {
+    await this.redis.del(this.key(chave));
+  }
+}
+
+export class MemoryRedis implements RedisLike {
+  constructor(
+    readonly dados = new Map<string, string>(),
+    private readonly failSet = false,
+  ) {}
+
+  async get(key: string) {
+    return this.dados.get(key) ?? null;
+  }
+
+  async set(key: string, value: string) {
+    if (this.failSet) throw new Error('storage indisponível');
+    this.dados.set(key, value);
+    return 'OK';
+  }
+
+  async del(key: string) {
+    this.dados.delete(key);
+    return 1;
+  }
+}

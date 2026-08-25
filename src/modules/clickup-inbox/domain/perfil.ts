@@ -29,6 +29,10 @@ function extras(valor: unknown, permitidas: string[]): string[] {
   return Object.keys(valor).filter((chave) => !permitidas.includes(chave));
 }
 
+function labelValido(valor: unknown): valor is string {
+  return typeof valor === 'string' && valor.trim().length > 0 && valor.length <= 160;
+}
+
 export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInboxProfile } | { ok: false; erro: string } {
   if (!perfil || typeof perfil !== 'object' || Array.isArray(perfil)) {
     return { ok: false, erro: 'perfil inválido' };
@@ -37,7 +41,7 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
     return { ok: false, erro: 'o perfil contém campos extras' };
   }
   const raw = perfil as Record<string, unknown>;
-  if (!Array.isArray(raw.lists) || !Array.isArray(raw.blockedFieldIds ?? [])) {
+  if (!Array.isArray(raw.lists) || !Array.isArray(raw.blockedFieldIds)) {
     return { ok: false, erro: 'listas e campos bloqueados devem ser listas' };
   }
   if (raw.lists.length === 0) {
@@ -48,14 +52,25 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
   }
 
   const lists: ClickUpInboxList[] = [];
+  const seen = new Set<string>();
   for (const lista of raw.lists as Array<Record<string, unknown>>) {
     if (!idSeguro(lista?.id)) {
       return { ok: false, erro: 'o perfil contém uma lista inválida' };
     }
+    if (!labelValido(lista.label)) {
+      return { ok: false, erro: 'cada lista precisa de um rótulo textual' };
+    }
+    if (typeof lista.primary !== 'boolean') {
+      return { ok: false, erro: 'primary deve ser boolean' };
+    }
+    if (seen.has(lista.id)) {
+      return { ok: false, erro: 'o perfil contém listas duplicadas' };
+    }
+    seen.add(lista.id);
     lists.push({
       id: lista.id,
-      label: String(lista.label ?? lista.id).slice(0, 160),
-      primary: Boolean(lista.primary),
+      label: lista.label.trim().slice(0, 160),
+      primary: lista.primary,
     });
   }
   if (lists.filter((lista) => lista.primary).length !== 1) {
@@ -65,10 +80,10 @@ export function validarPerfil(perfil: unknown): { ok: true; profile: ClickUpInbo
     return { ok: false, erro: 'selecione um campo de telefone válido' };
   }
 
-  const blockedFieldIds = (Array.isArray(raw.blockedFieldIds) ? raw.blockedFieldIds : []).map(String);
-  if (!blockedFieldIds.every(idSeguro)) {
+  if (!raw.blockedFieldIds.every((id) => typeof id === 'string' && idSeguro(id))) {
     return { ok: false, erro: 'o perfil contém um campo bloqueado inválido' };
   }
+  const blockedFieldIds = raw.blockedFieldIds as string[];
 
   let activities: ClickUpInboxActivities | null = null;
   if (raw.activities != null) {

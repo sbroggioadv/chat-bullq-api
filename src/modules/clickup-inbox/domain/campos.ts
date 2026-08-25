@@ -68,7 +68,11 @@ export function fieldValueForInput(campo: {
 export type SerializeOk = { ok: true; value: unknown };
 export type SerializeErr = { ok: false; erro: string };
 
-export function serializeFieldValue(tipo: string, value: unknown): SerializeOk | SerializeErr {
+export function serializeFieldValue(
+  tipo: string,
+  value: unknown,
+  opcoes: FieldOption[] = [],
+): SerializeOk | SerializeErr {
   if (!isWritableType(tipo)) {
     return { ok: false, erro: 'tipo de campo não é gravável nesta wave' };
   }
@@ -76,11 +80,23 @@ export function serializeFieldValue(tipo: string, value: unknown): SerializeOk |
     return { ok: true, value: null };
   }
 
+  const optionIds = new Set(opcoes.map((opcao) => opcao.id));
+
+  if (tipo === 'drop_down') {
+    if (typeof value !== 'string' || !optionIds.has(value)) {
+      return { ok: false, erro: 'opção de drop_down inválida' };
+    }
+    return { ok: true, value };
+  }
+
   if (tipo === 'labels') {
     if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
       return { ok: false, erro: 'labels exige um array de ids' };
     }
-    return { ok: true, value: value.map(String) };
+    if (value.some((id) => !optionIds.has(id))) {
+      return { ok: false, erro: 'opção de labels inválida' };
+    }
+    return { ok: true, value: [...value] };
   }
 
   if (tipo === 'date') {
@@ -107,11 +123,32 @@ export function montarCampoCard(
   meta: CampoMeta,
   valor: unknown,
   blocked: Set<string>,
+  presentOnTask = true,
 ): CampoCard {
   return {
     ...meta,
     valor,
     valorInput: fieldValueForInput({ tipo: meta.tipo, valor, opcoes: meta.opcoes }),
-    writable: isWritableType(meta.tipo) && !blocked.has(meta.id),
+    writable: isWritableType(meta.tipo) && !blocked.has(meta.id) && presentOnTask,
   };
+}
+
+export function valoresCampoEquivalentes(
+  tipo: string,
+  persistido: unknown,
+  pedido: unknown,
+  opcoes: FieldOption[] = [],
+): boolean {
+  if (pedido === null || pedido === undefined || pedido === '') {
+    return persistido === null || persistido === undefined || persistido === '';
+  }
+  if (tipo === 'drop_down') {
+    return fieldValueForInput({ tipo, valor: persistido, opcoes }) === pedido;
+  }
+  if (tipo === 'labels') {
+    const a = Array.isArray(persistido) ? [...persistido].map(String).sort() : [];
+    const b = Array.isArray(pedido) ? [...pedido].map(String).sort() : [];
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+  return String(persistido ?? '').trim() === String(pedido ?? '').trim();
 }

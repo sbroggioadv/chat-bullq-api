@@ -1,17 +1,23 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import { STATUS } from './domain/casamento';
 import { canonico } from './domain/telefone';
 import { idSeguro } from './domain/ids';
-import { montarCampoCard, serializeFieldValue } from './domain/campos';
-import { montarComentario, pareceSensivel } from './domain/comentario';
+import {
+  isWritableType,
+  montarCampoCard,
+  serializeFieldValue,
+  valoresCampoEquivalentes,
+} from './domain/campos';
+import { comentarioSensivel, montarComentario } from './domain/comentario';
 import {
   criarOuRecuperarAtividade,
-  MemoryAtividadeKv,
+  type AtividadeKv,
 } from './domain/criacao-atividade';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
+import { CLICKUP_ATIVIDADE_KV } from './clickup-inbox.tokens';
 import {
   activitiesUnavailable,
   conversationNotFound,
@@ -25,13 +31,12 @@ const HTTPS = /^https:\/\//i;
 
 @Injectable()
 export class ClickUpInboxService {
-  private readonly atividadeKv = new MemoryAtividadeKv();
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ClickUpInboxConfigService,
     private readonly http: ClickUpInboxHttpClient,
     private readonly match: ClickUpMatchService,
+    @Inject(CLICKUP_ATIVIDADE_KV) private readonly atividadeKv: AtividadeKv,
   ) {}
 
   async resolve(organizationId: string, conversationId: string) {
@@ -85,6 +90,7 @@ export class ClickUpInboxService {
   }
 
   async getTask(organizationId: string, conversationId: string, taskId: string) {
+    this.assertOrg(organizationId);
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
     try {
       const card = await this.cardCompleto(taskId, conv.contact.phone);
@@ -101,6 +107,7 @@ export class ClickUpInboxService {
     taskId: string,
     status: string,
   ) {
+    this.assertOrg(organizationId);
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
     try {
       const cardAntes = await this.cardCompleto(taskId, conv.contact.phone);
@@ -130,31 +137,51 @@ export class ClickUpInboxService {
     fieldId: string,
     value: unknown,
   ) {
+    this.assertOrg(organizationId);
     if (!idSeguro(fieldId)) invalidValue('campo inválido');
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
     const profile = this.config.profile();
     try {
-      const cardAntes = await this.cardCompleto(taskId, conv.contact.phone);
-      const campo = cardAntes.campos.find((item) => item.id === fieldId);
-      if (!campo) taskNotBound('campo ausente da task');
-      if (!campo.writable || profile.blockedFieldIds.includes(fieldId)) {
+      const task = await this.assertTaskBound(taskId, conv.contact.phone);
+      const onTask = (task.custom_fields ?? []).some((item: { id?: string }) => item.id === fieldId);
+      if (!onTask) taskNotBound('campo ausente da task');
+      const metadados = await this.http.camposDaLista(String(task.list?.id));
+      const meta = metadados.find((item) => item.id === fieldId);
+      if (!meta) taskNotBound('campo ausente dos metadados da lista');
+      if (!isWritableType(meta.tipo) || profile.blockedFieldIds.includes(fieldId)) {
         invalidValue('campo bloqueado ou somente leitura');
       }
-      const serialized = serializeFieldValue(campo.tipo, value);
+      const serialized = serializeFieldValue(meta.tipo, value, meta.opcoes);
       if (!serialized.ok) invalidValue(serialized.erro);
       await this.http.write(
         `/task/${encodeURIComponent(taskId)}/field/${encodeURIComponent(fieldId)}`,
         { value: serialized.value },
       );
-      const card = await this.cardCompleto(taskId, conv.contact.phone);
       if (fieldId === profile.whatsappFieldId) {
         this.match.invalidate(organizationId);
       }
-      return {
-        ok: true,
-        valor: card.campos.find((item) => item.id === fieldId)?.valor ?? null,
-        card,
-      };
+      const relido = await this.http.taskBruta(taskId);
+      const persistido = (relido.custom_fields ?? []).find(
+        (item: { id?: string }) => item.id === fieldId,
+      )?.value;
+      if (!valoresCampoEquivalentes(meta.tipo, persistido, serialized.value, meta.opcoes)) {
+        const erro = new Error('não foi possível confirmar o campo por leitura') as Error & {
+          status: number;
+        };
+        erro.status = 502;
+        throw erro;
+      }
+      const stillBound = phonesMatch(conv.contact.phone, phoneFromTask(relido, profile.whatsappFieldId));
+      if (!stillBound) {
+        return {
+          ok: true,
+          valor: persistido ?? null,
+          unbound: true,
+          match: await this.resolve(organizationId, conversationId),
+        };
+      }
+      const card = await this.cardCompleto(taskId, conv.contact.phone);
+      return { ok: true, valor: persistido ?? null, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       mapUpstream(err);
@@ -168,8 +195,9 @@ export class ClickUpInboxService {
     userId: string,
     dto: { oQue: string; proximoPasso: string },
   ) {
+    this.assertOrg(organizationId);
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
-    if (pareceSensivel(dto.oQue)) invalidValue('o texto parece conter informação sensível');
+    if (comentarioSensivel(dto)) invalidValue('o texto parece conter informação sensível');
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, email: true },
@@ -207,6 +235,7 @@ export class ClickUpInboxService {
     taskId: string,
     dto: { name: string; dueDate?: string },
   ) {
+    this.assertOrg(organizationId);
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
     const activities = this.config.profile().activities;
     if (!activities) activitiesUnavailable('atividades não estão configuradas');
@@ -254,6 +283,7 @@ export class ClickUpInboxService {
     taskId: string,
     activityId: string,
   ) {
+    this.assertOrg(organizationId);
     if (!idSeguro(activityId)) invalidValue('atividade inválida');
     const conv = await this.prepareBound(organizationId, conversationId, taskId);
     const activities = this.config.profile().activities;
@@ -357,8 +387,11 @@ export class ClickUpInboxService {
     const valores = new Map(
       (task.custom_fields ?? []).map((campo: { id: string; value: unknown }) => [campo.id, campo.value]),
     );
+    const presentes = new Set(
+      (task.custom_fields ?? []).map((campo: { id: string }) => campo.id),
+    );
     const campos = metadados.map((campo) =>
-      montarCampoCard(campo, valores.get(campo.id) ?? null, blocked),
+      montarCampoCard(campo, valores.get(campo.id) ?? null, blocked, presentes.has(campo.id)),
     );
     const url = typeof task.url === 'string' && HTTPS.test(task.url) ? task.url : null;
     return {
@@ -431,6 +464,12 @@ export class ClickUpInboxService {
 function phoneFromTask(task: any, whatsappFieldId: string): unknown {
   return (task.custom_fields ?? []).find((campo: { id?: string }) => campo.id === whatsappFieldId)
     ?.value ?? null;
+}
+
+function phonesMatch(conversationPhone: string | null, taskPhone: unknown): boolean {
+  const expected = canonico(conversationPhone);
+  const got = canonico(taskPhone);
+  return Boolean(expected.ok && got.ok && expected.canonico === got.canonico);
 }
 
 function idsRelacionados(valor: unknown): string[] {
