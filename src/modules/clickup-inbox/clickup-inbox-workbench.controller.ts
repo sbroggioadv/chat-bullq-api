@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import { CurrentOrg } from '../../common/decorators';
 import { ClickUpInboxService } from './clickup-inbox.service';
-import { BindWorkbenchDto, CreateWorkbenchTaskDto } from './dto/clickup-inbox.dto';
+import { BindWorkbenchDto, CreateWorkbenchTaskDto, IncorporateWorkbenchDto } from './dto/clickup-inbox.dto';
 
 @ApiTags('ClickUp inbox workbench')
 @ApiBearerAuth()
@@ -64,8 +64,13 @@ export class ClickUpInboxWorkbenchController {
   }
 
   @Post('incorporations')
-  @ApiOperation({ summary: 'W3 stub — incorporar fica na próxima wave' })
-  incorporate() {
-    return this.service.incorporateWorkbench();
+  @ApiOperation({ summary: 'Incorpora um comentário XOR um anexo na task vinculada' })
+  incorporate(
+    @CurrentOrg('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Headers('idempotency-key') idempotencyKey: string,
+    @Body() dto: IncorporateWorkbenchDto,
+  ) {
+    return this.service.incorporateWorkbench(orgId, conversationId, idempotencyKey, dto);
   }
 }

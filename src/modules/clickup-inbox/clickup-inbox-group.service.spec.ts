@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { ClickUpInboxGroupController } from './clickup-inbox-group.controller';
 import { GROUP_STATUS } from './domain/grupo';
 import { MemoryW2Store } from './clickup-inbox-w2.store';
 import {
@@ -360,10 +359,16 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
   });
 
   describe('W3 stub e binding inválido', () => {
-    it('POST incorporations é 501', async () => {
+    it('POST incorporations deixa de ser 501 e valida o DTO', async () => {
       const { service } = groupHarness();
-      const controller = new ClickUpInboxGroupController(service);
-      await expectHttp(controller.incorporate(), 501, 'CLICKUP_INCORPORATE_NOT_READY');
+      await expectHttp(
+        service.incorporateGroup('org-a', 'conv-a', 'not-a-uuid', {
+          kind: 'comment',
+          messageId: 'msg-1',
+        }),
+        422,
+        'CLICKUP_INVALID_VALUE',
+      );
     });
 
     it('task apagada vira binding_invalido sem mutações', async () => {

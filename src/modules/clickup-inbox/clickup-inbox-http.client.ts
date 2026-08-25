@@ -4,10 +4,11 @@ import type { CampoMeta } from './domain/campos';
 import type { ClickUpInboxActivities } from './domain/perfil';
 import type { LiveCatalogList, LiveCatalogTree } from './domain/workbench';
 import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
-import { CLICKUP_FETCH } from './clickup-inbox.tokens';
+import { CLICKUP_FETCH, CLICKUP_MEDIA_FETCH } from './clickup-inbox.tokens';
 import { notConfigured } from './clickup-inbox.errors';
 
 export const CLICKUP_TIMEOUT_MS = 15_000;
+export const CLICKUP_UPLOAD_TIMEOUT_MS = 60_000;
 const BASE = 'https://api.clickup.com/api/v2';
 
 export type ClickUpFetch = (
@@ -19,16 +20,29 @@ export type ClickUpFetch = (
   json: () => Promise<unknown>;
 }>;
 
+export type ClickUpMediaFetch = (
+  input: string,
+  init?: RequestInit,
+) => Promise<{
+  ok: boolean;
+  status: number;
+  headers: { get(name: string): string | null };
+  arrayBuffer(): Promise<ArrayBuffer>;
+}>;
+
 @Injectable()
 export class ClickUpInboxHttpClient {
   private readonly timeoutMs = CLICKUP_TIMEOUT_MS;
   private readonly fetchFn: ClickUpFetch;
+  private readonly mediaFetch: ClickUpMediaFetch;
 
   constructor(
     private readonly config: ClickUpInboxConfigService,
     @Optional() @Inject(CLICKUP_FETCH) fetchFn?: ClickUpFetch,
+    @Optional() @Inject(CLICKUP_MEDIA_FETCH) mediaFetch?: ClickUpMediaFetch,
   ) {
     this.fetchFn = fetchFn ?? (globalThis.fetch.bind(globalThis) as ClickUpFetch);
+    this.mediaFetch = mediaFetch ?? (globalThis.fetch.bind(globalThis) as ClickUpMediaFetch);
   }
 
   async request(path: string, opts: { method?: string; body?: unknown } = {}): Promise<any> {
@@ -75,6 +89,84 @@ export class ClickUpInboxHttpClient {
 
   write(path: string, body?: unknown, method = 'POST') {
     return this.request(path, { method, body });
+  }
+
+  async uploadAttachment(
+    taskId: string,
+    file: { filename: string; mime: string; bytes: Buffer },
+  ): Promise<{ id?: string }> {
+    if (!idSeguro(taskId)) throw new Error('task inválida');
+    const local = this.config.snapshot();
+    if (!local.ok) notConfigured(local.reason);
+    const form = new FormData();
+    const blob = new Blob([new Uint8Array(file.bytes)], { type: file.mime || 'application/octet-stream' });
+    form.append('attachment', blob, file.filename);
+    const controlador = new AbortController();
+    const timer = setTimeout(() => controlador.abort(), CLICKUP_UPLOAD_TIMEOUT_MS);
+    try {
+      const resposta = await this.fetchFn(`${BASE}/task/${encodeURIComponent(taskId)}/attachment`, {
+        method: 'POST',
+        headers: { Authorization: local.apiKey },
+        body: form as unknown as BodyInit,
+        signal: controlador.signal,
+      });
+      if (!resposta.ok) {
+        const erro = new Error(`ClickUp recusou a requisição (HTTP ${resposta.status})`) as Error & {
+          status: number;
+        };
+        erro.status = resposta.status;
+        throw erro;
+      }
+      return (await resposta.json().catch(() => ({}))) as { id?: string };
+    } catch (erro) {
+      if ((erro as { name?: string })?.name === 'AbortError') {
+        const timeout = new Error(
+          `ClickUp: tempo limite de ${CLICKUP_UPLOAD_TIMEOUT_MS} ms excedido`,
+        ) as Error & { status: number };
+        timeout.status = 504;
+        throw timeout;
+      }
+      throw erro;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async fetchMediaBytes(url: string, capBytes: number): Promise<{ bytes: Buffer; mime: string | null }> {
+    const controlador = new AbortController();
+    const timer = setTimeout(() => controlador.abort(), CLICKUP_UPLOAD_TIMEOUT_MS);
+    try {
+      const resposta = await this.mediaFetch(url, { method: 'GET', signal: controlador.signal });
+      if (!resposta.ok) {
+        const erro = new Error(`origem do anexo recusou a leitura (HTTP ${resposta.status})`) as Error & {
+          status: number;
+        };
+        erro.status = 422;
+        throw erro;
+      }
+      const declared = Number(resposta.headers.get('content-length') ?? '');
+      if (Number.isFinite(declared) && declared > capBytes) {
+        const erro = new Error('anexo excede 25 MiB') as Error & { status: number };
+        erro.status = 422;
+        throw erro;
+      }
+      const buf = Buffer.from(await resposta.arrayBuffer());
+      if (buf.byteLength > capBytes) {
+        const erro = new Error('anexo excede 25 MiB') as Error & { status: number };
+        erro.status = 422;
+        throw erro;
+      }
+      return { bytes: buf, mime: resposta.headers.get('content-type') };
+    } catch (erro) {
+      if ((erro as { name?: string })?.name === 'AbortError') {
+        const timeout = new Error('tempo limite ao ler o anexo') as Error & { status: number };
+        timeout.status = 504;
+        throw timeout;
+      }
+      throw erro;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async tarefasDaLista(listId: string): Promise<any[]> {

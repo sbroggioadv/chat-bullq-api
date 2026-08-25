@@ -96,6 +96,8 @@ export type CuStore = {
   comments: Record<string, Array<{ id: string; comment_text: string }>>;
   spaces?: CuStoreSpace[];
   failCatalogSpace?: string;
+  failConfirmAttachment?: boolean;
+  media?: Record<string, { bytes: Buffer; mime: string }>;
   failPages?: boolean;
   statusCode?: number;
   ignoreFieldWrites?: boolean;
@@ -123,7 +125,8 @@ export function createClickUpFetch(store: CuStore) {
     const parsed = new URL(url);
     const path = parsed.pathname.replace('/api/v2', '');
     const method = (init?.method ?? 'GET').toUpperCase();
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    const isForm = typeof FormData !== 'undefined' && init?.body instanceof FormData;
+    const body = isForm || !init?.body ? undefined : JSON.parse(String(init.body));
 
     if (store.statusCode) {
       return { ok: false, status: store.statusCode, json: async () => ({ err: 'nope' }) };
@@ -308,6 +311,22 @@ export function createClickUpFetch(store: CuStore) {
       return ok({ id });
     }
 
+    const attachPath = path.match(/^\/task\/([^/]+)\/attachment$/);
+    if (attachPath && method === 'POST') {
+      const task = store.tasks[attachPath[1]];
+      if (!task) return { ok: false, status: 404, json: async () => ({}) };
+      const id = `att-${(task.attachments ?? []).length + 1}`;
+      let title = 'anexo';
+      if (isForm) {
+        const file = (init?.body as FormData).get('attachment') as { name?: string } | null;
+        if (file?.name) title = file.name;
+      }
+      if (!store.failConfirmAttachment) {
+        task.attachments = [...(task.attachments ?? []), { id, title }];
+      }
+      return ok({ id });
+    }
+
     return { ok: false, status: 404, json: async () => ({}) };
   });
   return clickupFetch;
@@ -324,11 +343,15 @@ export function makePrisma(
     conversations?: any[];
     projects?: any[];
     links?: Array<{ conversationId: string; projectId: string }>;
+    messages?: any[];
+    attachments?: any[];
   } = {},
 ) {
   const conversations = extra.conversations ?? (conv ? [conv] : []);
   const projects = extra.projects ?? [];
   const links = extra.links ?? [];
+  const messages = extra.messages ?? [];
+  const attachments = extra.attachments ?? [];
   return {
     conversation: {
       findFirst: jest.fn(async ({ where }: any) => {
@@ -378,6 +401,34 @@ export function makePrisma(
           .map((row) => ({ conversationId: row.conversationId, projectId: row.projectId }));
       }),
     },
+    message: {
+      findFirst: jest.fn(async ({ where }: any) => {
+        return (
+          messages.find((row) => {
+            if (row.id !== where.id) return false;
+            if (where.conversationId && row.conversationId !== where.conversationId) return false;
+            if (where.revokedAt === null && row.revokedAt) return false;
+            return true;
+          }) ?? null
+        );
+      }),
+    },
+    projectAttachment: {
+      findFirst: jest.fn(async ({ where }: any) => {
+        const row = attachments.find((item) => item.id === where.id);
+        if (!row) return null;
+        const project = projects.find((item) => item.id === row.projectId);
+        if (!project || project.deletedAt) return null;
+        if (where.project?.organizationId && project.organizationId !== where.project.organizationId) {
+          return null;
+        }
+        const convId = where.project?.conversations?.some?.conversationId;
+        if (convId && !links.some((link) => link.projectId === project.id && link.conversationId === convId)) {
+          return null;
+        }
+        return row;
+      }),
+    },
     project: {
       findFirst: jest.fn(async ({ where }: any) => {
         return (
@@ -412,21 +463,50 @@ export function buildHarness(opts: {
   projects?: any[];
   links?: Array<{ conversationId: string; projectId: string }>;
   conversations?: any[];
+  messages?: any[];
+  attachments?: any[];
 }) {
   limparRecuperacoesAtividade();
   const env = opts.env ?? testEnv();
   const store = opts.store ?? emptyStore();
   const fetchFn = opts.fetchFn ?? createClickUpFetch(store);
+  const mediaFetch = jest.fn(async (url: string) => {
+    const item = store.media?.[url];
+    if (!item) {
+      return {
+        ok: false,
+        status: 404,
+        headers: { get: () => null },
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => {
+          const header = name.toLowerCase();
+          if (header === 'content-type') return item.mime;
+          if (header === 'content-length') return String(item.bytes.byteLength);
+          return null;
+        },
+      },
+      arrayBuffer: async () =>
+        item.bytes.buffer.slice(item.bytes.byteOffset, item.bytes.byteOffset + item.bytes.byteLength),
+    };
+  });
   const config = new ClickUpInboxConfigService({
     get: (k: string) => env[k],
   } as ConfigService);
-  const http = new ClickUpInboxHttpClient(config, fetchFn as any);
+  const http = new ClickUpInboxHttpClient(config, fetchFn as any, mediaFetch as any);
   const match = new ClickUpMatchService(config, http);
   const catalog = new ClickUpCatalogService(config, http);
   const prisma = makePrisma(opts.conv, undefined, {
     conversations: opts.conversations,
     projects: opts.projects,
     links: opts.links,
+    messages: opts.messages,
+    attachments: opts.attachments,
   });
   const atividadeKv = opts.atividadeKv ?? new MemoryAtividadeKv();
   const w2Store = opts.w2Store ?? new MemoryW2Store();
@@ -439,7 +519,7 @@ export function buildHarness(opts: {
     atividadeKv,
     w2Store,
   );
-  return { service, config, http, match, catalog, prisma, fetchFn, store, atividadeKv, w2Store };
+  return { service, config, http, match, catalog, prisma, fetchFn, mediaFetch, store, atividadeKv, w2Store };
 }
 
 export function mutationCalls(fetchFn: jest.Mock) {

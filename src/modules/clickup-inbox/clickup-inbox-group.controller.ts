@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import { CurrentOrg } from '../../common/decorators';
 import { ClickUpInboxService } from './clickup-inbox.service';
-import { BindGroupTaskDto, CreateGroupTaskDto } from './dto/clickup-inbox.dto';
+import { BindGroupTaskDto, CreateGroupTaskDto, IncorporateWorkbenchDto } from './dto/clickup-inbox.dto';
 
 @ApiTags('ClickUp inbox grupo')
 @ApiBearerAuth()
@@ -54,8 +54,13 @@ export class ClickUpInboxGroupController {
   }
 
   @Post('incorporations')
-  @ApiOperation({ summary: 'W3 stub — incorporar fica na próxima wave' })
-  incorporate() {
-    return this.service.incorporateGroup();
+  @ApiOperation({ summary: 'Alias — incorpora um comentário XOR um anexo na task vinculada' })
+  incorporate(
+    @CurrentOrg('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Headers('idempotency-key') idempotencyKey: string,
+    @Body() dto: IncorporateWorkbenchDto,
+  ) {
+    return this.service.incorporateGroup(orgId, conversationId, idempotencyKey, dto);
   }
 }

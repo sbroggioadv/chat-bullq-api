@@ -1,4 +1,3 @@
-import { ClickUpInboxWorkbenchController } from './clickup-inbox-workbench.controller';
 import { WORKBENCH_STATUS } from './domain/workbench';
 import {
   buildHarness,
@@ -259,10 +258,16 @@ describe('SPEC-009 W2 união live + crossLinkDossier', () => {
     expect(project.clickupTaskId).toBeNull();
   });
 
-  it('W3 continua 501', async () => {
+  it('W3 incorporations deixa de ser 501', async () => {
     const { service } = liveHarness();
-    const controller = new ClickUpInboxWorkbenchController(service);
-    await expectHttp(controller.incorporate(), 501, 'CLICKUP_INCORPORATE_NOT_READY');
+    await expectHttp(
+      service.incorporateWorkbench('org-a', 'conv-a', 'not-a-uuid', {
+        kind: 'comment',
+        messageId: 'msg-1',
+      }),
+      422,
+      'CLICKUP_INVALID_VALUE',
+    );
   });
 
   it('create em atalho W0 continua válido com catalogSpaces', async () => {

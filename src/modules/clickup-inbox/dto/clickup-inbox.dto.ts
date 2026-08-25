@@ -75,6 +75,21 @@ export class CreateWorkbenchTaskDto {
   confirmSwitch?: boolean;
 }
 
+export class IncorporateWorkbenchDto {
+  @IsString()
+  kind!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  messageId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  documentId?: string;
+}
+
 export class CreateLeadDto {
   @IsOptional()
   @IsBoolean()

@@ -1,4 +1,6 @@
 import { HttpException, Inject, Injectable } from '@nestjs/common';
+import { readFile } from 'node:fs/promises';
+import { join, resolve as resolvePath } from 'node:path';
 import { PrismaService } from '../../database/prisma.service';
 import { STATUS } from './domain/casamento';
 import { canonico } from './domain/telefone';
@@ -10,6 +12,20 @@ import {
   valoresCampoEquivalentes,
 } from './domain/campos';
 import { comentarioSensivel, montarComentario } from './domain/comentario';
+import {
+  INCORPORATE_MESSAGE_TYPES,
+  MAX_ATTACHMENT_BYTES,
+  historicoSensivel,
+  mimeDaOrigem,
+  mimeDeFilename,
+  mimePermitido,
+  montarHistorico,
+  nomeDaOrigem,
+  sanitizarFilename,
+  textoDaMensagem,
+  urlDaMensagem,
+  validarIncorporacao,
+} from './domain/incorporacao';
 import {
   criarOuRecuperarAtividade,
   type AtividadeKv,
@@ -40,7 +56,6 @@ import {
   isRedisFailure,
   storeUnavailable,
   taskNotBound,
-  notImplemented,
 } from './clickup-inbox.errors';
 
 const IDEMPOTENCY_UUID =
@@ -800,8 +815,72 @@ export class ClickUpInboxService {
     }
   }
 
-  async incorporateWorkbench() {
-    notImplemented('CLICKUP_INCORPORATE_NOT_READY', 'incorporar fica na próxima wave');
+  async incorporateWorkbench(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { kind?: string; messageId?: string; documentId?: string },
+  ) {
+    this.assertOrg(organizationId);
+    if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
+      invalidValue('Idempotency-Key inválida');
+    }
+    const key = String(idempotencyKey).trim();
+    const parsed = validarIncorporacao(dto);
+    if (!parsed.ok) invalidValue(parsed.erro);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.clickupTaskId) taskNotBound('task não vinculada a esta conversa');
+    const taskId = conv.clickupTaskId;
+    const originId = parsed.value.messageId ?? parsed.value.documentId!;
+    const scope = `conv:${conv.id}:w3:${parsed.value.kind}:${originId}`;
+
+    await this.withStore(() => this.w2Store.assertReady());
+    const token = await this.withStore(() => this.w2Store.acquireLock(organizationId, scope));
+    try {
+      const existing = await this.withStore(() => this.w2Store.getReceipt(organizationId, scope, key));
+      if (existing?.state === 'done') {
+        return { ok: true, kind: parsed.value.kind, id: existing.taskId };
+      }
+      await this.ensureRemote();
+      await this.assertTaskOnAuthorizedLists(taskId, await this.authorizedListIds(organizationId));
+
+      if (parsed.value.kind === 'comment') {
+        return await this.incorporateComment(
+          organizationId,
+          conversationId,
+          scope,
+          key,
+          taskId,
+          parsed.value.messageId!,
+        );
+      }
+      return await this.incorporateAttachment(
+        organizationId,
+        conversationId,
+        scope,
+        key,
+        taskId,
+        parsed.value,
+      );
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      if (isRedisFailure(err)) storeUnavailable();
+      mapUpstream(err);
+    } finally {
+      await this.w2Store.releaseLock(organizationId, scope, token).catch(() => undefined);
+    }
+  }
+
+  async incorporateGroup(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { kind?: string; messageId?: string; documentId?: string },
+  ) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    return this.incorporateWorkbench(organizationId, conversationId, idempotencyKey, dto);
   }
 
   async resolveGroup(organizationId: string, conversationId: string) {
@@ -842,8 +921,208 @@ export class ClickUpInboxService {
     return this.createWorkbenchTask(organizationId, conversationId, idempotencyKey, dto);
   }
 
-  async incorporateGroup() {
-    return this.incorporateWorkbench();
+  private async incorporateComment(
+    organizationId: string,
+    conversationId: string,
+    scope: string,
+    key: string,
+    taskId: string,
+    messageId: string,
+  ) {
+    const message = await this.loadOriginMessage(organizationId, conversationId, messageId);
+    if (!INCORPORATE_MESSAGE_TYPES.has(String(message.type))) {
+      invalidValue('tipo de mensagem incompatível com comentário');
+    }
+    const texto = textoDaMensagem(message.content);
+    if (!texto) invalidValue('mensagem sem texto para incorporar');
+    if (historicoSensivel(texto)) invalidValue('o texto parece conter informação sensível');
+    const bloco = montarHistorico({
+      quando: message.providerTimestamp ?? message.createdAt ?? new Date(),
+      senderName: message.senderName,
+      direcao: message.direction,
+      texto,
+    });
+    await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
+    const ja = await this.http.comentarios(taskId, 40);
+    const existente = ja.find((comentario) => String(comentario.texto ?? '').includes(texto.slice(0, 80)));
+    if (existente?.id) {
+      await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, String(existente.id)));
+      return { ok: true, kind: 'comment' as const, id: String(existente.id) };
+    }
+    const criado = await this.http.write(`/task/${encodeURIComponent(taskId)}/comment`, {
+      comment_text: bloco,
+      notify_all: false,
+    });
+    const id = String(criado?.id ?? '');
+    const comentarios = await this.http.comentarios(taskId, 40);
+    if (!id || !comentarios.some((comentario) => String(comentario.id) === id)) {
+      const erro = new Error('não foi possível confirmar o comentário por leitura') as Error & {
+        status: number;
+      };
+      erro.status = 502;
+      throw erro;
+    }
+    await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, id));
+    return { ok: true, kind: 'comment' as const, id };
+  }
+
+  private async incorporateAttachment(
+    organizationId: string,
+    conversationId: string,
+    scope: string,
+    key: string,
+    taskId: string,
+    parsed: { messageId?: string; documentId?: string },
+  ) {
+    const origin = parsed.messageId
+      ? await this.originFromMessage(organizationId, conversationId, parsed.messageId)
+      : await this.originFromDocument(organizationId, conversationId, parsed.documentId!);
+    if (!mimePermitido(origin.mime, origin.filename)) {
+      invalidValue('tipo de arquivo não permitido');
+    }
+    if (origin.declaredSize != null && origin.declaredSize > MAX_ATTACHMENT_BYTES) {
+      invalidValue('anexo excede 25 MiB');
+    }
+    const bytes = await this.lerBytesOrigem(origin.url, origin.inline);
+    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
+    await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
+    const task = await this.http.taskBruta(taskId);
+    const ja = Array.isArray(task?.attachments) ? task.attachments : [];
+    const match = ja.find(
+      (item: { id?: string; title?: string; name?: string }) =>
+        sanitizarFilename(String(item.title ?? item.name ?? '')) === origin.filename,
+    );
+    if (match?.id) {
+      await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, String(match.id)));
+      return { ok: true, kind: 'attachment' as const, id: String(match.id) };
+    }
+    const criado = await this.http.uploadAttachment(taskId, {
+      filename: origin.filename,
+      mime: origin.mime,
+      bytes,
+    });
+    const id = String(criado?.id ?? '');
+    const relido = await this.http.taskBruta(taskId);
+    const attachments = Array.isArray(relido?.attachments) ? relido.attachments : [];
+    if (!id || !attachments.some((item: { id?: string }) => String(item.id) === id)) {
+      const erro = new Error('não foi possível confirmar o anexo por leitura') as Error & {
+        status: number;
+      };
+      erro.status = 502;
+      throw erro;
+    }
+    await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, id));
+    return { ok: true, kind: 'attachment' as const, id };
+  }
+
+  private async loadOriginMessage(organizationId: string, conversationId: string, messageId: string) {
+    if (!idSeguro(messageId)) invalidValue('messageId inválido');
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        conversationId,
+        revokedAt: null,
+        conversation: { organizationId, deletedAt: null },
+      },
+      select: {
+        id: true,
+        conversationId: true,
+        type: true,
+        content: true,
+        senderName: true,
+        direction: true,
+        providerTimestamp: true,
+        createdAt: true,
+      },
+    });
+    if (!message) invalidValue('mensagem não encontrada nesta conversa');
+    return message;
+  }
+
+  private async originFromMessage(organizationId: string, conversationId: string, messageId: string) {
+    const message = await this.loadOriginMessage(organizationId, conversationId, messageId);
+    if (!INCORPORATE_MESSAGE_TYPES.has(String(message.type))) {
+      invalidValue('tipo de mensagem incompatível com anexo');
+    }
+    const url = urlDaMensagem(message.content);
+    if (!url) invalidValue('mensagem sem arquivo para anexar');
+    const filename = sanitizarFilename(nomeDaOrigem(message.content));
+    const mime = mimeDaOrigem(message.content) || mimeDeFilename(filename) || '';
+    const declared = Number((message.content as { size?: unknown })?.size);
+    return {
+      url,
+      filename,
+      mime,
+      declaredSize: Number.isFinite(declared) ? declared : null,
+      inline: null as Buffer | null,
+    };
+  }
+
+  private async originFromDocument(organizationId: string, conversationId: string, documentId: string) {
+    if (!idSeguro(documentId)) invalidValue('documentId inválido');
+    const attachment = await this.prisma.projectAttachment.findFirst({
+      where: {
+        id: documentId,
+        project: {
+          organizationId,
+          deletedAt: null,
+          conversations: { some: { conversationId } },
+        },
+      },
+      select: { id: true, url: true, fileName: true, mimeType: true, label: true },
+    });
+    if (!attachment?.url) invalidValue('documento não encontrado neste dossiê');
+    const filename = sanitizarFilename(attachment.fileName || attachment.label || 'anexo');
+    const mime = (attachment.mimeType || mimeDeFilename(filename) || '').toLowerCase();
+    return { url: attachment.url, filename, mime, declaredSize: null as number | null, inline: null as Buffer | null };
+  }
+
+  private async lerBytesOrigem(url: string, inline: Buffer | null): Promise<Buffer> {
+    if (inline) return inline;
+    const local = this.localUploadPath(url);
+    if (local) {
+      try {
+        const bytes = await readFile(local);
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) invalidValue('anexo excede 25 MiB');
+        return bytes;
+      } catch (err) {
+        if (err instanceof HttpException) throw err;
+        invalidValue('não foi possível ler o arquivo local');
+      }
+    }
+    if (!HTTPS.test(url) && !url.startsWith('http://files.test/') && !url.startsWith('https://files.test/')) {
+      invalidValue('URL de anexo inválida');
+    }
+    try {
+      const { bytes } = await this.http.fetchMediaBytes(url, MAX_ATTACHMENT_BYTES);
+      return bytes;
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      const status = (err as { status?: number })?.status;
+      if (status === 422) invalidValue((err as Error).message || 'anexo inválido');
+      throw err;
+    }
+  }
+
+  private localUploadPath(url: string): string | null {
+    let pathname = url;
+    try {
+      if (/^https?:\/\//i.test(url)) pathname = new URL(url).pathname;
+    } catch {
+      return null;
+    }
+    const marker = pathname.includes('/api/v1/uploads/')
+      ? '/api/v1/uploads/'
+      : pathname.startsWith('/uploads/')
+        ? '/uploads/'
+        : null;
+    if (!marker) return null;
+    const rel = pathname.slice(pathname.indexOf(marker) + marker.length);
+    if (!rel || rel.includes('..')) return null;
+    const root = resolvePath(process.env.UPLOADS_DIR || join(process.cwd(), 'uploads'));
+    const abs = resolvePath(join(root, rel));
+    if (!abs.startsWith(root)) return null;
+    return abs;
   }
 
   private publicProject(project: { id: string; name: string; clickupTaskId: string | null }) {

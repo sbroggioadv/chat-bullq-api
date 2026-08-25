@@ -1,6 +1,5 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { ClickUpInboxWorkbenchController } from './clickup-inbox-workbench.controller';
 import { MemoryW2Store } from './clickup-inbox-w2.store';
 import { WORKBENCH_STATUS } from './domain/workbench';
 import {
@@ -601,11 +600,17 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
     });
   });
 
-  describe('AC-16 W3 stub e binding inválido', () => {
-    it('POST incorporations é 501', async () => {
+  describe('AC-16 W3 e binding inválido', () => {
+    it('POST incorporations deixa de ser 501 e valida o DTO', async () => {
       const { service } = workbenchHarness();
-      const controller = new ClickUpInboxWorkbenchController(service);
-      await expectHttp(controller.incorporate(), 501, 'CLICKUP_INCORPORATE_NOT_READY');
+      await expectHttp(
+        service.incorporateWorkbench('org-a', 'conv-a', 'not-a-uuid', {
+          kind: 'comment',
+          messageId: 'msg-1',
+        }),
+        422,
+        'CLICKUP_INVALID_VALUE',
+      );
     });
 
     it('task apagada vira binding_invalido sem mutações', async () => {
