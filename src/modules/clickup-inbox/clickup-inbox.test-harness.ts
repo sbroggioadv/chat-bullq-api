@@ -338,6 +338,16 @@ export function makePrisma(
         if (org && project.organizationId !== org) return null;
         return { conversationId: link.conversationId, projectId: link.projectId, project };
       }),
+      findMany: jest.fn(async ({ where }: any) => {
+        const projectId = where?.projectId;
+        return links
+          .filter((row) => !projectId || row.projectId === projectId)
+          .filter((row) => {
+            const sibling = conversations.find((item) => item.id === row.conversationId);
+            return Boolean(sibling && sibling.deletedAt == null);
+          })
+          .map((row) => ({ conversationId: row.conversationId, projectId: row.projectId }));
+      }),
     },
     project: {
       findFirst: jest.fn(async ({ where }: any) => {

@@ -294,7 +294,12 @@ export class ClickUpInboxService {
     }
   }
 
-  async createTask(organizationId: string, conversationId: string, idempotencyKey: string) {
+  async createTask(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { confirmSwitch?: boolean } = {},
+  ) {
     this.assertOrg(organizationId);
     if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
       invalidValue('Idempotency-Key inválida');
@@ -317,9 +322,20 @@ export class ClickUpInboxService {
         this.w2Store.getReceipt(organizationId, phone.canonico, key),
       );
       if (existing?.state === 'done') {
+        const relidoDone = await this.loadConversation(organizationId, conversationId);
+        if (!relidoDone.clickupTaskId) {
+          await this.ancorarConversacao(relidoDone, existing.taskId);
+        }
         await this.ensureRemote();
         const card = await this.cardCompleto(existing.taskId, conv.contact.phone);
         return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
+      }
+
+      const anchored = await this.loadConversation(organizationId, conversationId);
+      if (anchored.clickupTaskId && dto.confirmSwitch !== true) {
+        await this.ensureRemote();
+        const card = await this.safeCard(anchored.clickupTaskId, idsCatalogoAtalhos(this.config.profile()));
+        anchorConflict(card);
       }
 
       await this.ensureRemote();
@@ -330,6 +346,10 @@ export class ClickUpInboxService {
         await this.withStore(() =>
           this.w2Store.finalizeReceipt(organizationId, phone.canonico, key, rematch.taskId),
         );
+        const relidoPending = await this.loadConversation(organizationId, conversationId);
+        if (!relidoPending.clickupTaskId) {
+          await this.ancorarConversacao(relidoPending, rematch.taskId);
+        }
         const card = await this.cardCompleto(rematch.taskId, conv.contact.phone);
         return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
       }
@@ -381,6 +401,12 @@ export class ClickUpInboxService {
         storeUnavailable('não foi possível reter o comprovante da criação');
       }
       this.match.invalidate(organizationId);
+      try {
+        await this.ancorarConversacao(conv, taskId);
+      } catch (err) {
+        await this.http.apagarTask(taskId).catch(() => undefined);
+        throw err;
+      }
       const card = await this.cardCompleto(taskId, conv.contact.phone);
       return { ok: true, status: STATUS.UNICO, conversationId: conv.id, card };
     } catch (err) {
@@ -469,6 +495,9 @@ export class ClickUpInboxService {
       await this.ensureRemote();
       await this.assertTaskOnAuthorizedLists(taskId, idsCatalogoAtalhos(this.config.profile()));
       return { kind: 'conversation' as const, conv };
+    }
+    if (conv.clickupTaskId) {
+      taskNotBound('task não vinculada a esta conversa');
     }
     if (!conv.isGroup) {
       await this.ensureRemote();
@@ -806,9 +835,17 @@ export class ClickUpInboxService {
 
   private async lazyBackfill(
     conv: { id: string; clickupTaskId: string | null },
-    project: { clickupTaskId: string | null } | null,
+    project: { id: string; organizationId: string; clickupTaskId: string | null } | null,
   ) {
     if (conv.clickupTaskId || !project?.clickupTaskId) return;
+    const siblings = await this.prisma.projectConversation.findMany({
+      where: {
+        projectId: project.id,
+        conversation: { deletedAt: null },
+      },
+      select: { conversationId: true },
+    });
+    if (siblings.length !== 1 || siblings[0]?.conversationId !== conv.id) return;
     await this.prisma.conversation.update({
       where: { id: conv.id },
       data: { clickupTaskId: project.clickupTaskId },

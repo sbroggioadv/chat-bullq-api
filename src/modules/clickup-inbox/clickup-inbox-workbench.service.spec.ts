@@ -195,7 +195,7 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       expect(one.conv.clickupTaskId).toBe('c1');
     });
 
-    it('lazy backfill copia dossiê→conversa no primeiro GET e não o contrário', async () => {
+    it('AC-10b (a) única conversa no dossiê copia uma vez; segundo GET não reescreve', async () => {
       const project = projectA({ clickupTaskId: 'task-hold' });
       const store = emptyWorkbenchStore([
         projectTask('task-hold', 'list-holding', { name: 'Holding Silva' }),
@@ -208,10 +208,60 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       const out = await service.resolveWorkbench('org-a', 'conv-a');
       expect(out.status).toBe(WORKBENCH_STATUS.TASK_VINCULADA);
       expect(conv.clickupTaskId).toBe('task-hold');
+      expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
       expect(prisma.conversation.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { clickupTaskId: 'task-hold' } }),
       );
       expect(prisma.project.update).not.toHaveBeenCalled();
+      await service.resolveWorkbench('org-a', 'conv-a');
+      expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('AC-10b (b) N>1 sem âncora: zero UPDATE, sem_vinculo + chip', async () => {
+      const convB = groupConv({ id: 'conv-b' });
+      const project = projectA({ clickupTaskId: 'task-hold' });
+      const { service, prisma } = workbenchHarness({
+        conv: groupConv(),
+        conversations: [groupConv(), convB],
+        project,
+        links: [
+          { conversationId: 'conv-a', projectId: 'proj-a' },
+          { conversationId: 'conv-b', projectId: 'proj-a' },
+        ],
+        store: emptyWorkbenchStore([projectTask('task-hold', 'list-holding')]),
+      });
+      const a = await service.resolveWorkbench('org-a', 'conv-a');
+      const b = await service.resolveWorkbench('org-a', 'conv-b');
+      expect(a.status).toBe(WORKBENCH_STATUS.SEM_VINCULO);
+      expect(b.status).toBe(WORKBENCH_STATUS.SEM_VINCULO);
+      expect(a.dossier?.clickupTaskId).toBe('task-hold');
+      expect(b.dossier?.clickupTaskId).toBe('task-hold');
+      expect(prisma.conversation.update).not.toHaveBeenCalled();
+    });
+
+    it('AC-10b (c) 3ª conversa ligada depois não copia no GET', async () => {
+      const project = projectA({ clickupTaskId: 'task-hold' });
+      const convARow = groupConv();
+      const conversations = [convARow];
+      const links = [{ conversationId: 'conv-a', projectId: 'proj-a' }];
+      const { service, prisma } = workbenchHarness({
+        conv: convARow,
+        conversations,
+        projects: [project],
+        links,
+        store: emptyWorkbenchStore([projectTask('task-hold', 'list-holding')]),
+      });
+      await service.resolveWorkbench('org-a', 'conv-a');
+      expect(convARow.clickupTaskId).toBe('task-hold');
+      expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
+
+      const convC = groupConv({ id: 'conv-c' });
+      conversations.push(convC);
+      links.push({ conversationId: 'conv-c', projectId: 'proj-a' });
+      const third = await service.resolveWorkbench('org-a', 'conv-c');
+      expect(third.status).toBe(WORKBENCH_STATUS.SEM_VINCULO);
+      expect(convC.clickupTaskId).toBeNull();
+      expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
     });
 
     it('duas conversas do mesmo dossiê não herdam âncora uma da outra', async () => {
@@ -316,7 +366,7 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
           name: 'Inicial',
         }),
         409,
-        'CLICKUP_ANCHOR_EXISTS',
+        'CLICKUP_ANCHOR_SWITCH_REQUIRED',
       );
       expect(shortcutCreates(fetchFn).length).toBe(0);
       expect(conv.clickupTaskId).toBe('task-consultivo');
@@ -347,7 +397,7 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       await expectHttp(
         service.bindWorkbenchTask('org-a', 'conv-a', KEY_B, { taskRef: 'task-inicial' }),
         409,
-        'CLICKUP_ANCHOR_EXISTS',
+        'CLICKUP_ANCHOR_SWITCH_REQUIRED',
       );
       expect(conv.clickupTaskId).toBe('task-consultivo');
       const switched = await service.bindWorkbenchTask('org-a', 'conv-a', KEY_B, {
@@ -459,6 +509,26 @@ describe('SPEC-009 W0 ClickUp workbench', () => {
       );
       const writes = mutationCalls(fetchFn).filter((c: any) => String(c[0]).includes('/field/'));
       expect(writes.length).toBe(1);
+    });
+
+    it('âncora setada: prepareBound recusa task telefônica diferente', async () => {
+      const phone = '+55 11 99876-5432';
+      const sales = leadTaskWritable('task-sales', phone);
+      sales.list = { id: 'list-vendas', name: 'Processo de Vendas' };
+      const consultivo = leadTaskWritable('task-consultivo', phone);
+      consultivo.list = { id: 'list-consultivo', name: 'Consultivo' };
+      const conv = convA({ clickupTaskId: 'task-consultivo' });
+      const { service, fetchFn } = workbenchHarness({
+        conv,
+        store: emptyWorkbenchStore([sales, consultivo]),
+      });
+      await expectHttp(
+        service.patchField('org-a', 'conv-a', 'task-sales', 'field-short', 'X'),
+        404,
+        'CLICKUP_TASK_NOT_BOUND',
+      );
+      const fieldWrites = mutationCalls(fetchFn).filter((c: any) => String(c[0]).includes('/field/'));
+      expect(fieldWrites.length).toBe(0);
     });
 
     it('1:1 phone match continua editável sem bind; dossiê sozinho não autoriza mutação', async () => {

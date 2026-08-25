@@ -11,7 +11,9 @@ export const CLICKUP_CODES = {
   TIMEOUT: 'CLICKUP_TIMEOUT',
   MATCH_CONFLICT: 'CLICKUP_MATCH_CONFLICT',
   STORE_UNAVAILABLE: 'CLICKUP_STORE_UNAVAILABLE',
-  ANCHOR_EXISTS: 'CLICKUP_ANCHOR_EXISTS',
+  ANCHOR_SWITCH_REQUIRED: 'CLICKUP_ANCHOR_SWITCH_REQUIRED',
+  /** @deprecated alias — mesmo code que ANCHOR_SWITCH_REQUIRED */
+  ANCHOR_EXISTS: 'CLICKUP_ANCHOR_SWITCH_REQUIRED',
 } as const;
 
 export function clickupHttpError(
@@ -70,7 +72,7 @@ export function anchorConflict(card: unknown): never {
   throw new HttpException(
     {
       message: 'esta conversa já tem uma task vinculada',
-      code: CLICKUP_CODES.ANCHOR_EXISTS,
+      code: CLICKUP_CODES.ANCHOR_SWITCH_REQUIRED,
       card,
     },
     HttpStatus.CONFLICT,

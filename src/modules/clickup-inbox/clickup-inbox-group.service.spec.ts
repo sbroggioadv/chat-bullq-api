@@ -139,10 +139,10 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
       const a = await service.resolveGroup('org-a', 'conv-a');
       const b = await service.resolveGroup('org-a', 'conv-b');
       const c = await service.resolveGroup('org-a', 'conv-c');
-      expect(a.status).toBe(GROUP_STATUS.TASK_VINCULADA);
-      expect(b.status).toBe(GROUP_STATUS.TASK_VINCULADA);
-      expect((a as any).card.taskId).toBe('task-hold');
-      expect((b as any).card.taskId).toBe('task-hold');
+      expect(a.status).toBe(GROUP_STATUS.SEM_VINCULO);
+      expect(b.status).toBe(GROUP_STATUS.SEM_VINCULO);
+      expect((a as any).dossier?.clickupTaskId).toBe('task-hold');
+      expect((b as any).dossier?.clickupTaskId).toBe('task-hold');
       expect(c.status).toBe(GROUP_STATUS.SEM_VINCULO);
     });
   });

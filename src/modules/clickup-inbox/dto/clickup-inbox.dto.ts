@@ -75,6 +75,12 @@ export class CreateWorkbenchTaskDto {
   confirmSwitch?: boolean;
 }
 
+export class CreateLeadDto {
+  @IsOptional()
+  @IsBoolean()
+  confirmSwitch?: boolean;
+}
+
 export class PostActivityDto {
   @IsString()
   @MinLength(1)

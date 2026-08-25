@@ -4,6 +4,7 @@ import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
 import { CurrentOrg, CurrentUser } from '../../common/decorators';
 import { ClickUpInboxService } from './clickup-inbox.service';
 import {
+  CreateLeadDto,
   PatchFieldDto,
   PatchStatusDto,
   PostActivityDto,
@@ -32,8 +33,9 @@ export class ClickUpInboxController {
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,
     @Headers('idempotency-key') idempotencyKey: string,
+    @Body() dto?: CreateLeadDto,
   ) {
-    return this.service.createTask(orgId, conversationId, idempotencyKey);
+    return this.service.createTask(orgId, conversationId, idempotencyKey, dto ?? {});
   }
 
   @Get('tasks/:taskId')

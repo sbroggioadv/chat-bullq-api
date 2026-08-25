@@ -593,6 +593,37 @@ describe('ClickUpInboxService W1', () => {
       expect(payload.custom_fields).toEqual([{ id: 'field-wa', value: '551198765432' }]);
       expect(String(write[0])).toContain('/list/list-leads/task');
       expect(store.tasks[out.card.taskId].list.id).toBe('list-leads');
+      expect(out.card.taskId).toBeTruthy();
+    });
+
+    it('lead grava Conversation.clickupTaskId; já bound sem confirmSwitch é 409 zero POST', async () => {
+      const conv = convA();
+      const { service, prisma } = buildHarness({
+        conv,
+        store: emptyStore([]),
+      });
+      const out = await service.createTask('org-a', 'conv-a', KEY_A);
+      expect(conv.clickupTaskId).toBe(out.card.taskId);
+      expect(prisma.conversation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { clickupTaskId: out.card.taskId } }),
+      );
+
+      const boundConv = convA({ clickupTaskId: 'task-consultivo' });
+      const bound = buildHarness({
+        conv: boundConv,
+        store: emptyStore([
+          leadTask('task-consultivo', '+55 11 99876-5432', {
+            list: { id: 'list-leads', name: 'Leads' },
+          }),
+        ]),
+      });
+      await expectHttp(
+        bound.service.createTask('org-a', 'conv-a', KEY_B),
+        409,
+        'CLICKUP_ANCHOR_SWITCH_REQUIRED',
+      );
+      expect(leadCreates(bound.fetchFn).length).toBe(0);
+      expect(boundConv.clickupTaskId).toBe('task-consultivo');
     });
 
     it('grupo, recusado, N, 1 e nome vazio fazem zero POST', async () => {
