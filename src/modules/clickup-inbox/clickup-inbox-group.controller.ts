@@ -32,13 +32,14 @@ export class ClickUpInboxGroupController {
   }
 
   @Post('bind')
-  @ApiOperation({ summary: 'Vincula o dossiê da conversa a uma task ClickUp existente' })
+  @ApiOperation({ summary: 'Alias — vincula a conversa a uma task ClickUp existente' })
   bind(
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,
+    @Headers('idempotency-key') idempotencyKey: string,
     @Body() dto: BindGroupTaskDto,
   ) {
-    return this.service.bindGroupTask(orgId, conversationId, dto.taskRef);
+    return this.service.bindGroupTask(orgId, conversationId, dto.taskRef, idempotencyKey);
   }
 
   @Post('tasks')

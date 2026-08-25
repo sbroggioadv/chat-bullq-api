@@ -76,13 +76,13 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
       expect((out as any).card.taskId).toBe('task-1');
     });
 
-    it('GET 1:1 em grupo devolve grupo e zero ClickUp; resolveGroup não usa lista de leads', async () => {
+    it('GET 1:1 em grupo devolve grupo e zero ClickUp; alias /group não usa lista de leads', async () => {
       const { service, fetchFn } = groupHarness({ project: null });
       const one = await service.resolve('org-a', 'conv-a');
       expect(one.status).toBe('grupo');
       expect(fetchFn.mock.calls.length).toBe(0);
       const group = await service.resolveGroup('org-a', 'conv-a');
-      expect(group.status).toBe(GROUP_STATUS.SEM_DOSSIE);
+      expect(group.status).toBe(GROUP_STATUS.SEM_VINCULO);
       expect(fetchFn.mock.calls.length).toBe(0);
     });
 
@@ -97,24 +97,24 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
     });
   });
 
-  describe('AC-02 sem dossiê', () => {
-    it('mostra sem_dossie e faz zero chamada ClickUp', async () => {
+  describe('AC-02 sem dossiê não é mais gate', () => {
+    it('mostra sem_vinculo e faz zero chamada ClickUp no resolve', async () => {
       const { service, fetchFn } = groupHarness({ project: null, store: emptyGroupStore([projectTask('t1', 'list-holding')]) });
       const out = await service.resolveGroup('org-a', 'conv-a');
-      expect(out).toEqual({ status: GROUP_STATUS.SEM_DOSSIE, conversationId: 'conv-a' });
+      expect(out.status).toBe(GROUP_STATUS.SEM_VINCULO);
+      expect(out.conversationId).toBe('conv-a');
+      expect(out.dossier).toBeNull();
       expect(fetchFn.mock.calls.length).toBe(0);
     });
 
-    it('bind/search/create sem dossiê falham antes do ClickUp', async () => {
-      const { service, fetchFn } = groupHarness({ project: null });
-      await expectHttp(service.searchGroupTasks('org-a', 'conv-a', 'holding'), 422, 'CLICKUP_INVALID_VALUE');
-      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'abc-123'), 422, 'CLICKUP_INVALID_VALUE');
-      await expectHttp(
-        service.createGroupTask('org-a', 'conv-a', KEY_A, { listId: 'list-holding', name: 'X' }),
-        422,
-        'CLICKUP_INVALID_VALUE',
-      );
-      expect(fetchFn.mock.calls.length).toBe(0);
+    it('bind/search/create sem dossiê seguem no workbench', async () => {
+      const store = emptyGroupStore([projectTask('abc-123', 'list-holding')]);
+      const { service, conv } = groupHarness({ project: null, store });
+      const search = await service.searchGroupTasks('org-a', 'conv-a', 'abc-123');
+      expect(search.candidatos[0].taskId).toBe('abc-123');
+      const bound = await service.bindGroupTask('org-a', 'conv-a', 'abc-123', KEY_A);
+      expect(bound.card.taskId).toBe('abc-123');
+      expect(conv.clickupTaskId).toBe('abc-123');
     });
   });
 
@@ -143,7 +143,7 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
       expect(b.status).toBe(GROUP_STATUS.TASK_VINCULADA);
       expect((a as any).card.taskId).toBe('task-hold');
       expect((b as any).card.taskId).toBe('task-hold');
-      expect(c.status).toBe(GROUP_STATUS.DOSSIE_SEM_TASK);
+      expect(c.status).toBe(GROUP_STATUS.SEM_VINCULO);
     });
   });
 
@@ -156,10 +156,14 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
         'org-a',
         'conv-a',
         'https://app.clickup.com/t/abc-123',
+        KEY_A,
       );
       expect(bound.status).toBe(GROUP_STATUS.TASK_VINCULADA);
       expect(bound.card.taskId).toBe('abc-123');
       expect(project.clickupTaskId).toBe('abc-123');
+      expect(prisma.conversation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { clickupTaskId: 'abc-123' } }),
+      );
       expect(prisma.project.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { clickupTaskId: 'abc-123' } }),
       );
@@ -171,13 +175,13 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
   });
 
   describe('AC-05 bind inválido', () => {
-    it('id malformado, inexistente ou lista de vendas não persiste nem muta', async () => {
+    it('id malformado, inexistente ou lista fora do catálogo não persiste nem muta', async () => {
       const project = projectA();
-      const store = emptyGroupStore([leadTask('sales-1', '+55 11 99876-5432')]);
+      const store = emptyGroupStore([projectTask('act-1', 'list-acts')]);
       const { service, fetchFn, prisma } = groupHarness({ project, store });
-      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'não é ref!!'), 422, 'CLICKUP_INVALID_VALUE');
-      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'missing-id'), 404, 'CLICKUP_TASK_NOT_BOUND');
-      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'sales-1'), 404, 'CLICKUP_TASK_NOT_BOUND');
+      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'não é ref!!', KEY_A), 422, 'CLICKUP_INVALID_VALUE');
+      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'missing-id', KEY_A), 404, 'CLICKUP_TASK_NOT_BOUND');
+      await expectHttp(service.bindGroupTask('org-a', 'conv-a', 'act-1', KEY_B), 404, 'CLICKUP_TASK_NOT_BOUND');
       expect(project.clickupTaskId).toBeNull();
       expect(prisma.project.update).not.toHaveBeenCalled();
       expect(mutationCalls(fetchFn).length).toBe(0);
@@ -201,18 +205,22 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
     it('org B, conversa cruzada e 1:1 falham antes de Prisma mutável/ClickUp', async () => {
       const { service, fetchFn, prisma } = groupHarness();
       await expectHttp(service.resolveGroup('org-b', 'conv-a'), 403, 'CLICKUP_ORG_FORBIDDEN');
-      await expectHttp(service.bindGroupTask('org-a', 'conv-de-b', 'abc'), 404, 'CLICKUP_CONVERSATION_NOT_FOUND');
+      await expectHttp(service.bindGroupTask('org-a', 'conv-de-b', 'abc', KEY_A), 404, 'CLICKUP_CONVERSATION_NOT_FOUND');
       expect(fetchFn.mock.calls.length).toBe(0);
       expect(prisma.project.update).not.toHaveBeenCalled();
     });
   });
 
   describe('AC-08 catálogo D2', () => {
-    it('resolve dossie_sem_task devolve só projectLists do perfil', async () => {
+    it('resolve sem âncora devolve atalhos lists ∪ projectLists', async () => {
       const { service, fetchFn } = groupHarness();
       const out = await service.resolveGroup('org-a', 'conv-a');
-      expect(out.status).toBe(GROUP_STATUS.DOSSIE_SEM_TASK);
-      expect((out as any).projectLists).toEqual(GROUP_PROFILE.projectLists);
+      expect(out.status).toBe(GROUP_STATUS.SEM_VINCULO);
+      expect((out as any).catalogShortcuts.map((item: { id: string }) => item.id)).toEqual([
+        'list-leads',
+        'list-holding',
+        'list-contencioso',
+      ]);
       expect(fetchFn.mock.calls.length).toBe(0);
     });
 
@@ -248,11 +256,11 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
       expect(store.tasks[out.card.taskId].list.id).toBe('list-holding');
     });
 
-    it('lista forjada, nome vazio ou dossiê ausente fazem zero POST', async () => {
+    it('lista forjada ou nome vazio fazem zero POST; sem dossiê ainda cria', async () => {
       const withProject = groupHarness({ store: emptyGroupStore([]) });
       await expectHttp(
         withProject.service.createGroupTask('org-a', 'conv-a', KEY_A, {
-          listId: 'list-leads',
+          listId: 'list-forjada',
           name: 'Nope',
         }),
         422,
@@ -269,15 +277,12 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
       expect(projectCreates(withProject.fetchFn).length).toBe(0);
 
       const sem = groupHarness({ project: null, store: emptyGroupStore([]) });
-      await expectHttp(
-        sem.service.createGroupTask('org-a', 'conv-a', KEY_A, {
-          listId: 'list-holding',
-          name: 'X',
-        }),
-        422,
-        'CLICKUP_INVALID_VALUE',
-      );
-      expect(projectCreates(sem.fetchFn).length).toBe(0);
+      const created = await sem.service.createGroupTask('org-a', 'conv-a', KEY_A, {
+        listId: 'list-holding',
+        name: 'X',
+      });
+      expect(created.status).toBe(GROUP_STATUS.TASK_VINCULADA);
+      expect(projectCreates(sem.fetchFn).length).toBe(1);
     });
   });
 
@@ -302,7 +307,7 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
         project: project2,
         store: emptyGroupStore([]),
       });
-      const [a, b] = await Promise.all([
+      const results = await Promise.allSettled([
         conc.service.createGroupTask('org-a', 'conv-conc', KEY_A, {
           listId: 'list-holding',
           name: 'Um',
@@ -312,7 +317,11 @@ describe('SPEC-008 grupo/dossiê ClickUp', () => {
           name: 'Dois',
         }),
       ]);
-      expect(a.card.taskId).toBe(b.card.taskId);
+      const ok = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(ok.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      expect((rejected[0] as PromiseRejectedResult).reason.getStatus()).toBe(409);
       expect(projectCreates(conc.fetchFn).length).toBe(1);
     });
 

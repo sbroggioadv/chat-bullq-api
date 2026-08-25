@@ -314,8 +314,15 @@ export function makePrisma(
         return {
           id: found.id,
           isGroup: found.isGroup,
+          clickupTaskId: found.clickupTaskId ?? null,
           contact: found.contact,
         };
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const row = conversations.find((item) => item.id === where.id);
+        if (!row) throw new Error('conversation not found');
+        Object.assign(row, data);
+        return row;
       }),
     },
     user: {
@@ -407,6 +414,7 @@ export function convA(overrides: Record<string, unknown> = {}) {
     organizationId: 'org-a',
     isGroup: false,
     deletedAt: null,
+    clickupTaskId: null as string | null,
     contact: { name: 'Maria', phone: '+55 11 99876-5432' },
     ...overrides,
   };
@@ -455,6 +463,41 @@ export function emptyGroupStore(tasks: any[] = []): CuStore {
   store.listTasks['list-contencioso'] = tasks
     .filter((t) => t.list?.id === 'list-contencioso')
     .map((t) => t.id);
+  return store;
+}
+
+export const WORKBENCH_PROFILE = {
+  lists: [{ id: 'list-vendas', label: 'Processo de Vendas', primary: true }],
+  projectLists: [
+    { id: 'list-holding', label: 'Holding' },
+    { id: 'list-consultivo', label: 'Consultivo' },
+    { id: 'list-iniciais', label: 'Iniciais Judiciais a Distribuir' },
+  ],
+  whatsappFieldId: 'field-wa',
+  blockedFieldIds: ['field-blocked'],
+  tag: null as string | null,
+  activities: { listId: 'list-acts', relationFieldId: 'field-rel' },
+};
+
+export function workbenchEnv(profile: Record<string, unknown> = WORKBENCH_PROFILE) {
+  return testEnv('org-a', profile);
+}
+
+export function emptyWorkbenchStore(tasks: any[] = []): CuStore {
+  const store = emptyStore(tasks);
+  store.listsInTeam = [
+    'list-vendas',
+    'list-acts',
+    'list-holding',
+    'list-consultivo',
+    'list-iniciais',
+  ];
+  store.listTasks['list-vendas'] = tasks.filter((t) => t.list?.id === 'list-vendas').map((t) => t.id);
+  store.listTasks['list-holding'] = tasks.filter((t) => t.list?.id === 'list-holding').map((t) => t.id);
+  store.listTasks['list-consultivo'] = tasks
+    .filter((t) => t.list?.id === 'list-consultivo')
+    .map((t) => t.id);
+  store.listTasks['list-iniciais'] = tasks.filter((t) => t.list?.id === 'list-iniciais').map((t) => t.id);
   return store;
 }
 

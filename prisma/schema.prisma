@@ -783,6 +783,9 @@ model Conversation {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
+  // SPEC-009 D1 — âncora operacional da conversa. Project.clickupTaskId permanece cruzamento.
+  clickupTaskId String? @map("clickup_task_id")
+
   // ─── AI state (tri-state override) ──────────────
   // null  = segue regras globais (org.aiEnabled, business hours, agent)
   // true  = força ON (sobrepõe global — IA roda mesmo com kill switch off)
@@ -836,6 +839,7 @@ model Conversation {
   @@index([segmentId, contactId], name: "idx_conv_segment_contact")
   @@index([contactId], name: "idx_conv_contact")
   @@index([lastMessageAt], name: "idx_conv_last_msg")
+  @@index([organizationId, clickupTaskId], name: "idx_conv_org_clickup")
   @@map("conversations")
 }
 

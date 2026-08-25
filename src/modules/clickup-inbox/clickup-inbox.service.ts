@@ -18,12 +18,13 @@ import { ClickUpInboxConfigService } from './clickup-inbox-config.service';
 import { ClickUpInboxHttpClient } from './clickup-inbox-http.client';
 import { ClickUpMatchService } from './clickup-match.service';
 import { listaPrincipal } from './domain/perfil';
-import { GROUP_STATUS, catalogoProjeto, idsCatalogoProjeto } from './domain/grupo';
+import { catalogoAtalhos, idsCatalogoAtalhos, WORKBENCH_STATUS } from './domain/workbench';
 import { extrairTaskRef } from './domain/task-ref';
 import { CLICKUP_ATIVIDADE_KV, CLICKUP_W2_STORE } from './clickup-inbox.tokens';
 import type { ClickUpW2Store } from './clickup-inbox-w2.store';
 import {
   activitiesUnavailable,
+  anchorConflict,
   conversationNotFound,
   invalidValue,
   mapUpstream,
@@ -464,70 +465,78 @@ export class ClickUpInboxService {
     this.assertOrg(organizationId);
     if (!idSeguro(taskId)) invalidValue('task inválida');
     const conv = await this.loadConversation(organizationId, conversationId);
-    if (conv.isGroup) {
-      const project = await this.loadLinkedProject(organizationId, conversationId);
-      if (!project?.clickupTaskId || project.clickupTaskId !== taskId) {
-        taskNotBound('grupo sem task vinculada neste dossiê');
-      }
+    if (conv.clickupTaskId === taskId) {
       await this.ensureRemote();
-      await this.assertTaskOnProjectLists(taskId);
-      return { kind: 'dossie' as const, conv, project };
+      await this.assertTaskOnAuthorizedLists(taskId, idsCatalogoAtalhos(this.config.profile()));
+      return { kind: 'conversation' as const, conv };
     }
-    await this.ensureRemote();
-    await this.assertTaskBound(taskId, conv.contact.phone);
-    return { kind: 'phone' as const, conv };
+    if (!conv.isGroup) {
+      await this.ensureRemote();
+      await this.assertTaskBound(taskId, conv.contact.phone);
+      return { kind: 'phone' as const, conv };
+    }
+    taskNotBound('task não vinculada a esta conversa');
   }
 
-  async resolveGroup(organizationId: string, conversationId: string) {
+  async resolveWorkbench(organizationId: string, conversationId: string) {
     this.assertOrg(organizationId);
     const conv = await this.loadConversation(organizationId, conversationId);
-    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
     const project = await this.loadLinkedProject(organizationId, conversationId);
-    if (!project) {
-      return {
-        status: GROUP_STATUS.SEM_DOSSIE,
-        conversationId: conv.id,
-      };
-    }
-    const publicProject = this.publicProject(project);
-    const lists = catalogoProjeto(this.config.profile());
-    if (!project.clickupTaskId) {
-      return {
-        status: GROUP_STATUS.DOSSIE_SEM_TASK,
-        conversationId: conv.id,
-        project: publicProject,
-        projectLists: lists,
-      };
-    }
-    try {
-      await this.ensureRemote();
-      const card = await this.cardPorListas(project.clickupTaskId, idsCatalogoProjeto(this.config.profile()));
-      return {
-        status: GROUP_STATUS.TASK_VINCULADA,
-        conversationId: conv.id,
-        project: publicProject,
-        card,
-      };
-    } catch (err) {
-      if (err instanceof HttpException && err.getStatus() === 404) {
+    await this.lazyBackfill(conv, project);
+    const profile = this.config.profile();
+    const catalogShortcuts = catalogoAtalhos(profile);
+    const dossier = project ? this.publicProject(project) : null;
+    const phone = conv.isGroup ? null : canonico(conv.contact.phone);
+    const canCreateLead = Boolean(phone?.ok);
+    const base = {
+      conversationId: conv.id,
+      catalogShortcuts,
+      canCreateLead,
+      dossier,
+    };
+
+    if (conv.clickupTaskId) {
+      try {
+        await this.ensureRemote();
+        const card = await this.cardPorListas(conv.clickupTaskId, idsCatalogoAtalhos(profile));
         return {
-          status: GROUP_STATUS.BINDING_INVALIDO,
-          conversationId: conv.id,
-          project: publicProject,
-          projectLists: lists,
+          ...base,
+          status: WORKBENCH_STATUS.TASK_VINCULADA,
+          card,
+          phoneShortcut: await this.phoneShortcutIfAny(organizationId, conv),
         };
+      } catch (err) {
+        if (err instanceof HttpException && err.getStatus() === 404) {
+          return {
+            ...base,
+            status: WORKBENCH_STATUS.BINDING_INVALIDO,
+            phoneShortcut: await this.phoneShortcutIfAny(organizationId, conv),
+          };
+        }
+        if (err instanceof HttpException) throw err;
+        mapUpstream(err);
       }
-      if (err instanceof HttpException) throw err;
-      mapUpstream(err);
     }
+
+    return {
+      ...base,
+      status: WORKBENCH_STATUS.SEM_VINCULO,
+      phoneShortcut: await this.phoneShortcutIfAny(organizationId, conv),
+    };
   }
 
-  async searchGroupTasks(organizationId: string, conversationId: string, q: string) {
+  async catalogWorkbench(organizationId: string, conversationId: string) {
     this.assertOrg(organizationId);
-    const { conv } = await this.requireGroupWithProject(organizationId, conversationId);
+    await this.loadConversation(organizationId, conversationId);
+    return { catalogShortcuts: catalogoAtalhos(this.config.profile()) };
+  }
+
+  async searchWorkbenchTasks(organizationId: string, conversationId: string, q: string) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
     const query = String(q ?? '').trim();
     if (!query) invalidValue('informe um id, URL ou termo de busca');
-    const allow = idsCatalogoProjeto(this.config.profile());
+    const allow = idsCatalogoAtalhos(this.config.profile());
     await this.ensureRemote();
     try {
       const direto = pareceIdDeTask(query);
@@ -552,73 +561,109 @@ export class ClickUpInboxService {
     }
   }
 
-  async bindGroupTask(organizationId: string, conversationId: string, taskRef: string) {
-    this.assertOrg(organizationId);
-    const { conv, project } = await this.requireGroupWithProject(organizationId, conversationId);
-    const taskId = extrairTaskRef(taskRef);
-    if (!taskId) invalidValue('referência de task inválida');
-    if (project.clickupTaskId && project.clickupTaskId === taskId) {
-      await this.ensureRemote();
-      const card = await this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
-      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
-    }
-    await this.ensureRemote();
-    try {
-      await this.assertTaskOnProjectLists(taskId);
-      await this.ancorarDossie(project, taskId);
-      const card = await this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
-      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
-    } catch (err) {
-      if (err instanceof HttpException) throw err;
-      mapUpstream(err);
-    }
-  }
-
-  async createGroupTask(
+  async bindWorkbenchTask(
     organizationId: string,
     conversationId: string,
     idempotencyKey: string,
-    dto: { listId: string; name: string },
+    dto: { taskRef: string; crossLinkDossier?: boolean; confirmSwitch?: boolean },
   ) {
     this.assertOrg(organizationId);
     if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
       invalidValue('Idempotency-Key inválida');
     }
     const key = String(idempotencyKey).trim();
-    const { conv, project } = await this.requireGroupWithProject(organizationId, conversationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    const taskId = extrairTaskRef(dto.taskRef);
+    if (!taskId) invalidValue('referência de task inválida');
+    const allow = idsCatalogoAtalhos(this.config.profile());
+    const project = await this.loadLinkedProject(organizationId, conversationId);
+
+    if (conv.clickupTaskId === taskId) {
+      await this.ensureRemote();
+      const card = await this.cardPorListas(taskId, allow);
+      return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+    }
+    if (conv.clickupTaskId && dto.confirmSwitch !== true) {
+      await this.ensureRemote();
+      const card = await this.safeCard(conv.clickupTaskId, allow);
+      anchorConflict(card);
+    }
+
+    const scope = `conv:${conv.id}`;
+    await this.withStore(() => this.w2Store.assertReady());
+    const token = await this.withStore(() => this.w2Store.acquireLock(organizationId, scope));
+    try {
+      const existing = await this.withStore(() => this.w2Store.getReceipt(organizationId, scope, key));
+      const relido = await this.loadConversation(organizationId, conversationId);
+      if (existing?.state === 'done') {
+        if (!relido.clickupTaskId) {
+          await this.ancorarConversacao(relido, existing.taskId);
+        }
+        await this.ensureRemote();
+        const card = await this.cardPorListas(existing.taskId, allow);
+        return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+      }
+      if (relido.clickupTaskId && relido.clickupTaskId !== taskId && dto.confirmSwitch !== true) {
+        await this.ensureRemote();
+        const card = await this.safeCard(relido.clickupTaskId, allow);
+        anchorConflict(card);
+      }
+      await this.ensureRemote();
+      await this.assertTaskOnAuthorizedLists(taskId, allow);
+      await this.withStore(() => this.w2Store.beginReceipt(organizationId, scope, key));
+      await this.ancorarConversacao(relido, taskId);
+      await this.maybeCrossLink(project, taskId, dto.crossLinkDossier);
+      await this.withStore(() => this.w2Store.finalizeReceipt(organizationId, scope, key, taskId));
+      const card = await this.cardPorListas(taskId, allow);
+      return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      if (isRedisFailure(err)) storeUnavailable();
+      mapUpstream(err);
+    } finally {
+      await this.w2Store.releaseLock(organizationId, scope, token).catch(() => undefined);
+    }
+  }
+
+  async createWorkbenchTask(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { listId: string; name: string; crossLinkDossier?: boolean; confirmSwitch?: boolean },
+  ) {
+    this.assertOrg(organizationId);
+    if (!IDEMPOTENCY_UUID.test(String(idempotencyKey ?? '').trim())) {
+      invalidValue('Idempotency-Key inválida');
+    }
+    const key = String(idempotencyKey).trim();
+    const conv = await this.loadConversation(organizationId, conversationId);
     const listId = String(dto.listId ?? '').trim();
     const name = String(dto.name ?? '').trim();
     if (!name) invalidValue('nome da task é obrigatório');
-    const allow = idsCatalogoProjeto(this.config.profile());
-    if (!allow.has(listId)) invalidValue('lista fora do catálogo de projetos');
+    const allow = idsCatalogoAtalhos(this.config.profile());
+    if (!allow.has(listId)) invalidValue('lista fora do catálogo autorizado');
 
-    const scope = `dossie:${project.id}`;
+    const project = await this.loadLinkedProject(organizationId, conversationId);
+
+    const scope = `conv:${conv.id}`;
     await this.withStore(() => this.w2Store.assertReady());
     const token = await this.withStore(() => this.w2Store.acquireLock(organizationId, scope));
 
     try {
       const existing = await this.withStore(() => this.w2Store.getReceipt(organizationId, scope, key));
-      const relido = await this.loadProjectById(organizationId, project.id);
+      const relido = await this.loadConversation(organizationId, conversationId);
       if (existing?.state === 'done') {
-        if (relido.clickupTaskId && relido.clickupTaskId !== existing.taskId) {
-          invalidValue('dossiê já possui outra task vinculada');
-        }
         if (!relido.clickupTaskId) {
-          await this.ancorarDossie(relido, existing.taskId);
+          await this.ancorarConversacao(relido, existing.taskId);
         }
         await this.ensureRemote();
         const card = await this.cardPorListas(existing.taskId, allow);
-        return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+        return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
       }
-      if (relido.clickupTaskId) {
-        if (existing?.state === 'pending') {
-          await this.withStore(() =>
-            this.w2Store.finalizeReceipt(organizationId, scope, key, relido.clickupTaskId!),
-          );
-        }
+      if (relido.clickupTaskId && dto.confirmSwitch !== true) {
         await this.ensureRemote();
-        const card = await this.cardPorListas(relido.clickupTaskId, allow);
-        return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+        const card = await this.safeCard(relido.clickupTaskId, allow);
+        anchorConflict(card);
       }
 
       await this.ensureRemote();
@@ -650,13 +695,14 @@ export class ClickUpInboxService {
         storeUnavailable('não foi possível reter o comprovante da criação');
       }
       try {
-        await this.ancorarDossie(relido, taskId);
+        await this.ancorarConversacao(relido, taskId);
       } catch (err) {
         await this.http.apagarTask(taskId).catch(() => undefined);
         throw err;
       }
+      await this.maybeCrossLink(project, taskId, dto.crossLinkDossier);
       const card = await this.cardPorListas(taskId, allow);
-      return { ok: true, status: GROUP_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
+      return { ok: true, status: WORKBENCH_STATUS.TASK_VINCULADA, conversationId: conv.id, card };
     } catch (err) {
       if (err instanceof HttpException) throw err;
       if (isRedisFailure(err)) storeUnavailable();
@@ -666,8 +712,50 @@ export class ClickUpInboxService {
     }
   }
 
-  async incorporateGroup() {
+  async incorporateWorkbench() {
     notImplemented('CLICKUP_INCORPORATE_NOT_READY', 'incorporar fica na próxima wave');
+  }
+
+  async resolveGroup(organizationId: string, conversationId: string) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    return this.resolveWorkbench(organizationId, conversationId);
+  }
+
+  async searchGroupTasks(organizationId: string, conversationId: string, q: string) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    return this.searchWorkbenchTasks(organizationId, conversationId, q);
+  }
+
+  async bindGroupTask(
+    organizationId: string,
+    conversationId: string,
+    taskRef: string,
+    idempotencyKey: string,
+  ) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    return this.bindWorkbenchTask(organizationId, conversationId, idempotencyKey, { taskRef });
+  }
+
+  async createGroupTask(
+    organizationId: string,
+    conversationId: string,
+    idempotencyKey: string,
+    dto: { listId: string; name: string; crossLinkDossier?: boolean; confirmSwitch?: boolean },
+  ) {
+    this.assertOrg(organizationId);
+    const conv = await this.loadConversation(organizationId, conversationId);
+    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
+    return this.createWorkbenchTask(organizationId, conversationId, idempotencyKey, dto);
+  }
+
+  async incorporateGroup() {
+    return this.incorporateWorkbench();
   }
 
   private publicProject(project: { id: string; name: string; clickupTaskId: string | null }) {
@@ -676,14 +764,6 @@ export class ClickUpInboxService {
       name: project.name,
       clickupTaskId: project.clickupTaskId,
     };
-  }
-
-  private async requireGroupWithProject(organizationId: string, conversationId: string) {
-    const conv = await this.loadConversation(organizationId, conversationId);
-    if (!conv.isGroup) invalidValue('esta rota é só para conversas em grupo');
-    const project = await this.loadLinkedProject(organizationId, conversationId);
-    if (!project) invalidValue('crie ou ligue um dossiê na aba Projeto');
-    return { conv, project };
   }
 
   private async loadLinkedProject(organizationId: string, conversationId: string) {
@@ -702,26 +782,116 @@ export class ClickUpInboxService {
     return link?.project ?? null;
   }
 
-  private async loadProjectById(organizationId: string, projectId: string) {
-    const project = await this.prisma.project.findFirst({
-      where: { id: projectId, organizationId, deletedAt: null },
-      select: { id: true, name: true, clickupTaskId: true, organizationId: true },
-    });
-    if (!project) invalidValue('dossiê não encontrado');
-    return project;
-  }
-
   private async ancorarDossie(
-    project: { id: string; organizationId: string },
+    project: { id: string; organizationId: string; clickupTaskId?: string | null },
     taskId: string,
   ) {
     await this.prisma.project.update({
       where: { id: project.id },
       data: { clickupTaskId: taskId },
     });
+    project.clickupTaskId = taskId;
   }
 
-  private async assertTaskOnProjectLists(taskId: string) {
+  private async ancorarConversacao(
+    conv: { id: string; clickupTaskId: string | null },
+    taskId: string,
+  ) {
+    await this.prisma.conversation.update({
+      where: { id: conv.id },
+      data: { clickupTaskId: taskId },
+    });
+    conv.clickupTaskId = taskId;
+  }
+
+  private async lazyBackfill(
+    conv: { id: string; clickupTaskId: string | null },
+    project: { clickupTaskId: string | null } | null,
+  ) {
+    if (conv.clickupTaskId || !project?.clickupTaskId) return;
+    await this.prisma.conversation.update({
+      where: { id: conv.id },
+      data: { clickupTaskId: project.clickupTaskId },
+    });
+    conv.clickupTaskId = project.clickupTaskId;
+  }
+
+  private async maybeCrossLink(
+    project: { id: string; organizationId: string; clickupTaskId: string | null } | null,
+    taskId: string,
+    explicit?: boolean,
+  ) {
+    if (!project) return;
+    const should =
+      explicit === true ? true : explicit === false ? false : !project.clickupTaskId;
+    if (!should) return;
+    if (project.clickupTaskId === taskId) return;
+    if (project.clickupTaskId && explicit !== true) return;
+    try {
+      await this.ancorarDossie(project, taskId);
+    } catch {
+      /* cruzamento é best-effort; não desfaz o bind da conversa */
+    }
+  }
+
+  private async phoneShortcutIfAny(
+    organizationId: string,
+    conv: { id: string; isGroup: boolean; contact: { name: string | null; phone: string | null } },
+  ) {
+    if (conv.isGroup) return undefined;
+    const phoneResult = canonico(conv.contact.phone);
+    if (!phoneResult.ok) {
+      return {
+        status: phoneResult.motivo === 'grupo' ? STATUS.GRUPO : STATUS.FORA_DO_PADRAO,
+        motivo: phoneResult.motivo,
+      };
+    }
+    await this.ensureRemote();
+    try {
+      const resolved = await this.match.resolverTelefone(organizationId, conv.contact.phone);
+      const primary = this.config.profile().lists.find((lista) => lista.primary);
+      if (resolved.status === STATUS.UNICO) {
+        const card = await this.cardCompleto(resolved.taskId, conv.contact.phone);
+        return {
+          status: STATUS.UNICO,
+          canonico: resolved.canonico,
+          card,
+          primaryListLabel: primary?.label ?? null,
+        };
+      }
+      if (resolved.status === STATUS.AMBIGUO) {
+        const candidatos = [];
+        for (const taskId of resolved.taskIds) {
+          candidatos.push(await this.candidatoMinimo(taskId));
+        }
+        return {
+          status: STATUS.AMBIGUO,
+          canonico: resolved.canonico,
+          candidatos,
+          primaryListLabel: primary?.label ?? null,
+        };
+      }
+      return {
+        status: resolved.status,
+        canonico: 'canonico' in resolved ? resolved.canonico : undefined,
+        motivo: 'motivo' in resolved ? resolved.motivo : undefined,
+        primaryListLabel: primary?.label ?? null,
+      };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      mapUpstream(err);
+    }
+  }
+
+  private async safeCard(taskId: string, allow: Set<string>) {
+    try {
+      return await this.cardPorListas(taskId, allow);
+    } catch {
+      return null;
+    }
+  }
+
+  private async assertTaskOnAuthorizedLists(taskId: string, allow: Set<string>) {
     let task: any;
     try {
       task = await this.http.taskBruta(taskId);
@@ -729,9 +899,8 @@ export class ClickUpInboxService {
       if (err instanceof HttpException) throw err;
       mapUpstream(err);
     }
-    const allow = idsCatalogoProjeto(this.config.profile());
     if (!task?.id || !allow.has(String(task.list?.id))) {
-      taskNotBound('task fora das listas de projeto autorizadas');
+      taskNotBound('task fora das listas autorizadas');
     }
     return task;
   }
@@ -740,7 +909,9 @@ export class ClickUpInboxService {
     bound: Awaited<ReturnType<ClickUpInboxService['prepareBound']>>,
     taskId: string,
   ) {
-    if (bound.kind === 'dossie') return this.assertTaskOnProjectLists(taskId);
+    if (bound.kind === 'conversation') {
+      return this.assertTaskOnAuthorizedLists(taskId, idsCatalogoAtalhos(this.config.profile()));
+    }
     return this.assertTaskBound(taskId, bound.conv.contact.phone);
   }
 
@@ -748,8 +919,8 @@ export class ClickUpInboxService {
     bound: Awaited<ReturnType<ClickUpInboxService['prepareBound']>>,
     taskId: string,
   ) {
-    if (bound.kind === 'dossie') {
-      return this.cardPorListas(taskId, idsCatalogoProjeto(this.config.profile()));
+    if (bound.kind === 'conversation') {
+      return this.cardPorListas(taskId, idsCatalogoAtalhos(this.config.profile()));
     }
     return this.cardCompleto(taskId, bound.conv.contact.phone);
   }
@@ -757,10 +928,7 @@ export class ClickUpInboxService {
   private async cardPorListas(taskId: string, allow: Set<string>) {
     const profile = this.config.profile();
     const blocked = new Set(profile.blockedFieldIds);
-    const task = await this.assertTaskOnProjectLists(taskId);
-    if (!allow.has(String(task.list?.id))) {
-      taskNotBound('task fora das listas de projeto autorizadas');
-    }
+    const task = await this.assertTaskOnAuthorizedLists(taskId, allow);
     return this.montarCard(task, blocked);
   }
 
@@ -780,6 +948,7 @@ export class ClickUpInboxService {
       select: {
         id: true,
         isGroup: true,
+        clickupTaskId: true,
         contact: { select: { name: true, phone: true } },
       },
     });

@@ -1,4 +1,4 @@
-import { Allow, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
+import { Allow, IsBoolean, IsOptional, IsString, Matches, MaxLength, MinLength } from 'class-validator';
 
 export class PatchStatusDto {
   @IsString()
@@ -39,6 +39,40 @@ export class CreateGroupTaskDto {
   @MinLength(1)
   @MaxLength(500)
   name!: string;
+}
+
+export class BindWorkbenchDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  taskRef!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  crossLinkDossier?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmSwitch?: boolean;
+}
+
+export class CreateWorkbenchTaskDto {
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{1,128}$/)
+  listId!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  name!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  crossLinkDossier?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmSwitch?: boolean;
 }
 
 export class PostActivityDto {

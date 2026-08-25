@@ -11,6 +11,7 @@ export const CLICKUP_CODES = {
   TIMEOUT: 'CLICKUP_TIMEOUT',
   MATCH_CONFLICT: 'CLICKUP_MATCH_CONFLICT',
   STORE_UNAVAILABLE: 'CLICKUP_STORE_UNAVAILABLE',
+  ANCHOR_EXISTS: 'CLICKUP_ANCHOR_EXISTS',
 } as const;
 
 export function clickupHttpError(
@@ -63,6 +64,17 @@ export function isRedisFailure(err: unknown): boolean {
 
 export function notImplemented(code: string, message: string): never {
   clickupHttpError(HttpStatus.NOT_IMPLEMENTED, code, message);
+}
+
+export function anchorConflict(card: unknown): never {
+  throw new HttpException(
+    {
+      message: 'esta conversa já tem uma task vinculada',
+      code: CLICKUP_CODES.ANCHOR_EXISTS,
+      card,
+    },
+    HttpStatus.CONFLICT,
+  );
 }
 
 export function matchConflict(match: Record<string, unknown>): never {
