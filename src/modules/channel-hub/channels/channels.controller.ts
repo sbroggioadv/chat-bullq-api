@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
+import { channelResponse } from './channel-response';
 import { ChannelsService } from './channels.service';
 import { CreateChannelDto } from './dto/create-channel.dto';
 import { UpdateChannelDto } from './dto/update-channel.dto';
@@ -30,45 +31,45 @@ export class ChannelsController {
     summary:
       'Create a new channel. Any member can create — AGENTs are auto-granted access to the channel they create (deny-by-default for everyone else).',
   })
-  create(
+  async create(
     @CurrentOrg() org: { id: string; userOrganizationId: string; userRole: OrgRole },
     @Body() dto: CreateChannelDto,
   ) {
-    return this.service.create(org.id, dto, {
+    return channelResponse(await this.service.create(org.id, dto, {
       userOrganizationId: org.userOrganizationId,
       role: org.userRole,
-    });
+    }));
   }
 
   @Get()
   @ApiOperation({ summary: 'List all channels for the organization' })
-  findAll(
+  async findAll(
     @CurrentOrg('id') orgId: string,
     @CurrentChannelAccess() access: ChannelAccess,
   ) {
-    return this.service.findAll(orgId, access);
+    return (await this.service.findAll(orgId, access)).map(channelResponse);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get channel by ID' })
-  findOne(
+  async findOne(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
     @CurrentChannelAccess() access: ChannelAccess,
   ) {
-    return this.service.findOne(id, orgId, access);
+    return channelResponse(await this.service.findOne(id, orgId, access));
   }
 
   @Patch(':id')
   @Roles(OrgRole.OWNER, OrgRole.ADMIN)
   @ApiOperation({ summary: 'Update a channel' })
-  update(
+  async update(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
     @CurrentOrg('userOrganizationId') userOrganizationId: string,
     @Body() dto: UpdateChannelDto,
   ) {
-    return this.service.update(id, orgId, dto, userOrganizationId);
+    return channelResponse(await this.service.update(id, orgId, dto, userOrganizationId));
   }
 
   @Delete(':id')
@@ -77,12 +78,12 @@ export class ChannelsController {
     summary:
       'Soft-delete a channel. Requires ?confirmName=<exact channel name>.',
   })
-  remove(
+  async remove(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
     @Query('confirmName') confirmName?: string,
   ) {
-    return this.service.remove(id, orgId, confirmName);
+    return channelResponse(await this.service.remove(id, orgId, confirmName));
   }
 
   @Post(':id/sync')
