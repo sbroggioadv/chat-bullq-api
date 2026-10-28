@@ -7,7 +7,7 @@ describe('ChannelsController — browser serialization', () => {
     id: 'channel', organizationId: 'org', type: 'GMAIL', name: 'Mail',
     isActive: true, visibility: 'PRIVATE', aiEnabled: null,
     createdAt: new Date(), updatedAt: new Date(), deletedAt: null,
-    config: { accessToken: 'fake-sensitive-value' },
+    config: { accessToken: 'fake-sensitive-value', token: '', appSecret: null, scopeGranted: 'https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar.events fake-sensitive-scope', hasCalendar: true },
     webhookSecret: 'fake-webhook-secret', futureSecret: 'fake-future-secret',
   };
   const service = {
@@ -33,8 +33,10 @@ describe('ChannelsController — browser serialization', () => {
       id: 'channel', organizationId: 'org', type: 'GMAIL', name: 'Mail',
       isActive: true, visibility: 'PRIVATE', aiEnabled: null,
       createdAt: channel.createdAt, updatedAt: channel.updatedAt, deletedAt: null,
+      configFields: { accessToken: true, token: false, appSecret: false, scopeGranted: true, hasCalendar: true },
+      googlePermissions: { hasRead: true, hasSend: true, hasCalendar: true },
     });
-    expect(JSON.stringify(result)).not.toMatch(/config|Secret|sensitive|secret/);
+    expect(JSON.stringify(result)).not.toMatch(/webhookSecret|fake-|sensitive/);
     // The same object stays available internally for provider calls.
     expect(channel.config.accessToken).toBe('fake-sensitive-value');
   });

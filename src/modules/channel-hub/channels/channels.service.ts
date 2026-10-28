@@ -354,10 +354,17 @@ export class ChannelsService {
     dto: UpdateChannelDto,
     callerUserOrganizationId?: string,
   ) {
-    await this.findOne(id, organizationId);
+    const channel = await this.findOne(id, organizationId);
+    if (dto.config !== undefined && (dto.config === null || Array.isArray(dto.config) || typeof dto.config !== 'object')) {
+      throw new BadRequestException('config must be a partial object');
+    }
 
     // Visibility é tratado por caminho separado pra garantir auto-grant.
-    const { visibility, ...rest } = dto;
+    const { visibility, config, ...rest } = dto;
+    const data = {
+      ...rest,
+      ...(config !== undefined ? { config: mergeConfig(channel.config, config) } : {}),
+    };
     if (visibility && callerUserOrganizationId) {
       await this.channelAccess.setChannelVisibility(
         id,
@@ -367,10 +374,10 @@ export class ChannelsService {
       );
     }
 
-    if (Object.keys(rest).length === 0) {
+    if (Object.keys(data).length === 0) {
       return this.repository.findById(id);
     }
-    return this.repository.update(id, rest);
+    return this.repository.update(id, data);
   }
 
   /**
@@ -752,4 +759,19 @@ export class ChannelsService {
 
     return { scanned, updated, unchanged, errors };
   }
+}
+
+
+/** JSON merge patch: omitted keys survive, null deletes, arrays replace. */
+function mergeConfig(current: unknown, patch: Record<string, any>): Record<string, any> {
+  const base = current && typeof current === 'object' && !Array.isArray(current)
+    ? current as Record<string, any> : {};
+  const result = Object.assign(Object.create(null), base);
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null) delete result[key];
+    else if (typeof value === 'object' && !Array.isArray(value)) result[key] = mergeConfig(base[key], value);
+    else result[key] = value;
+  }
+  return result;
 }

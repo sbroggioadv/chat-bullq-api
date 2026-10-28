@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsObject, IsBoolean, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsObject, IsBoolean, IsIn, ValidateIf } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateChannelDto {
@@ -7,15 +7,15 @@ export class UpdateChannelDto {
   @IsString()
   name?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
+  @ApiPropertyOptional({ description: 'Partial JSON merge patch: omitted keys stay; null removes a key; arrays replace. The config object itself cannot be null.' })
+  @ValidateIf((_object, value) => value !== undefined)
   @IsObject()
   config?: Record<string, any>;
 
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
-  webhookSecret?: string;
+  webhookSecret?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()
