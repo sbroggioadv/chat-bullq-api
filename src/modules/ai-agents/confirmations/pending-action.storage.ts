@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import type { ChannelAccess } from '../../iam/channel-access/channel-access.service';
 import { PrismaService } from '../../../database/prisma.service';
 import type {
   ActionPreview,
@@ -63,23 +64,37 @@ export class PendingActionStorage {
     return row ? this.toDomain(row) : null;
   }
 
-  async listByStatus(
-    status: PendingActionStatus,
-    conversationId?: string,
-  ): Promise<PendingAction[]> {
+  async getScoped(id: string, organizationId: string, access: ChannelAccess): Promise<PendingAction | null> {
+    const row = await this.prisma.aiPendingAction.findFirst({
+      where: { id, conversation: { organizationId, ...(access === 'ALL' ? {} : { channelId: { in: [...access] } }) } },
+    });
+    return row ? this.toDomain(row) : null;
+  }
+
+  async listByStatus(status: PendingActionStatus, organizationId: string, access: ChannelAccess, conversationId?: string): Promise<PendingAction[]> {
     const rows = await this.prisma.aiPendingAction.findMany({
-      where: {
-        status,
-        ...(conversationId ? { conversationId } : {}),
-      },
+      where: { status, ...(conversationId ? { conversationId } : {}), conversation: { organizationId, ...(access === 'ALL' ? {} : { channelId: { in: [...access] } }) } },
       orderBy: { createdAt: 'desc' },
     });
     return rows.map((r) => this.toDomain(r));
   }
 
-  async listByConversation(conversationId: string): Promise<PendingAction[]> {
+  async conversationAccessible(conversationId: string, organizationId: string, access: ChannelAccess): Promise<boolean> {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId, ...(access === 'ALL' ? {} : { channelId: { in: [...access] } }) },
+      select: { id: true },
+    });
+    return !!conversation;
+  }
+
+  async listPendingForExpiration(): Promise<PendingAction[]> {
+    const rows = await this.prisma.aiPendingAction.findMany({ where: { status: 'PENDING' } });
+    return rows.map((r) => this.toDomain(r));
+  }
+
+  async listByConversation(conversationId: string, organizationId: string, access: ChannelAccess): Promise<PendingAction[]> {
     const rows = await this.prisma.aiPendingAction.findMany({
-      where: { conversationId },
+      where: { conversationId, conversation: { organizationId, ...(access === 'ALL' ? {} : { channelId: { in: [...access] } }) } },
       orderBy: { createdAt: 'desc' },
     });
     return rows.map((r) => this.toDomain(r));

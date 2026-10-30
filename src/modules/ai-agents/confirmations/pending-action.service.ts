@@ -8,6 +8,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 
+import type { ChannelAccess } from '../../iam/channel-access/channel-access.service';
 import type {
   CreatePendingActionInput,
   PendingAction,
@@ -74,8 +75,8 @@ export class PendingActionService {
    * Phase 2 TODO: enqueue the actual execution of `action.toolName`
    * with `action.args` and persist `executionResult` once it runs.
    */
-  async approve(id: string, userId: string): Promise<PendingAction> {
-    const action = await this.storage.get(id);
+  async approve(id: string, userId: string, organizationId: string, access: ChannelAccess): Promise<PendingAction> {
+    const action = await this.storage.getScoped(id, organizationId, access);
     if (!action) throw new NotFoundException('Pending action not found');
 
     if (action.status !== 'PENDING') {
@@ -130,13 +131,15 @@ export class PendingActionService {
     id: string,
     userId: string,
     reason: string,
+    organizationId: string,
+    access: ChannelAccess,
   ): Promise<PendingAction> {
+    const action = await this.storage.getScoped(id, organizationId, access);
+    if (!action) throw new NotFoundException('Pending action not found');
+
     if (!reason || !reason.trim()) {
       throw new BadRequestException('Rejection reason is required');
     }
-
-    const action = await this.storage.get(id);
-    if (!action) throw new NotFoundException('Pending action not found');
 
     if (action.status !== 'PENDING') {
       throw new BadRequestException(
@@ -168,26 +171,23 @@ export class PendingActionService {
     return action;
   }
 
-  /** List PENDING actions, optionally filtered by conversation. */
-  async listPending(conversationId?: string): Promise<PendingAction[]> {
-    return this.storage.listByStatus('PENDING', conversationId);
+  async listPending(organizationId: string, access: ChannelAccess, conversationId?: string): Promise<PendingAction[]> {
+    if (conversationId && !(await this.storage.conversationAccessible(conversationId, organizationId, access))) {
+      throw new NotFoundException('Conversation not found');
+    }
+    return this.storage.listByStatus('PENDING', organizationId, access, conversationId);
   }
 
-  /** List actions for a given status. */
-  async listByStatus(
-    status: PendingActionStatus,
-    conversationId?: string,
-  ): Promise<PendingAction[]> {
-    return this.storage.listByStatus(status, conversationId);
+  async listByStatus(status: PendingActionStatus, organizationId: string, access: ChannelAccess, conversationId?: string): Promise<PendingAction[]> {
+    return this.storage.listByStatus(status, organizationId, access, conversationId);
   }
 
-  /** List every action (any status) for a conversation. */
-  async listForConversation(conversationId: string): Promise<PendingAction[]> {
-    return this.storage.listByConversation(conversationId);
+  async listForConversation(conversationId: string, organizationId: string, access: ChannelAccess): Promise<PendingAction[]> {
+    return this.storage.listByConversation(conversationId, organizationId, access);
   }
 
-  async get(id: string): Promise<PendingAction | null> {
-    return this.storage.get(id);
+  async get(id: string, organizationId: string, access: ChannelAccess): Promise<PendingAction | null> {
+    return this.storage.getScoped(id, organizationId, access);
   }
 
   /**
@@ -198,7 +198,7 @@ export class PendingActionService {
    * to a `@Cron('* * * * *')` runner.
    */
   async expireOverdue(): Promise<number> {
-    const pending = await this.storage.listByStatus('PENDING');
+    const pending = await this.storage.listPendingForExpiration();
     let moved = 0;
     for (const action of pending) {
       if (this.isExpired(action)) {

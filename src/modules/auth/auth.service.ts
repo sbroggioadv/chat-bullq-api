@@ -1,5 +1,6 @@
 import {
   Injectable,
+  ForbiddenException,
   UnauthorizedException,
   ConflictException,
   BadRequestException,
@@ -31,6 +32,7 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    if (!dto.inviteToken) throw new ForbiddenException('Cadastro somente por convite.');
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -41,89 +43,7 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(dto.password, BCRYPT_ROUNDS);
 
-    // Check if registering via invitation
-    if (dto.inviteToken) {
-      return this.registerWithInvite(dto, hashedPassword);
-    }
-
-    return this.registerNewWorkspace(dto, hashedPassword);
-  }
-
-  private async registerNewWorkspace(dto: RegisterDto, hashedPassword: string) {
-    const slug = this.generateSlug(dto.name);
-
-    const result = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.create({
-        data: {
-          name: dto.name,
-          email: dto.email,
-          password: hashedPassword,
-        },
-      });
-
-      const organization = await tx.organization.create({
-        data: {
-          name: `${dto.name}'s Workspace`,
-          slug,
-        },
-      });
-
-      await tx.userOrganization.create({
-        data: {
-          userId: user.id,
-          organizationId: organization.id,
-          role: 'OWNER',
-        },
-      });
-
-      const defaultDepartment = await tx.department.create({
-        data: {
-          organizationId: organization.id,
-          name: 'Geral',
-          description: 'Departamento padrão',
-          isDefault: true,
-        },
-      });
-
-      const userOrg = await tx.userOrganization.findUnique({
-        where: {
-          userId_organizationId: {
-            userId: user.id,
-            organizationId: organization.id,
-          },
-        },
-      });
-
-      if (userOrg) {
-        await tx.departmentAgent.create({
-          data: {
-            departmentId: defaultDepartment.id,
-            userOrganizationId: userOrg.id,
-          },
-        });
-      }
-
-      return { user, organization };
-    });
-
-    const tokens = await this.generateTokens(result.user.id, result.user.email);
-    this.logger.log(`User registered (new workspace): ${result.user.email}`);
-
-    return {
-      user: this.sanitizeUser(result.user),
-      organizations: [{
-        id: result.organization.id,
-        name: result.organization.name,
-        slug: result.organization.slug,
-        role: 'OWNER',
-        // Org recém-criada nunca tem brand setada — wizard de onboarding cuida disso
-        // assim que o OWNER entra no dashboard.
-        brand: result.organization.brand as 'A' | 'B' | 'C' | null,
-        accessibleChannelIds: 'ALL' as const,
-      }],
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
+    return this.registerWithInvite(dto, hashedPassword);
   }
 
   private async registerWithInvite(dto: RegisterDto, hashedPassword: string) {
@@ -380,14 +300,4 @@ export class AuthService {
     return rest;
   }
 
-  private generateSlug(name: string): string {
-    const base = name
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-
-    return `${base}-${Date.now().toString(36)}`;
-  }
 }

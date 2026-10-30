@@ -74,7 +74,8 @@ export class EvalRunnerService {
    * Roda um caso de teste contra o agent identificado por nome. Retorna o
    * resultado com lista de falhas (vazia se passou) e métricas de custo/duração.
    */
-  async runCase(testCase: EvalCase, agentName: string): Promise<EvalResult> {
+  async runCase(testCase: EvalCase, target: { agentId: string } | { agentName: string }): Promise<EvalResult> {
+    const agentName = 'agentName' in target ? target.agentName : target.agentId;
     const startedAt = Date.now();
 
     this.logger.log({
@@ -88,7 +89,7 @@ export class EvalRunnerService {
     const failures: string[] = [];
 
     try {
-      const invocation = await this.invokeAgent(testCase, agentName);
+      const invocation = await this.invokeAgent(testCase, target);
       agentResponse = invocation.response;
       costUsd = invocation.costUsd;
     } catch (err: any) {
@@ -138,7 +139,7 @@ export class EvalRunnerService {
   async runDataset(dataset: EvalDataset): Promise<EvalRunReport> {
     const results: EvalResult[] = [];
     for (const testCase of dataset.cases) {
-      const result = await this.runCase(testCase, dataset.agentName);
+      const result = await this.runCase(testCase, { agentName: dataset.agentName });
       results.push(result);
     }
     return this.reporter.buildReport({
@@ -157,14 +158,14 @@ export class EvalRunnerService {
    */
   private async invokeAgent(
     testCase: EvalCase,
-    agentName: string,
+    target: { agentId: string } | { agentName: string },
   ): Promise<{ response: EvalAgentResponse; costUsd: number }> {
     // 1. Load agent (active, not soft-deleted)
     const agent = (await this.prisma.aiAgent.findFirst({
-      where: { name: agentName, isActive: true, deletedAt: null },
+      where: { ...('agentId' in target ? { id: target.agentId } : { name: target.agentName }), isActive: true, deletedAt: null },
     })) as AiAgent | null;
     if (!agent) {
-      throw new Error(`Agent "${agentName}" não encontrado (ou inativo)`);
+      throw new Error(`Agent "${'agentId' in target ? target.agentId : target.agentName}" não encontrado (ou inativo)`);
     }
 
     // 2. Load skills attached to the agent

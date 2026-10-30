@@ -64,6 +64,15 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       return { skipped: true, reason: `status_${action.status}` };
     }
 
+    const conversation = await this.prisma.conversation.findUnique({ where: { id: action.conversationId }, select: { organizationId: true } });
+    const membership = conversation && action.approvedBy
+      ? await this.prisma.userOrganization.findUnique({ where: { userId_organizationId: { userId: action.approvedBy, organizationId: conversation.organizationId } }, select: { id: true } })
+      : null;
+    if (!membership) {
+      this.logger.error('pending_action_approval_membership_invalid');
+      return { skipped: true, reason: 'invalid_approval' };
+    }
+
     let result: unknown;
     let success = true;
 

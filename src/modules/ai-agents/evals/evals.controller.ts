@@ -8,7 +8,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../../../common/guards';
+import { OrgRole } from '@prisma/client';
+import { CurrentOrg, Roles } from '../../../common/decorators';
+import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../../common/guards';
 import { PrismaService } from '../../../database/prisma.service';
 import { EvalRunnerService } from './runner.service';
 import { EvalReporterService } from './reporter.service';
@@ -40,7 +42,8 @@ interface RunEvalsResponse {
  */
 @ApiTags('AI Agents - Evals')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
+@Roles(OrgRole.OWNER, OrgRole.ADMIN)
 @Controller('agents/:id/evals')
 export class EvalsController {
   constructor(
@@ -57,9 +60,10 @@ export class EvalsController {
   async run(
     @Param('id') agentId: string,
     @Body() body: RunEvalsBody,
+    @CurrentOrg('id') organizationId: string,
   ): Promise<RunEvalsResponse> {
-    const agent = await this.prisma.aiAgent.findUnique({
-      where: { id: agentId },
+    const agent = await this.prisma.aiAgent.findFirst({
+      where: { id: agentId, organizationId },
     });
     if (!agent) {
       throw new NotFoundException(`Agent ${agentId} not found`);
@@ -88,7 +92,7 @@ export class EvalsController {
 
     const results = [];
     for (const c of cases) {
-      const result = await this.runner.runCase(c, agent.name);
+      const result = await this.runner.runCase(c, { agentId: agent.id });
       results.push(result);
     }
 

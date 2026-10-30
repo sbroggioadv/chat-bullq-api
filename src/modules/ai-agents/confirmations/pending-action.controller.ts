@@ -11,7 +11,9 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
-import { JwtAuthGuard } from '../../../common/guards';
+import { CurrentChannelAccess, CurrentOrg } from '../../../common/decorators';
+import type { ChannelAccess } from '../../iam/channel-access/channel-access.service';
+import { JwtAuthGuard, OrgGuard } from '../../../common/guards';
 import { PendingActionService } from './pending-action.service';
 import type { PendingAction } from './confirmation.types';
 
@@ -29,7 +31,7 @@ interface AuthedRequest {
  */
 @ApiTags('AI Pending Actions')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, OrgGuard)
 @Controller('pending-actions')
 export class PendingActionController {
   constructor(private readonly service: PendingActionService) {}
@@ -40,15 +42,17 @@ export class PendingActionController {
       'List PENDING destructive actions. Optionally filter by conversationId.',
   })
   async list(
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
     @Query('conversationId') conversationId?: string,
   ): Promise<PendingAction[]> {
-    return this.service.listPending(conversationId);
+    return this.service.listPending(orgId, access, conversationId);
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Get a single pending action by id.' })
-  async get(@Param('id') id: string): Promise<PendingAction> {
-    const action = await this.service.get(id);
+  async get(@Param('id') id: string, @CurrentOrg('id') orgId: string, @CurrentChannelAccess() access: ChannelAccess): Promise<PendingAction> {
+    const action = await this.service.get(id, orgId, access);
     if (!action) throw new NotFoundException('Pending action not found');
     return action;
   }
@@ -58,9 +62,11 @@ export class PendingActionController {
   async approve(
     @Param('id') id: string,
     @Req() req: AuthedRequest,
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
   ): Promise<PendingAction> {
     const userId = this.requireUserId(req);
-    return this.service.approve(id, userId);
+    return this.service.approve(id, userId, orgId, access);
   }
 
   @Post(':id/reject')
@@ -68,10 +74,12 @@ export class PendingActionController {
   async reject(
     @Param('id') id: string,
     @Req() req: AuthedRequest,
+    @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access: ChannelAccess,
     @Body() body: { reason: string },
   ): Promise<PendingAction> {
     const userId = this.requireUserId(req);
-    return this.service.reject(id, userId, body?.reason ?? '');
+    return this.service.reject(id, userId, body?.reason ?? '', orgId, access);
   }
 
   private requireUserId(req: AuthedRequest): string {
