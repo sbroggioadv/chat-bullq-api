@@ -34,6 +34,7 @@ export class ChatbotProcessor extends WorkerHost {
       channelId,
       contactExternalId,
       messageText,
+      organizationId,
     );
 
     for (const msg of result.messages) {

@@ -22,13 +22,19 @@ export class ChatbotFlowsRepository {
     });
   }
 
-  async findById(id: string) {
+  async findById(id: string, organizationId: string) {
     return this.prisma.chatbotFlow.findFirst({
-      where: { id, deletedAt: null },
+      where: { id, organizationId, deletedAt: null },
       include: {
         nodes: { orderBy: { createdAt: 'asc' } },
         channels: { include: { channel: { select: { id: true, name: true, type: true } } } },
       },
+    });
+  }
+
+  async countChannelsByOrg(organizationId: string, channelIds: string[]) {
+    return this.prisma.channel.count({
+      where: { id: { in: channelIds }, organizationId, deletedAt: null },
     });
   }
 
@@ -67,11 +73,11 @@ export class ChatbotFlowsRepository {
     });
   }
 
-  async findActiveFlowForChannel(channelId: string) {
+  async findActiveFlowForChannel(channelId: string, organizationId: string) {
     const link = await this.prisma.chatbotFlowChannel.findFirst({
       where: {
         channelId,
-        flow: { isActive: true, deletedAt: null },
+        flow: { organizationId, isActive: true, deletedAt: null },
       },
       include: {
         flow: { include: { nodes: true } },
