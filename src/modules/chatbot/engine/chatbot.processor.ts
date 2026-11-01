@@ -29,6 +29,15 @@ export class ChatbotProcessor extends WorkerHost {
   async process(job: Job<ChatbotJobData>): Promise<any> {
     const { conversationId, channelId, contactExternalId, organizationId, messageText } = job.data;
 
+    if (!conversationId || !channelId || !organizationId) {
+      return { skipped: true, reason: 'conversation_not_found' };
+    }
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, channelId, organizationId },
+      select: { id: true },
+    });
+    if (!conversation) return { skipped: true, reason: 'conversation_not_found' };
+
     const result = await this.engine.processMessage(
       conversationId,
       channelId,
@@ -36,6 +45,14 @@ export class ChatbotProcessor extends WorkerHost {
       messageText,
       organizationId,
     );
+
+    if (result.transferToHuman && result.transferDepartmentId) {
+      const department = await this.prisma.department.findFirst({
+        where: { id: result.transferDepartmentId, organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!department) return { skipped: true, reason: 'department_not_found' };
+    }
 
     for (const msg of result.messages) {
       const saved = await this.prisma.message.create({
