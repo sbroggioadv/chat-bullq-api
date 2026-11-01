@@ -33,11 +33,11 @@ export class RagIndexerProcessor extends WorkerHost {
     try {
       switch (data.type) {
         case 'index_message':
-          await this.index('message', data.messageId, data.content, data.scope, data.metadata);
+          await this.index('message', data.messageId, data.content, data.scope, data.organizationId, data.metadata);
           return { ok: true };
 
         case 'index_fact':
-          await this.index('fact', data.factId, data.content, data.scope, data.metadata);
+          await this.index('fact', data.factId, data.content, data.scope, data.organizationId, data.metadata);
           return { ok: true };
 
         case 'index_memory_summary':
@@ -46,6 +46,7 @@ export class RagIndexerProcessor extends WorkerHost {
             data.summaryId,
             data.content,
             data.scope,
+            data.organizationId,
             data.metadata,
           );
           return { ok: true };
@@ -103,14 +104,16 @@ export class RagIndexerProcessor extends WorkerHost {
     ownerId: string,
     content: string,
     scope: SearchScope,
+    organizationId: string,
     metadata?: Record<string, any>,
   ): Promise<void> {
+    if (!organizationId) throw new Error('Organização ausente no job de indexação');
     if (!content || content.trim().length === 0) {
       this.logger.debug(`rag_indexer_skip_empty ownerType=${ownerType} ownerId=${ownerId}`);
       return;
     }
 
-    const emb = await this.embeddings.embed(content);
+    const emb = await this.embeddings.embed(content, organizationId);
 
     const entry: VectorEntry = {
       id: `${ownerType}:${ownerId}`,

@@ -95,6 +95,7 @@ export interface RagConfig {
 export type IndexerJobData =
   | {
       type: 'index_message';
+      organizationId: string;
       messageId: string;
       content: string;
       scope: SearchScope;
@@ -102,6 +103,7 @@ export type IndexerJobData =
     }
   | {
       type: 'index_fact';
+      organizationId: string;
       factId: string;
       content: string;
       scope: SearchScope;
@@ -109,6 +111,7 @@ export type IndexerJobData =
     }
   | {
       type: 'index_memory_summary';
+      organizationId: string;
       summaryId: string;
       content: string;
       scope: SearchScope;
