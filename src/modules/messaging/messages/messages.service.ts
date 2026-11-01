@@ -62,7 +62,7 @@ export class MessagesService {
 
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Conversation not found');
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
 
@@ -382,7 +382,7 @@ export class MessagesService {
     });
     if (!message) throw new NotFoundException('Message not found');
     if (message.conversation.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Message not found');
     }
     this.channelAccess.assertChannelAccess(access, message.conversation.channelId);
 
@@ -490,7 +490,7 @@ export class MessagesService {
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Conversation not found');
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
 
