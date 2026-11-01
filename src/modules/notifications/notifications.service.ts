@@ -85,8 +85,8 @@ export class NotificationsService {
     };
   }
 
-  async markRead(id: string) {
-    return this.repository.markRead(id);
+  async markRead(id: string, userId: string, orgId: string) {
+    return this.repository.markRead(id, userId, orgId);
   }
 
   async markAllRead(userId: string, orgId: string) {
