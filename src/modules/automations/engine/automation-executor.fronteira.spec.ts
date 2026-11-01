@@ -1,7 +1,7 @@
 import { AutomationExecutorService } from './automation-executor.service';
 
 describe('fronteira de eventos do motor', () => {
-  const job: any = { organizationId: 'org-b', trigger: 'TAG_ADDED', traceId: 'trace', cascadeDepth: 0, visitedAutomations: [], outboxEventId: 'event', payload: { organizationId: 'org-b', contactId: 'contact-b', conversationId: 'conv-b', channelId: 'channel-b', tagId: 'tag-b', target: 'contact' } };
+  const job: any = { organizationId: 'org-b', trigger: 'TAG_ADDED', traceId: 'trace', cascadeDepth: 0, visitedAutomations: [], outboxEventId: 'event', payload: { organizationId: 'org-b', contactId: 'contact-b', conversationId: 'conv-b', channelId: 'channel-b', tagId: 'tag-b', target: 'contact', body: 'texto sintético que não deve ser registrado' } };
   const rule = { id: 'rule', organizationId: 'org-b', actorId: 'actor', schemaVersion: 1, conditions: {}, actions: [], rateLimitPerMinute: 10 };
   function setup(valid: boolean) {
     const prisma: any = { automation: { findMany: jest.fn().mockResolvedValue([rule, { ...rule, id: 'rule-2' }]), update: jest.fn().mockResolvedValue({}) }, organization: { findFirst: jest.fn().mockResolvedValue(valid ? { id: 'org-b' } : null) }, userOrganization: { findFirst: jest.fn().mockResolvedValue({ id: 'member' }) }, automationRun: { create: jest.fn().mockResolvedValue({}) } };
@@ -15,6 +15,7 @@ describe('fronteira de eventos do motor', () => {
     expect(prisma.organization.findFirst).toHaveBeenCalledTimes(1);
     expect(prisma.automationRun.create).toHaveBeenCalledTimes(2);
     expect(prisma.automationRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'SKIPPED', errorCode: 'cross_org_reference', actionsLog: [] }) }));
+    expect(prisma.automationRun.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ triggerPayload: { organizationId: 'org-b', contactId: 'contact-b', conversationId: 'conv-b', channelId: 'channel-b' } }) }));
     expect(redis.tryConsumeRateLimit).not.toHaveBeenCalled();
   });
   it('executa regra do dono e confere as relações do evento', async () => {
