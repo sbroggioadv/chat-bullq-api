@@ -83,10 +83,12 @@ export class OutboundMessageProcessor extends WorkerHost {
           const placeholder = await this.prisma.message.findUnique({
             where: { id: messageId },
           });
+          if (!placeholder) throw err;
           const echoRow = await this.prisma.message.findFirst({
             where: {
               externalId: result.externalId,
               id: { not: messageId },
+              conversationId: placeholder.conversationId,
             },
           });
           if (echoRow && placeholder) {
