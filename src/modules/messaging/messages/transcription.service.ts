@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AiProvider } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
@@ -53,12 +53,12 @@ export class TranscriptionService {
       where: { id: messageId },
       include: { conversation: { include: { channel: true } } },
     });
-    if (!message) throw new BadRequestException('Message not found');
+    if (!message) throw new NotFoundException('Message not found');
     if (message.conversation.organizationId !== organizationId) {
-      throw new BadRequestException('Message does not belong to organization');
+      throw new NotFoundException('Message not found');
     }
     if (access !== 'ALL' && !access.has(message.conversation.channelId)) {
-      throw new BadRequestException('Message does not belong to organization');
+      throw new NotFoundException('Message not found');
     }
     if (message.type !== 'AUDIO') {
       throw new BadRequestException('Message is not an audio');
