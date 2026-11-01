@@ -34,7 +34,7 @@ export class QuickRepliesService {
   }
 
   async findOne(id: string, orgId: string, userId: string) {
-    const row = await this.repository.findById(id);
+    const row = await this.repository.findById(id, orgId, userId);
     if (
       !row ||
       row.organizationId !== orgId ||
