@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 
 import { PrismaService } from '../../../../database/prisma.service';
 import { EnrichedContext } from './long-term.types';
@@ -27,6 +27,7 @@ export class ContextEnrichmentService {
   ) {}
 
   async enrich(input: {
+    organizationId: string;
     agentId: string;
     conversationId: string;
     contactId: string;
@@ -35,12 +36,18 @@ export class ContextEnrichmentService {
   }): Promise<EnrichedContext> {
     const limit = input.recentMessageLimit ?? 30;
 
-    const [contact, conversation, messages, mem] = await Promise.all([
-      this.prisma.contact.findUnique({ where: { id: input.contactId } }),
-      this.prisma.conversation.findUnique({
-        where: { id: input.conversationId },
-        include: { channel: true },
+    if (!input.organizationId) throw new NotFoundException();
+    const [conversation, agent] = await Promise.all([
+      this.prisma.conversation.findFirst({
+        where: { id: input.conversationId, contactId: input.contactId, organizationId: input.organizationId },
+        include: { channel: true, contact: true },
       }),
+      this.prisma.aiAgent.findFirst({ where: { id: input.agentId, organizationId: input.organizationId }, select: { id: true } }),
+    ]);
+    if (!conversation || !agent) throw new NotFoundException();
+    const contact = conversation.contact;
+
+    const [messages, mem] = await Promise.all([
       this.prisma.message.findMany({
         where: { conversationId: input.conversationId },
         orderBy: { createdAt: 'desc' },

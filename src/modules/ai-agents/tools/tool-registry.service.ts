@@ -38,7 +38,7 @@ export class ToolRegistry {
   private readonly agentAllowlist = new Map<string, Set<string>>();
 
   constructor(
-    config: ConfigService,
+    private readonly config: ConfigService,
     reply: ReplyToConversationTool,
     transfer: TransferToHumanTool,
     tag: TagConversationTool,
@@ -80,11 +80,11 @@ export class ToolRegistry {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    this.register(consultarClickUpCliente, ['WORKER'], clientOpsAgents);
-    this.register(consultarN8nCliente, ['WORKER'], clientOpsAgents);
-    this.register(listarReunioesCliente, ['WORKER'], clientOpsAgents);
-    this.register(lerTranscricaoReuniao, ['WORKER'], clientOpsAgents);
-    this.register(agendarReuniao, ['WORKER'], clientOpsAgents);
+    this.register(consultarClickUpCliente, ['WORKER'], clientOpsAgents, true);
+    this.register(consultarN8nCliente, ['WORKER'], clientOpsAgents, true);
+    this.register(listarReunioesCliente, ['WORKER'], clientOpsAgents, true);
+    this.register(lerTranscricaoReuniao, ['WORKER'], clientOpsAgents, true);
+    this.register(agendarReuniao, ['WORKER'], clientOpsAgents, true);
 
     this.logger.log(
       `Built-in skills loaded: ${[...this.tools.keys()].join(', ')} (client-ops → ${clientOpsAgents.join(', ')})`,
@@ -95,11 +95,23 @@ export class ToolRegistry {
     tool: BuiltInSkillImpl,
     kinds: AiAgentKind[],
     agentIds?: string[],
+    globalCredentials = false,
   ): void {
     if (this.tools.has(tool.name)) {
       throw new Error(`Duplicate built-in skill: ${tool.name}`);
     }
-    this.tools.set(tool.name, tool);
+    this.tools.set(tool.name, globalCredentials ? {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      execute: (input, ctx) => {
+        const allowedOrg = this.config.get<string>('CLIENT_OPS_ORGANIZATION_ID')?.trim();
+        if (!allowedOrg || allowedOrg !== ctx.organizationId) {
+          return Promise.resolve({ output: { ok: false, error: 'Esta ferramenta não está disponível neste espaço.' } });
+        }
+        return tool.execute(input, ctx);
+      },
+    } : tool);
     this.scope.set(tool.name, new Set(kinds));
     if (agentIds && agentIds.length > 0) {
       this.agentAllowlist.set(tool.name, new Set(agentIds));

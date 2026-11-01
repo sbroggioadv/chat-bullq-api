@@ -11,7 +11,7 @@ interface CachedToken {
 /**
  * Tokens de acesso Google sem SDK externo:
  *
- * - Calendar: OAuth de usuário (produtos@asv.digital) via refresh_token —
+ * - Calendar: OAuth de usuário via refresh_token —
  *   permite criar evento com Meet e CONVIDADOS, coisa que service account
  *   sem domain-wide delegation não consegue.
  * - Drive: service account (read-only) — enxerga as pastas compartilhadas

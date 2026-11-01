@@ -514,6 +514,7 @@ export class AiAgentRunnerService {
       // Fase 2: enfileirar jobs assíncronos de memória + RAG
       // (fire-and-forget — falha não pode quebrar o run)
       this.scheduleAfterRunJobs(
+        conversation.organizationId,
         agent.id,
         conversation.id,
         conversation.contactId,
@@ -1075,6 +1076,7 @@ export class AiAgentRunnerService {
    * Ambos são fire-and-forget — falha aqui não pode interromper o agent run.
    */
   private async scheduleAfterRunJobs(
+    organizationId: string,
     agentId: string,
     conversationId: string,
     contactId: string,
@@ -1091,7 +1093,7 @@ export class AiAgentRunnerService {
       try {
         await this.memoryExtractorQueue.add(
           'extract_memory',
-          { agentId, contactId, conversationId },
+          { agentId, contactId, conversationId, organizationId },
           { removeOnComplete: 100, removeOnFail: 50 },
         );
       } catch (err: any) {
@@ -1109,6 +1111,7 @@ export class AiAgentRunnerService {
           'index_message',
           {
             type: 'index_message',
+            organizationId,
             messageId: triggerMessage.id,
             content: messageText,
             scope: { conversationId, agentId, contactId },

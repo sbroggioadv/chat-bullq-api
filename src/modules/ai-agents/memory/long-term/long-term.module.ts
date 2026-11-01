@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 
 import { PrismaModule } from '../../../../database/prisma.module';
-import { LlmModule } from '../../llm/llm.module';
+import { AiProvidersModule } from '../../providers/providers.module';
 import { ContextEnrichmentService } from './context-enrichment.service';
 import { LongTermMemoryService } from './long-term.service';
 import { MemoryExtractorProcessor, MEMORY_EXTRACTOR_QUEUE } from './memory-extractor.processor';
@@ -24,7 +24,7 @@ import { MemoryExtractorService } from './memory-extractor.service';
 @Module({
   imports: [
     PrismaModule,
-    LlmModule,
+    AiProvidersModule,
     BullModule.registerQueue({ name: MEMORY_EXTRACTOR_QUEUE }),
   ],
   providers: [

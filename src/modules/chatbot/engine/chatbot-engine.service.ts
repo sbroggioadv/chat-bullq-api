@@ -47,6 +47,7 @@ export class ChatbotEngineService {
     channelId: string,
     contactExternalId: string,
     incomingText: string,
+    organizationId: string,
   ): Promise<EngineResult> {
     const allMessages: EngineResult['messages'] = [];
     let transferToHuman = false;
@@ -55,7 +56,7 @@ export class ChatbotEngineService {
     let session = await this.sessionService.get(conversationId);
 
     if (!session) {
-      const flow = await this.flowsRepo.findActiveFlowForChannel(channelId);
+      const flow = await this.flowsRepo.findActiveFlowForChannel(channelId, organizationId);
       if (!flow || !flow.nodes.length) {
         return { messages: [], transferToHuman: false, sessionEnded: true };
       }
@@ -77,7 +78,7 @@ export class ChatbotEngineService {
       }
     }
 
-    const flow = await this.flowsRepo.findById(session.flowId);
+    const flow = await this.flowsRepo.findById(session.flowId, organizationId);
     if (!flow) {
       await this.sessionService.destroy(conversationId);
       return { messages: [], transferToHuman: false, sessionEnded: true };

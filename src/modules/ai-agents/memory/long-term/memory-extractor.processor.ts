@@ -37,7 +37,13 @@ export class MemoryExtractorProcessor extends WorkerHost {
   async process(
     job: Job<MemoryExtractorJobData>,
   ): Promise<{ ok: boolean; factsAdded: number; factsRemoved: number; costUsd: number }> {
-    const { agentId, contactId, conversationId } = job.data;
+    const { agentId, contactId, conversationId, organizationId } = job.data;
+    if (!organizationId) throw new Error('Organização ausente no job de memória');
+    const [conversation, agent] = await Promise.all([
+      this.prisma.conversation.findFirst({ where: { id: conversationId, contactId, organizationId }, select: { id: true } }),
+      this.prisma.aiAgent.findFirst({ where: { id: agentId, organizationId }, select: { id: true } }),
+    ]);
+    if (!conversation || !agent) throw new Error('Contexto de memória não encontrado');
 
     // Pull the last 20 messages (most-recent first), then reverse to get
     // chronological order for the extractor prompt.
@@ -74,6 +80,7 @@ export class MemoryExtractorProcessor extends WorkerHost {
     const currentMemory = await this.memory.getOrCreate(agentId, contactId);
 
     const result = await this.extractor.extract({
+      organizationId,
       agentId,
       contactId,
       recentMessages: recent,

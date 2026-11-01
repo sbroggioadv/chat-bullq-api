@@ -57,7 +57,7 @@ export class AgendarReuniaoTool implements AiTool {
         items: { type: 'string' },
         maxItems: 10,
         description:
-          'Emails dos participantes do lado do cliente (pergunte se ele quer receber convite por email). O time da Bravy já entra automaticamente.',
+          'Emails dos participantes do lado do cliente (pergunte se ele quer receber convite por email). Convidados internos dependem da configuração.',
       },
       avisarGrupo: {
         type: 'boolean',
@@ -150,14 +150,14 @@ export class AgendarReuniaoTool implements AiTool {
     try {
       const internalAttendees = (
         this.config.get<string>('SOFIA_MEETING_INTERNAL_ATTENDEES') ??
-        'tiago@asv.digital'
+        ''
       )
         .split(',')
         .map((e) => e.trim())
         .filter(Boolean);
       const event = await this.calendar.createEventWithMeet({
         summary: meeting.taskName,
-        description: `Reunião agendada pela Sofia (implementação Bravy). Projeto: ${project.name}.`,
+        description: `Reunião agendada pela Sofia. Projeto: ${project.name}.`,
         startIso: start.toISOString(),
         endIso: end.toISOString(),
         attendeeEmails: [...new Set([...internalAttendees, ...emails])],

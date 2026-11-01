@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { LlmService } from '../../llm/llm.service';
+import { AiLlmRouterService } from '../../providers/ai-llm-router.service';
 import {
   ExtractionInput,
   ExtractionResult,
@@ -24,7 +24,7 @@ export class MemoryExtractorService {
   private readonly logger = new Logger(MemoryExtractorService.name);
   private readonly modelId = 'claude-haiku-4-5';
 
-  constructor(private readonly llm: LlmService) {}
+  constructor(private readonly llm: AiLlmRouterService) {}
 
   async extract(input: ExtractionInput): Promise<ExtractionResult> {
     const systemPrompt = this.buildSystemPrompt();
@@ -33,6 +33,7 @@ export class MemoryExtractorService {
     let response;
     try {
       response = await this.llm.complete({
+        organizationId: input.organizationId,
         modelId: this.modelId,
         messages: [
           { role: 'system', content: systemPrompt },

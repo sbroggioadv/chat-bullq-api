@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ChatbotFlowsRepository } from './chatbot-flows.repository';
 import { CreateChatbotFlowDto, UpdateChatbotFlowDto, ChatbotNodeDto } from './dto/create-chatbot-flow.dto';
 
@@ -21,9 +21,8 @@ export class ChatbotFlowsService {
   }
 
   async findOne(id: string, organizationId: string) {
-    const flow = await this.repository.findById(id);
+    const flow = await this.repository.findById(id, organizationId);
     if (!flow) throw new NotFoundException('Chatbot flow not found');
-    if (flow.organizationId !== organizationId) throw new ForbiddenException();
     return flow;
   }
 
@@ -54,11 +53,14 @@ export class ChatbotFlowsService {
 
   async linkChannels(id: string, organizationId: string, channelIds: string[]) {
     await this.findOne(id, organizationId);
-    await this.repository.setChannels(id, channelIds);
+    const uniqueChannelIds = [...new Set(channelIds)];
+    const count = await this.repository.countChannelsByOrg(organizationId, uniqueChannelIds);
+    if (count !== uniqueChannelIds.length) throw new NotFoundException('Channel not found');
+    await this.repository.setChannels(id, uniqueChannelIds);
     return this.findOne(id, organizationId);
   }
 
-  async findActiveFlowForChannel(channelId: string) {
-    return this.repository.findActiveFlowForChannel(channelId);
+  async findActiveFlowForChannel(channelId: string, organizationId: string) {
+    return this.repository.findActiveFlowForChannel(channelId, organizationId);
   }
 }

@@ -29,25 +29,25 @@ describe('GroupMentionDetector', () => {
 
   it('matcha agente quando texto contém @handle case-insensitive', async () => {
     const msg: FakeMessage = { content: { text: 'oi @Vendas, tem desconto?' } };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r?.id).toBe('a1');
   });
 
   it('matcha caption de mídia quando contém @handle', async () => {
     const msg: FakeMessage = { content: { caption: 'pessoal @suporte vejam isso', mediaUrl: 'x' } };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r?.id).toBe('a2');
   });
 
   it('NÃO matcha email com @ (luis@vendas.com)', async () => {
     const msg: FakeMessage = { content: { text: 'meu email luis@vendas.com' } };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r).toBeNull();
   });
 
   it('NÃO matcha handle prefixado por outros chars (@vendas123)', async () => {
     const msg: FakeMessage = { content: { text: 'pergunta pro @vendas123 ali' } };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r).toBeNull();
   });
 
@@ -61,10 +61,20 @@ describe('GroupMentionDetector', () => {
       content: { text: 'obrigado' },
       metadata: { replyTo: { messageId: 'msg-original' } },
     };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r?.id).toBe('a1');
     expect(prisma.message.findUnique).toHaveBeenCalledWith({
-      where: { id: 'msg-original' },
+      where: { id: 'msg-original', conversationId: 'conv-a' },
+      select: { id: true, senderId: true, metadata: true },
+    });
+  });
+
+  it('restringe o reply à conversa atual', async () => {
+    prisma.message.findUnique.mockResolvedValueOnce(null);
+    const msg = { content: { text: 'ok' }, metadata: { replyTo: { messageId: 'outra' } } };
+    await detector.findMatchingAgent(msg as any, agents as any, 'conv-b');
+    expect(prisma.message.findUnique).toHaveBeenCalledWith({
+      where: { id: 'outra', conversationId: 'conv-b' },
       select: { id: true, senderId: true, metadata: true },
     });
   });
@@ -79,13 +89,13 @@ describe('GroupMentionDetector', () => {
       content: { text: 'ok' },
       metadata: { replyTo: { messageId: 'msg-original' } },
     };
-    const r = await detector.findMatchingAgent(msg as any, agents as any);
+    const r = await detector.findMatchingAgent(msg as any, agents as any, 'conv-a');
     expect(r).toBeNull();
   });
 
   it('ignora candidatos sem mentionHandle (null)', async () => {
     const msg: FakeMessage = { content: { text: 'oi pessoal' } };
-    const r = await detector.findMatchingAgent(msg as any, [agents[2]] as any);
+    const r = await detector.findMatchingAgent(msg as any, [agents[2]] as any, 'conv-a');
     expect(r).toBeNull();
   });
 
@@ -94,7 +104,7 @@ describe('GroupMentionDetector', () => {
     // passar pela validação do DTO, mas o detector deve ser defensivo.
     const weirdAgents: FakeAgent[] = [{ id: 'a4', mentionHandle: 'foo.*bar' }];
     const msg: FakeMessage = { content: { text: 'oi @qualquercoisa' } };
-    const r = await detector.findMatchingAgent(msg as any, weirdAgents as any);
+    const r = await detector.findMatchingAgent(msg as any, weirdAgents as any, 'conv-a');
     expect(r).toBeNull(); // não matcha por regex injection
   });
 });

@@ -22,7 +22,7 @@ export class ListarReunioesClienteTool implements AiTool {
       clientName: {
         type: 'string',
         description:
-          'Nome do cliente como aparece no título das gravações (ex: "Mauricio Fachini"). Tente variações se não achar (com/sem sobrenome).',
+          'Nome do cliente como aparece no título das gravações. Tente variações se não achar.',
         minLength: 3,
         maxLength: 120,
       },

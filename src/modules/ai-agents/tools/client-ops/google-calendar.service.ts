@@ -13,7 +13,7 @@ export interface CreatedCalendarEvent {
 
 /**
  * Criação de eventos no Google Calendar com Meet, na agenda configurada
- * (default produtos@asv.digital — padrão das reuniões de implementação).
+ * (padrão: agenda primária da conta autenticada).
  * Convites saem com sendUpdates=all, então os participantes recebem email.
  */
 @Injectable()
@@ -27,7 +27,7 @@ export class GoogleCalendarService {
 
   private get calendarId(): string {
     return (
-      this.config.get<string>('SOFIA_CALENDAR_ID') ?? 'produtos@asv.digital'
+      this.config.get<string>('SOFIA_CALENDAR_ID') ?? 'primary'
     );
   }
 

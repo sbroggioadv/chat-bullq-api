@@ -333,6 +333,7 @@ export class AgentRouterService {
       const matched = await this.groupMentionDetector.findMatchingAgent(
         message as any,
         candidates,
+        conversation.id,
       );
       if (!matched) {
         return { handle: false, reason: 'GROUP_NO_MENTION' };
