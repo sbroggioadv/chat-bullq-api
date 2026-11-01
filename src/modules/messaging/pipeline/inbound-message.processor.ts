@@ -620,7 +620,7 @@ export class InboundMessageProcessor extends WorkerHost {
     }
 
     const message = await this.prisma.message.findFirst({
-      where: { externalId: status.externalMessageId },
+      where: { externalId: status.externalMessageId, conversation: { channelId } },
     });
     if (!message) return;
 
