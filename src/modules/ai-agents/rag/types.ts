@@ -120,6 +120,7 @@ export type IndexerJobData =
   | {
       type: 'delete_entry';
       id: string;
+      organizationId: string;
     }
     | {
       type: 'index_knowledge_doc';

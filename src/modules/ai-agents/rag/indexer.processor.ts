@@ -52,6 +52,7 @@ export class RagIndexerProcessor extends WorkerHost {
           return { ok: true };
 
         case 'index_knowledge_doc': {
+          if (!data.organizationId) throw new Error('Organização ausente no job de indexação');
           const embeddings = await this.embeddings.embedBatch(
             data.chunks,
             data.organizationId,
@@ -80,6 +81,7 @@ export class RagIndexerProcessor extends WorkerHost {
         }
 
         case 'delete_entry':
+          if (!data.organizationId) throw new Error('Organização ausente no job de indexação');
           await this.store.delete(data.id);
           this.logger.log(`rag_indexer_deleted id=${data.id}`);
           return { ok: true };
