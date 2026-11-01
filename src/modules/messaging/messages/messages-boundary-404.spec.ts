@@ -17,3 +17,15 @@ describe('fronteira de mensagens', () => {
     await expect(service.revokeForEveryone('msg-A', 'A', 'user')).resolves.toMatchObject({ messageId: 'msg-A' });
   });
 });
+
+describe('emissor de leitura ao enviar', () => {
+  it('publica somente na sala pessoal da organização ativa', async () => {
+    const conv = { id: 'conv-A', organizationId: 'A', channelId: 'channel-A', assignedToId: 'user', aiEnabled: false, channel: { type: 'WHATSAPP_ZAPPFY' }, contact: { channels: [{ channelId: 'channel-A', externalId: 'contact' }] } };
+    const prisma = { conversation: { findUnique: jest.fn(async () => conv), update: jest.fn() }, organization: { findUnique: jest.fn(async () => ({})) }, conversationRead: { upsert: jest.fn() } };
+    const gateway = { emitToUserInOrg: jest.fn(), emitToUser: jest.fn(), emitToChannel: jest.fn(), emitToConversation: jest.fn() };
+    const service = new MessagesService({ create: jest.fn(async () => ({ id: 'message-A' })) } as any, prisma as any, gateway as any, { assertChannelAccess: jest.fn() } as any, { cancelCheck: jest.fn(async () => undefined) } as any, {} as any, {} as any, {} as any, {} as any, { add: jest.fn() } as any);
+    await service.send({ conversationId: 'conv-A', type: 'TEXT', content: { text: 'teste' } } as any, 'user', 'A');
+    expect(gateway.emitToUserInOrg).toHaveBeenCalledWith('user', 'A', 'conversation:read', expect.any(Object));
+    expect(gateway.emitToUser).not.toHaveBeenCalled();
+  });
+});

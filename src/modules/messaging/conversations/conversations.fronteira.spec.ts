@@ -42,3 +42,26 @@ describe('respostas da fronteira de conversa', () => {
     await expect(service.findOne('conv-A', 'A')).resolves.toMatchObject(conversation);
   });
 });
+
+describe('emissores e mutação de referências', () => {
+  it('não altera departamento ou atendente ao receber referências alheias', async () => {
+    const state = { departmentId: 'department-A', assignedToId: 'user-A' };
+    const repository = { findById: jest.fn(async () => ({ id: 'conv-A', organizationId: 'A', channelId: 'channel-A', ...state })), update: jest.fn(async (_id, data) => { state.departmentId = data.department.connect.id; }) };
+    const fsm = { assign: jest.fn(async (_id, user) => { state.assignedToId = user; }) };
+    const prisma = { department: { findFirst: jest.fn(async () => null) }, userOrganization: { findFirst: jest.fn(async () => null) } };
+    const projects = { attachByConversationIds: jest.fn(async () => new Map()) };
+    const service = new ConversationsService(repository as any, fsm as any, { emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any, prisma as any, {} as any, {} as any, { assertChannelAccess: jest.fn() } as any, {} as any, {} as any, {} as any, projects as any);
+    await service.update('conv-A', 'A', { departmentId: 'department-B' }, 'user-A').catch(() => undefined);
+    await service.update('conv-A', 'A', { assignedToId: 'user-B' }, 'user-A').catch(() => undefined);
+    expect(state).toEqual({ departmentId: 'department-A', assignedToId: 'user-A' });
+  });
+  it('publica não lida somente na organização ativa', async () => {
+    const repo = { findById: jest.fn(async () => ({ id: 'conv-A', organizationId: 'A', channelId: 'channel-A' })), markAsUnread: jest.fn(async () => ({ unreadCount: 1 })) };
+    const gateway = { emitToUser: jest.fn(), emitToUserInOrg: jest.fn() };
+    const projects = { attachByConversationIds: jest.fn(async () => new Map()) };
+    const service = new ConversationsService(repo as any, {} as any, gateway as any, {} as any, {} as any, {} as any, { assertChannelAccess: jest.fn() } as any, {} as any, {} as any, {} as any, projects as any);
+    await service.markAsUnread('conv-A', 'A', 'user');
+    expect(gateway.emitToUserInOrg).toHaveBeenCalledWith('user', 'A', 'conversation:unread', expect.any(Object));
+    expect(gateway.emitToUser).not.toHaveBeenCalled();
+  });
+});
