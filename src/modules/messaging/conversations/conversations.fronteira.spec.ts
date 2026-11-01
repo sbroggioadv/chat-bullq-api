@@ -29,3 +29,16 @@ describe('fronteira das referências de conversa', () => {
     expect(repository.update).toHaveBeenCalledWith('conv-A', { department: { connect: { id: 'department-A' } } });
   });
 });
+
+describe('respostas da fronteira de conversa', () => {
+  it('oculta conversa alheia na consulta e na sincronização', async () => {
+    const conversation = { id: 'conv-A', organizationId: 'A', channelId: 'channel-A' };
+    const repo = { findById: jest.fn(async () => conversation) };
+    const prisma = { conversation: { findUnique: jest.fn(async () => conversation) } };
+    const projects = { attachByConversationIds: jest.fn(async () => new Map()) };
+    const service = new ConversationsService(repo as any, {} as any, {} as any, prisma as any, {} as any, {} as any, { assertChannelAccess: jest.fn() } as any, {} as any, {} as any, {} as any, projects as any);
+    await expect(service.findOne('conv-A', 'B')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.syncMessages('conv-A', 'B')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.findOne('conv-A', 'A')).resolves.toMatchObject(conversation);
+  });
+});

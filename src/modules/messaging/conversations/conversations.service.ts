@@ -2,7 +2,6 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
 import { Conversation, ConversationStatus } from '@prisma/client';
@@ -224,7 +223,7 @@ export class ConversationsService {
     const conversation = await this.repository.findById(id);
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Conversation not found');
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
     await this.attachProjects(organizationId, [conversation as any]);
@@ -681,7 +680,7 @@ export class ConversationsService {
 
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Conversation not found');
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
 
