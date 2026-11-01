@@ -147,6 +147,7 @@ export class InboxViewsService {
     userId: string,
     dto: CreateInboxViewDto,
   ) {
+    await this.assertChannels(organizationId, dto.filters?.channelIds);
     const max = await this.prisma.inboxView.findFirst({
       where: { userId },
       orderBy: { order: 'desc' },
@@ -174,6 +175,7 @@ export class InboxViewsService {
     dto: UpdateInboxViewDto,
   ) {
     await this.findOne(id, organizationId, userId);
+    await this.assertChannels(organizationId, dto.filters?.channelIds);
     return this.prisma.inboxView.update({
       where: { id },
       data: {
@@ -186,6 +188,16 @@ export class InboxViewsService {
         ...(dto.order !== undefined ? { order: dto.order } : {}),
       },
     });
+  }
+
+  private async assertChannels(organizationId: string, channelIds?: string[]) {
+    const ids = [...new Set(channelIds ?? [])];
+    if (!ids.length) return;
+    const channels = await this.prisma.channel.findMany({
+      where: { id: { in: ids }, organizationId, deletedAt: null },
+      select: { id: true },
+    });
+    if (channels.length !== ids.length) throw new NotFoundException('Channel not found');
   }
 
   async remove(id: string, organizationId: string, userId: string) {
