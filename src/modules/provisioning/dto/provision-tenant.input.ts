@@ -23,7 +23,7 @@ export interface ProvisionTenantInput {
   adminRole?: OrgRole;
 
   /**
-   * WhatsApp do tenant (E.164 sem +, ex.: 5511999999999). NÃO provisiona
+   * WhatsApp do tenant (E.164 sem +, ex.: 0000000000000). NÃO provisiona
    * canal — apenas registra na instrução final de próximos passos.
    */
   whatsappNumber?: string;

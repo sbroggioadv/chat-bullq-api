@@ -32,7 +32,7 @@ export class ContactsRepository {
     }
 
     // Share picker: only contacts with a real phone (digits), not WhatsApp @lid
-    // IDs. LID contacts look like "243864048775323@lid" and are useless to share.
+    // IDs. LID contacts look like "000000000000000@lid" and are useless to share.
     if (opts?.shareableOnly) {
       where.AND = [
         ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
