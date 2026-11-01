@@ -107,6 +107,12 @@ export class OrganizationsService {
   }
 
   async inviteMember(orgId: string, dto: InviteMemberDto, inviterId: string) {
+    if (dto.role === OrgRole.OWNER) {
+      const inviter = await this.repository.findMembership(inviterId, orgId);
+      if (inviter?.role !== OrgRole.OWNER) {
+        throw new ForbiddenException('Only owners can invite an owner');
+      }
+    }
     // Check if user already exists and is already a member
     const existingUser = await this.repository.findUserByEmail(dto.email);
     if (existingUser) {

@@ -1,4 +1,5 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { OrgRole } from '@prisma/client';
 import { OrganizationsService } from './organizations.service';
 
 function buildService(invitation: any) {
@@ -60,5 +61,30 @@ describe('OrganizationsService.validateInvitation', () => {
     await expect(service.validateInvitation('token')).rejects.toThrow(
       BadRequestException,
     );
+  });
+});
+
+describe('OrganizationsService.inviteMember ownership', () => {
+  it('rejects an administrator inviting an owner before creating a membership', async () => {
+    const repository = {
+      findMembership: jest.fn().mockResolvedValue({ role: OrgRole.ADMIN }),
+      findUserByEmail: jest.fn().mockResolvedValue(null),
+      createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
+    };
+    const service = new OrganizationsService(repository as any);
+    await expect(service.inviteMember('org-a', { email: 'test@example.com', role: OrgRole.OWNER }, 'admin'))
+      .rejects.toThrow(ForbiddenException);
+    expect(repository.createInvitation).not.toHaveBeenCalled();
+  });
+
+  it('continues to allow an administrator to invite an agent', async () => {
+    const repository = {
+      findMembership: jest.fn(),
+      findUserByEmail: jest.fn().mockResolvedValue(null),
+      createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
+    };
+    const service = new OrganizationsService(repository as any);
+    await expect(service.inviteMember('org-a', { email: 'test@example.com', role: OrgRole.AGENT }, 'admin'))
+      .resolves.toMatchObject({ id: 'invite' });
   });
 });
