@@ -45,4 +45,14 @@ describe('isolamento de salas em tempo real', () => {
     gateway.emitToChannel('channel-A', 'event', {});
     expect(gateway.server.to).toHaveBeenCalledWith('channel:channel-A');
   });
+  it('só transmite digitação para a sala da conversa à qual o socket pertence', () => {
+    const { gateway } = setup();
+    const emit = jest.fn();
+    const client = { ...socket('B'), rooms: new Set(['conv:conversation-B']), to: jest.fn(() => ({ emit })) };
+    gateway.handleTyping(client as any, { conversationId: 'conversation-A', isTyping: true });
+    expect(client.to).not.toHaveBeenCalled();
+    gateway.handleTyping(client as any, { conversationId: 'conversation-B', isTyping: true });
+    expect(client.to).toHaveBeenCalledWith('conv:conversation-B');
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
 });

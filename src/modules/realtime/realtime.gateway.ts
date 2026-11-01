@@ -245,6 +245,7 @@ export class RealtimeGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { conversationId: string; isTyping: boolean },
   ) {
+    if (!client.data.authReady || !client.rooms.has(`conv:${data.conversationId}`)) return;
     client.to(`conv:${data.conversationId}`).emit('agent:typing', {
       userId: client.data.userId,
       conversationId: data.conversationId,
