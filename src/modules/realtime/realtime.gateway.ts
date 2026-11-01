@@ -57,9 +57,6 @@ export class RealtimeGateway
 
       const orgId = client.handshake.auth?.organizationId;
       if (orgId) {
-        client.data.organizationId = orgId;
-        client.join(`org:${orgId}`);
-
         const membership = await this.prisma.userOrganization.findUnique({
           where: {
             userId_organizationId: { userId: payload.sub, organizationId: orgId },
@@ -75,6 +72,8 @@ export class RealtimeGateway
           return;
         }
 
+        client.data.organizationId = orgId;
+        client.join(`org:${orgId}`);
         client.data.userOrganizationId = membership.id;
         client.data.role = membership.role;
 
@@ -283,22 +282,32 @@ export class RealtimeGateway
    * (or not) immediately, no relogin required.
    */
   async grantChannelToUser(userId: string, channelId: string): Promise<void> {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: channelId }, select: { organizationId: true },
+    });
+    if (!channel) return;
     const sockets = await this.server.in(`user:${userId}`).fetchSockets();
     for (const s of sockets) {
+      if (s.data.organizationId !== channel.organizationId) continue;
       s.join(`channel:${channelId}`);
       const ids = (s.data.channelIds as string[] | undefined) ?? [];
       if (!ids.includes(channelId)) s.data.channelIds = [...ids, channelId];
+      s.emit('permissions:updated', { channelId, granted: true });
     }
-    this.emitToUser(userId, 'permissions:updated', { channelId, granted: true });
   }
 
   async revokeChannelFromUser(userId: string, channelId: string): Promise<void> {
+    const channel = await this.prisma.channel.findUnique({
+      where: { id: channelId }, select: { organizationId: true },
+    });
+    if (!channel) return;
     const sockets = await this.server.in(`user:${userId}`).fetchSockets();
     for (const s of sockets) {
+      if (s.data.organizationId !== channel.organizationId) continue;
       s.leave(`channel:${channelId}`);
       const ids = (s.data.channelIds as string[] | undefined) ?? [];
       s.data.channelIds = ids.filter((id) => id !== channelId);
+      s.emit('permissions:updated', { channelId, granted: false });
     }
-    this.emitToUser(userId, 'permissions:updated', { channelId, granted: false });
   }
 }
