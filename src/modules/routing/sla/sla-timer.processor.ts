@@ -23,8 +23,8 @@ export class SlaTimerProcessor extends WorkerHost {
       organizationId: string;
     };
 
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId },
       include: { contact: { select: { name: true, phone: true } }, assignedTo: { select: { id: true, name: true } } },
     });
 
