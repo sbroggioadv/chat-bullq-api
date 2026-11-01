@@ -11,7 +11,7 @@ describe('pipeline stage organization boundary', () => {
       },
     };
     const prisma = {
-      pipeline: { findUnique: jest.fn().mockResolvedValue({ id: 'pipeline-a', organizationId: 'org-a' }) },
+      pipeline: { findFirst: jest.fn().mockResolvedValue({ id: 'pipeline-a', organizationId: 'org-a' }) },
       $transaction: jest.fn((fn) => fn(tx)),
     };
     return { service: new PipelinesService(prisma as any, {} as any), tx };
@@ -34,7 +34,7 @@ describe('pipeline stage organization boundary', () => {
 describe('card linked records organization boundary', () => {
   function setup() {
     const prisma = {
-      pipeline: { findUnique: jest.fn().mockResolvedValue({ id: 'pipeline-a', organizationId: 'org-a' }) },
+      pipeline: { findFirst: jest.fn().mockResolvedValue({ id: 'pipeline-a', organizationId: 'org-a' }) },
       card: {
         findUnique: jest.fn().mockResolvedValue({ id: 'card-a', organizationId: 'org-a' }),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -71,5 +71,13 @@ describe('card linked records organization boundary', () => {
     await service.updateCard('card-a', 'org-a', { contactId: 'contact-a', conversationId: 'conversation-a', assignedToId: 'user-a' });
     await service.updateCard('card-a', 'org-a', { contactId: null, conversationId: null, assignedToId: null });
     expect(prisma.card.update).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('pipeline id boundary', () => {
+  it('returns 404 for a pipeline belonging to another organization', async () => {
+    const prisma = { pipeline: { findFirst: jest.fn().mockResolvedValue(null) } };
+    const service = new PipelinesService(prisma as any, {} as any);
+    await expect(service.getBoard('pipeline-b', 'org-a')).rejects.toThrow(NotFoundException);
   });
 });

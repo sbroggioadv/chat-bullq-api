@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -553,9 +552,8 @@ export class PipelinesService {
   }
 
   private async assertPipeline(id: string, organizationId: string) {
-    const p = await this.prisma.pipeline.findUnique({ where: { id } });
+    const p = await this.prisma.pipeline.findFirst({ where: { id, organizationId } });
     if (!p) throw new NotFoundException('Pipeline not found');
-    if (p.organizationId !== organizationId) throw new ForbiddenException();
     return p;
   }
 }
