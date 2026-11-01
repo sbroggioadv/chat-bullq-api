@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -147,7 +148,14 @@ export class GmailOAuthService {
     };
   }
 
-  start(input: GmailOAuthStartInput): { url: string; expiresInSec: number } {
+  async start(input: GmailOAuthStartInput): Promise<{ url: string; expiresInSec: number }> {
+    if (input.channelId !== undefined) {
+      const channel = await this.prisma.channel.findFirst({
+        where: { id: input.channelId, organizationId: input.organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!channel) throw new NotFoundException('Channel not found');
+    }
     if (!this.isConfigured()) {
       throw new ServiceUnavailableException(
         'Conector Gmail não configurado no servidor (GMAIL_OAUTH_CLIENT_ID / GMAIL_OAUTH_CLIENT_SECRET)',

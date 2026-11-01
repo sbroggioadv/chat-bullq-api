@@ -46,3 +46,19 @@ describe('fronteira OAuth Gmail', () => {
   });
 
 });
+
+describe('canal no início do OAuth', () => {
+  const findFirst = jest.fn(async ({ where }: any) => where.id === 'proprio' && where.organizationId === 'B' ? { id: 'proprio' } : null);
+  const service = new GmailOAuthService({ get: () => 'sintetico' } as any, {} as any, { channel: { findFirst } } as any);
+  const input = { organizationId: 'B', userOrganizationId: 'usuario', role: OrgRole.ADMIN };
+  beforeEach(() => findFirst.mockClear());
+  it.each(['alheio', 'inexistente'])('recusa %s com 404', async (channelId) => {
+    await expect(service.start({ ...input, channelId })).rejects.toMatchObject({ status: 404 });
+  });
+  it('aceita canal próprio e mantém o id no state', async () => {
+    const result = await service.start({ ...input, channelId: 'proprio' });
+    const state = new URL(result.url).searchParams.get('state')!;
+    expect(JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString()).channelId).toBe('proprio');
+    expect(findFirst).toHaveBeenCalledWith({ where: { id: 'proprio', organizationId: 'B', deletedAt: null }, select: { id: true } });
+  });
+});
