@@ -99,11 +99,10 @@ export class ChannelAccessService {
   async assertConversationAccess(
     access: ChannelAccess,
     conversationId: string,
+    organizationId: string,
   ): Promise<void> {
-    if (access === 'ALL') return;
-
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId },
       select: { channelId: true },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
