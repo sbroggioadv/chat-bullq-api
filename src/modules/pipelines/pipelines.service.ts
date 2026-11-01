@@ -235,6 +235,7 @@ export class PipelinesService {
     dto: CreateCardDto,
   ) {
     await this.assertPipeline(pipelineId, organizationId);
+    await this.assertCardLinks(organizationId, dto);
 
     // Cards represent conversations entering the pipeline. If the same
     // conversation is already in this pipeline (any stage), reject — the
@@ -338,6 +339,7 @@ export class PipelinesService {
     if (!card || card.organizationId !== organizationId) {
       throw new NotFoundException('Card not found');
     }
+    await this.assertCardLinks(organizationId, dto);
 
     const updated = await this.prisma.card.update({
       where: { id: cardId },
@@ -524,6 +526,31 @@ export class PipelinesService {
   }
 
   // ─── helpers ───────────────────────────────────
+
+  private async assertCardLinks(
+    organizationId: string,
+    links: { contactId?: string | null; conversationId?: string | null; assignedToId?: string | null },
+  ) {
+    if (links.contactId) {
+      const contact = await this.prisma.contact.findFirst({
+        where: { id: links.contactId, organizationId, deletedAt: null }, select: { id: true },
+      });
+      if (!contact) throw new NotFoundException('Contact not found');
+    }
+    if (links.conversationId) {
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id: links.conversationId, organizationId, deletedAt: null }, select: { id: true },
+      });
+      if (!conversation) throw new NotFoundException('Conversation not found');
+    }
+    if (links.assignedToId) {
+      const membership = await this.prisma.userOrganization.findUnique({
+        where: { userId_organizationId: { userId: links.assignedToId, organizationId } },
+        select: { id: true },
+      });
+      if (!membership) throw new NotFoundException('Member not found');
+    }
+  }
 
   private async assertPipeline(id: string, organizationId: string) {
     const p = await this.prisma.pipeline.findUnique({ where: { id } });
