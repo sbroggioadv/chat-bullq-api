@@ -26,3 +26,14 @@ describe('OrgGuard API key organization binding', () => {
     }
   });
 });
+
+describe('OrgGuard membership', () => {
+  it('rejects a JWT user who is not a member of the requested organization', async () => {
+    const prisma = { userOrganization: { findUnique: jest.fn().mockResolvedValue(null) } };
+    const guard = new OrgGuard(prisma as any, { getAllAndOverride: () => false } as any, {} as any);
+    const request = { headers: { 'x-organization-id': 'org-b' }, user: { id: 'user-a' } };
+    const context = { getHandler: () => ({}), getClass: () => ({}), switchToHttp: () => ({ getRequest: () => request }) };
+    await expect(guard.canActivate(context as any)).rejects.toThrow(ForbiddenException);
+    expect(prisma.userOrganization.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { userId_organizationId: { userId: 'user-a', organizationId: 'org-b' } } }));
+  });
+});
