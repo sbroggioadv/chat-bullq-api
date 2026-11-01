@@ -389,7 +389,8 @@ export class ProjectsService {
 
   async removeTask(organizationId: string, projectId: string, taskId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectTask.deleteMany({ where: { id: taskId, projectId } });
+    const result = await this.prisma.projectTask.deleteMany({ where: { id: taskId, projectId } });
+    if (!result.count) throw new NotFoundException('Task não encontrada');
     return this.getById(organizationId, projectId);
   }
 
@@ -440,9 +441,10 @@ export class ProjectsService {
 
   async removeAttachment(organizationId: string, projectId: string, attachmentId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectAttachment.deleteMany({
+    const result = await this.prisma.projectAttachment.deleteMany({
       where: { id: attachmentId, projectId },
     });
+    if (!result.count) throw new NotFoundException('Anexo não encontrado');
     return this.getById(organizationId, projectId);
   }
 
@@ -462,9 +464,10 @@ export class ProjectsService {
 
   async removeContact(organizationId: string, projectId: string, linkId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectContact.deleteMany({
+    const result = await this.prisma.projectContact.deleteMany({
       where: { id: linkId, projectId },
     });
+    if (!result.count) throw new NotFoundException('Contato do projeto não encontrado');
     return this.getById(organizationId, projectId);
   }
 

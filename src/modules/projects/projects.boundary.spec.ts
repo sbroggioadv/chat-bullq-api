@@ -25,3 +25,28 @@ describe('project conversation organization boundary', () => {
     await expect(service.getForConversation('org-a', 'conv-a')).resolves.toMatchObject({ exists: false });
   });
 });
+
+describe('project child deletion boundary', () => {
+  it.each([
+    ['removeTask', 'projectTask'],
+    ['removeAttachment', 'projectAttachment'],
+    ['removeContact', 'projectContact'],
+  ] as const)('returns 404 when %s targets a child outside the project', async (method, model) => {
+    const prisma: any = { [model]: { deleteMany: jest.fn().mockResolvedValue({ count: 0 }) } };
+    const service = new ProjectsService(prisma, {} as any);
+    jest.spyOn(service, 'getById').mockResolvedValue({ id: 'project-a' } as any);
+    await expect(service[method]('org-a', 'project-a', 'foreign-child')).rejects.toThrow(NotFoundException);
+  });
+
+  it.each([
+    ['removeTask', 'projectTask'],
+    ['removeAttachment', 'projectAttachment'],
+    ['removeContact', 'projectContact'],
+  ] as const)('keeps legitimate %s working', async (method, model) => {
+    const prisma: any = { [model]: { deleteMany: jest.fn().mockResolvedValue({ count: 1 }) } };
+    const service = new ProjectsService(prisma, {} as any);
+    jest.spyOn(service, 'getById').mockResolvedValue({ id: 'project-a' } as any);
+    await expect(service[method]('org-a', 'project-a', 'child-a')).resolves.toEqual({ id: 'project-a' });
+    expect(prisma[model].deleteMany).toHaveBeenCalledWith({ where: { id: 'child-a', projectId: 'project-a' } });
+  });
+});
