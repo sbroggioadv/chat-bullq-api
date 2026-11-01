@@ -10,6 +10,7 @@ function buildService() {
       config: { igBusinessId: 'ig-1' },
     })),
     update: jest.fn(),
+    findActiveByType: jest.fn(async () => []),
   };
   const prisma = {
     channelAgent: {

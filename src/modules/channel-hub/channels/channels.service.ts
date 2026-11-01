@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
   Logger,
 } from '@nestjs/common';
 import { ChannelType, ChannelSyncMode, ChannelSyncStatus, OrgRole } from '@prisma/client';
@@ -51,12 +52,19 @@ export class ChannelsService {
         'O canal Jarvis é criado automaticamente. Abra Falar com o Jarvis na barra lateral.',
       );
     }
+    let config = dto.config;
+    if (dto.type === ChannelType.INSTAGRAM && !config.igBusinessId && !config.igUserId && !config.pageId) {
+      const info = await this.instagramHttpClient.getMe({ config } as any);
+      const id = info?.user_id ?? info?.id;
+      if (id) config = { ...config, igBusinessId: String(id) };
+    }
+    await this.assertExternalIdentifierAvailable(dto.type, organizationId, config);
     const effectiveVisibility = dto.visibility ?? 'PRIVATE';
     let channel = await this.repository.create({
       organizationId,
       type: dto.type,
       name: dto.name,
-      config: dto.config,
+      config,
       webhookSecret: dto.webhookSecret,
       visibility: effectiveVisibility,
     });
@@ -365,6 +373,11 @@ export class ChannelsService {
       ...rest,
       ...(config !== undefined ? { config: mergeConfig(channel.config, config) } : {}),
     };
+    if ((dto.isActive ?? channel.isActive) && (dto.isActive === true || config !== undefined)) {
+      await this.assertExternalIdentifierAvailable(
+        channel.type, organizationId, (data.config ?? channel.config) as Record<string, any>,
+      );
+    }
     if (visibility && callerUserOrganizationId) {
       await this.channelAccess.setChannelVisibility(
         id,
@@ -393,6 +406,24 @@ export class ChannelsService {
       );
     }
     return this.repository.softDelete(id);
+  }
+
+  private async assertExternalIdentifierAvailable(
+    type: ChannelType, organizationId: string, config: Record<string, any>,
+  ): Promise<void> {
+    const fields = type === ChannelType.WHATSAPP_ZAPPFY ? ['instanceId', 'token']
+      : type === ChannelType.WHATSAPP_OFFICIAL ? ['phoneNumberId']
+      : type === ChannelType.INSTAGRAM ? ['igBusinessId', 'igUserId', 'pageId'] : [];
+    if (!fields.length) return;
+    const values = fields.map((key) => config?.[key]).filter((value) => value !== undefined && value !== null && String(value).length > 0).map(String);
+    if (!values.length) throw new BadRequestException('Identificador externo do canal é obrigatório.');
+    const candidates = await this.repository.findActiveByType(type);
+    const collision = candidates.some((candidate) => {
+      if (candidate.organizationId === organizationId) return false;
+      const existing = (candidate.config ?? {}) as Record<string, any>;
+      return fields.some((key) => existing[key] != null && values.includes(String(existing[key])));
+    });
+    if (collision) throw new ConflictException('Este número já está conectado em outro espaço. Desconecte lá antes de conectar aqui.');
   }
 
   async findActiveByType(type: ChannelType) {
