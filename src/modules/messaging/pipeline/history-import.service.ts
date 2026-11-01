@@ -219,6 +219,9 @@ export class HistoryImportService {
     });
 
     if (existing) {
+      if (existing.contact.organizationId !== channel.organizationId) {
+        throw new Error('cross_org_contact_channel');
+      }
       const updates: Record<string, any> = {};
       if (normalized.contactName && normalized.contactName !== existing.profileName) {
         updates.profileName = normalized.contactName;

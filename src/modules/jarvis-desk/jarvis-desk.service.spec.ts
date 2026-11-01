@@ -12,7 +12,7 @@ describe('JarvisDeskService.ensureDesk', () => {
       contactChannel: {
         findFirst: jest
           .fn()
-          .mockResolvedValue({ contact: { id: 'ct1' } }),
+          .mockResolvedValue({ contact: { id: 'ct1', organizationId: 'org1' } }),
       },
       contact: { create: jest.fn() },
       conversation: {
@@ -49,7 +49,7 @@ describe('JarvisDeskService.ensureDesk', () => {
         create: jest.fn(),
       },
       contactChannel: {
-        findFirst: jest.fn().mockResolvedValue({ contact: { id: 'ct1' } }),
+        findFirst: jest.fn().mockResolvedValue({ contact: { id: 'ct1', organizationId: 'org1' } }),
       },
       contact: { create: jest.fn() },
       conversation: {

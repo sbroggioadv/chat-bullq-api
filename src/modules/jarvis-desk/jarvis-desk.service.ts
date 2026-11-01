@@ -53,8 +53,12 @@ export class JarvisDeskService {
         channelId: channel.id,
         externalId: `jarvis:${organizationId}`,
       },
-      include: { contact: { select: { id: true } } },
+      include: { contact: { select: { id: true, organizationId: true } } },
     });
+
+    if (contactChannel && contactChannel.contact.organizationId !== organizationId) {
+      throw new Error('cross_org_contact_channel');
+    }
 
     let contactId = contactChannel?.contact.id;
     if (!contactId) {

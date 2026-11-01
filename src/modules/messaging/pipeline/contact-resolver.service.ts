@@ -35,6 +35,9 @@ export class ContactResolverService {
     });
 
     if (existing) {
+      if (existing.contact.organizationId !== organizationId) {
+        throw new Error('cross_org_contact_channel');
+      }
       await this.applyProfileUpdates(existing, message);
       return {
         contactId: existing.contactId,
@@ -59,6 +62,9 @@ export class ContactResolverService {
           include: { contact: true },
         });
         if (racer) {
+          if (racer.contact.organizationId !== organizationId) {
+            throw new Error('cross_org_contact_channel');
+          }
           await this.applyProfileUpdates(racer, message);
           return {
             contactId: racer.contactId,
