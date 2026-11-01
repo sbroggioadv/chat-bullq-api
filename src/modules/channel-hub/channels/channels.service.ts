@@ -348,7 +348,7 @@ export class ChannelsService {
     const channel = await this.repository.findById(id);
     if (!channel) throw new NotFoundException('Channel not found');
     if (channel.organizationId !== organizationId) {
-      throw new ForbiddenException();
+      throw new NotFoundException('Channel not found');
     }
     if (access !== undefined && access !== 'ALL' && !access.has(id)) {
       throw new ForbiddenException('You do not have access to this channel');
