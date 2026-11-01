@@ -68,7 +68,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     const membership = conversation && action.approvedBy
       ? await this.prisma.userOrganization.findUnique({ where: { userId_organizationId: { userId: action.approvedBy, organizationId: conversation.organizationId } }, select: { id: true } })
       : null;
-    if (!membership) {
+    if (!conversation || !membership) {
       this.logger.error('pending_action_approval_membership_invalid');
       return { skipped: true, reason: 'invalid_approval' };
     }
@@ -80,7 +80,7 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       if (action.toolName === 'transferToHuman') {
         result = await this.executeTransferToHuman(action);
       } else {
-        result = await this.executeHttpSkill(action);
+        result = await this.executeHttpSkill(action, conversation.organizationId);
       }
     } catch (err: any) {
       success = false;
@@ -154,9 +154,9 @@ export class PendingActionExecutorProcessor extends WorkerHost {
     agentId: string;
     toolName: string;
     args: Record<string, unknown>;
-  }): Promise<unknown> {
+  }, organizationId: string): Promise<unknown> {
     const skill = await this.prisma.aiSkill.findFirst({
-      where: { name: action.toolName, isActive: true, deletedAt: null },
+      where: { organizationId, name: action.toolName, isActive: true, deletedAt: null },
     });
     if (!skill) {
       throw new Error(`Skill ${action.toolName} not found or inactive`);
@@ -171,8 +171,8 @@ export class PendingActionExecutorProcessor extends WorkerHost {
       throw new Error(`Tool ${skill.toolId} not found for skill ${skill.name}`);
     }
 
-    const run = await this.prisma.aiAgentRun.findUnique({
-      where: { id: action.agentRunId },
+    const run = await this.prisma.aiAgentRun.findFirst({
+      where: { id: action.agentRunId, organizationId },
       select: { organizationId: true, triggerMessageId: true },
     });
     const conversation = await this.prisma.conversation.findUnique({
