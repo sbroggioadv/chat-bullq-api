@@ -73,4 +73,3 @@ it('allows the trusted provisioning caller to invite the first owner of a new wo
   await expect(service.inviteMember('new-org', { email: 'test@example.com', role: OrgRole.OWNER }, 'inviter'))
     .resolves.toMatchObject({ id: 'invite' });
 });
-
