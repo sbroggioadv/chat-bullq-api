@@ -71,6 +71,13 @@ export class ProjectsService {
   }
 
   async create(organizationId: string, dto: CreateProjectDto) {
+    if (dto.conversationId) {
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id: dto.conversationId, organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    }
     const project = await this.prisma.project.create({
       data: {
         organizationId,
@@ -177,15 +184,6 @@ export class ProjectsService {
   }
 
   async getForConversation(organizationId: string, conversationId: string) {
-    const linked = await this.prisma.projectConversation.findFirst({
-      where: {
-        conversationId,
-        project: { organizationId, deletedAt: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (linked) return this.getById(organizationId, linked.projectId);
-
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, organizationId, deletedAt: null },
       select: {
@@ -196,7 +194,17 @@ export class ProjectsService {
         },
       },
     });
-    if (conv?.isGroup) {
+    if (!conv) throw new NotFoundException('Conversa não encontrada');
+    const linked = await this.prisma.projectConversation.findFirst({
+      where: {
+        conversationId,
+        project: { organizationId, deletedAt: null },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (linked) return this.getById(organizationId, linked.projectId);
+
+    if (conv.isGroup) {
       const jid = deriveGroupJid(conv);
       if (jid) {
         const legacy = await this.prisma.project.findFirst({
