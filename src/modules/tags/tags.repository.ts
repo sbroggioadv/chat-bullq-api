@@ -17,8 +17,8 @@ export class TagsRepository {
     });
   }
 
-  async findById(id: string) {
-    return this.prisma.tag.findUnique({ where: { id } });
+  async findById(id: string, organizationId: string) {
+    return this.prisma.tag.findFirst({ where: { id, organizationId } });
   }
 
   async update(id: string, data: Prisma.TagUpdateInput) {
