@@ -67,3 +67,31 @@ describe('isolamento de salas em tempo real', () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('entrega simulada por salas de organização', () => {
+  it('entrega eventos de conversa e canal apenas ao socket da organização correspondente', async () => {
+    const sockets = ['A', 'B'].map((org) => {
+      const rooms = new Set<string>();
+      return { id: org, connected: true, data: { userId: `user-${org}`, authReady: false }, handshake: { auth: { token: org, organizationId: org }, headers: {} }, rooms, join: jest.fn((room: string) => rooms.add(room)), emit: jest.fn(), disconnect: jest.fn() };
+    });
+    const prisma = {
+      userOrganization: { findUnique: jest.fn(async ({ where }: any) => ({ id: `member-${where.userId_organizationId.organizationId}`, role: OrgRole.ADMIN })) },
+      channel: { findMany: jest.fn(async ({ where }: any) => [{ id: `channel-${where.organizationId}` }]) },
+      conversation: { findUnique: jest.fn(async () => ({ organizationId: 'A', channelId: 'channel-A' })) },
+    };
+    const gateway = new RealtimeGateway({ verify: (token: string) => ({ sub: `user-${token}` }) } as any, { get: jest.fn() } as any, { setOnline: jest.fn(), setActiveConversation: jest.fn() } as any, prisma as any, { getAccessibleChannelIds: jest.fn(async () => 'ALL') } as any);
+    gateway.server = { to: (room: string) => ({ emit: (event: string, payload: unknown) => sockets.filter((socket) => socket.rooms.has(room)).forEach((socket) => socket.emit(event, payload)) }) } as any;
+    await gateway.handleConnection(sockets[0] as any);
+    await gateway.handleConnection(sockets[1] as any);
+    await gateway.handleJoinConversation(sockets[1] as any, { conversationId: 'conversation-A' });
+    await gateway.handleJoinConversation(sockets[0] as any, { conversationId: 'conversation-A' });
+    gateway.emitToChannel('channel-A', 'channel-event', { value: 'A' });
+    gateway.emitToConversation('conversation-A', 'conversation-event', { value: 'A' });
+    expect(sockets[1].rooms.has('channel:channel-A')).toBe(false);
+    expect(sockets[1].rooms.has('conv:conversation-A')).toBe(false);
+    expect(sockets[0].emit).toHaveBeenCalledWith('channel-event', { value: 'A' });
+    expect(sockets[0].emit).toHaveBeenCalledWith('conversation-event', { value: 'A' });
+    expect(sockets[1].emit).not.toHaveBeenCalledWith('channel-event', expect.anything());
+    expect(sockets[1].emit).not.toHaveBeenCalledWith('conversation-event', expect.anything());
+  });
+});
