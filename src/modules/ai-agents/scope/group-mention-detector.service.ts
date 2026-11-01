@@ -26,12 +26,13 @@ export class GroupMentionDetector {
   async findMatchingAgent(
     message: Pick<Message, 'content' | 'metadata'>,
     candidates: Array<Pick<AiAgent, 'id' | 'mentionHandle'>>,
+    conversationId: string,
   ): Promise<Pick<AiAgent, 'id' | 'mentionHandle'> | null> {
     // 1) Reply nativo
     const replyMsgId = (message.metadata as any)?.replyTo?.messageId;
     if (typeof replyMsgId === 'string' && replyMsgId.length > 0) {
       const original = await this.prisma.message.findUnique({
-        where: { id: replyMsgId },
+        where: { id: replyMsgId, conversationId },
         select: { id: true, senderId: true, metadata: true },
       });
       if (original && original.senderId === null) {
