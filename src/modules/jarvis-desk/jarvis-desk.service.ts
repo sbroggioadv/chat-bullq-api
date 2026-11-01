@@ -131,7 +131,7 @@ export class JarvisDeskService {
         status: MessageStatus.DELIVERED,
         content: {
           text:
-            'Oi. Eu sou o Jarvis — moro aqui no BullQ. ' +
+            'Oi. Eu sou o Jarvis — moro aqui no Synq. ' +
             'Pergunta como estão os chats, o que está preso, quem está sem resposta, ' +
             'ou como está o monitoramento. Eu olho o inbox de verdade; não atendo cliente.',
         },
