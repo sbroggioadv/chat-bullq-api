@@ -62,7 +62,7 @@ export class JarvisDeskService {
         data: {
           organizationId,
           name: JARVIS_CONTACT_NAME,
-          notes: 'Agente interno do BullQ — não é contato de atendimento.',
+          notes: 'Agente interno do Synq — não é contato de atendimento.',
           metadata: { jarvis: true },
           channels: {
             create: {

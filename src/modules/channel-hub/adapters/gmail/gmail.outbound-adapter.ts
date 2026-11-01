@@ -21,7 +21,7 @@ export class GmailOutboundAdapter implements OutboundChannelPort {
     _message: NormalizedOutboundMessage,
   ): Promise<SendResult> {
     throw new Error(
-      'Gmail v1 é somente leitura. Responder pelo Gmail web/app; envio no BullQ vem na fase 2.',
+      'Gmail v1 é somente leitura. Responder pelo Gmail web/app; envio no Synq vem na fase 2.',
     );
   }
 
