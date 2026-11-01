@@ -170,6 +170,15 @@ export class PipelinesService {
     await this.assertPipeline(pipelineId, organizationId);
 
     return this.prisma.$transaction(async (tx) => {
+      for (const stage of stages) {
+        if (stage.id) {
+          const existing = await tx.pipelineStage.findFirst({
+            where: { id: stage.id, pipelineId },
+            select: { id: true },
+          });
+          if (!existing) throw new NotFoundException('Stage not found');
+        }
+      }
       // Existing ids that still appear in the new list — keep them.
       const keepIds = new Set(stages.filter((s) => s.id).map((s) => s.id!));
 
@@ -204,7 +213,7 @@ export class PipelinesService {
           order: s.order ?? i,
         };
         return s.id
-          ? tx.pipelineStage.update({ where: { id: s.id }, data })
+          ? tx.pipelineStage.update({ where: { id: s.id, pipelineId }, data })
           : tx.pipelineStage.create({
               data: { pipelineId, ...data },
             });
