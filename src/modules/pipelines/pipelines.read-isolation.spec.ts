@@ -11,7 +11,7 @@ describe('board por organização', () => {
     expect(own.contactId).toBe('contato-org-b');
     expect(own.assignedToId).toBe('user-org-b');
     expect(own.conversation?.channelId).toBe('canal-org-b');
-    expect(channel.conversation?.channelId).toBeNull();
-    expect(channel.conversation?.channel).toBeNull();
+    expect(channel.conversationId).toBeNull();
+    expect(channel.conversation).toBeNull();
   });
 });

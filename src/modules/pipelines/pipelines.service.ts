@@ -79,7 +79,7 @@ export class PipelinesService {
       const conv = c.conversation?.organizationId === organizationId ? c.conversation : null;
       const channel = conv?.channel?.organizationId === organizationId
         ? { id: conv.channel.id, type: conv.channel.type, name: conv.channel.name } : null;
-      const conversation = conv ? { id: conv.id, channelId: channel ? conv.channelId : null, channel } : null;
+      const conversation = conv && channel ? { id: conv.id, channelId: conv.channelId, channel } : null;
       return { ...c, contactId: contact ? c.contactId : null, contact, assignedToId: assignedTo ? c.assignedToId : null, assignedTo, conversationId: conversation ? c.conversationId : null, conversation };
     });
     const cardsByStage: Record<string, typeof safeCards> = {};
