@@ -211,7 +211,8 @@ export class GmailOAuthService {
 
     try {
       const tokens = await this.exchangeCode(code);
-      const email = (await this.fetchEmail(tokens.access_token)).toLowerCase();
+      const email = (await this.fetchEmail(tokens.access_token)).trim().toLowerCase();
+      if (!email) return fail('email_unavailable');
       if (email) {
         const otherChannels = await this.prisma.channel.findMany({
           where: {
@@ -257,7 +258,7 @@ export class GmailOAuthService {
       }
 
       // 3) ANY existing Gmail channel → update oldest, retire the rest.
-      //    Heals "3x GMAIL - LUIS" duplicates from earlier reconnect bugs.
+      //    Recupera canais duplicados de reconexões anteriores.
       if (!existing && candidates.length > 0) {
         existing = candidates[0];
       }

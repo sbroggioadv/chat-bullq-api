@@ -37,4 +37,12 @@ describe('fronteira OAuth Gmail', () => {
     expect(await service.handleCallback('code', 'state')).toContain('gmail=connected');
     expect(channelService.create).toHaveBeenCalledTimes(1);
   });
+  it.each([{ channels: [] }, { channels: [channel('B')] }])('recusa email vazio sem gravar token', async ({ channels }) => {
+    const { service, prisma, channelService } = setup(channels);
+    jest.spyOn(service as any, 'fetchEmail').mockResolvedValue('');
+    expect(await service.handleCallback('code', 'state')).toContain('gmail=error');
+    expect(channelService.create).not.toHaveBeenCalled();
+    expect(prisma.channel.update).not.toHaveBeenCalled();
+  });
+
 });
