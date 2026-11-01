@@ -60,10 +60,11 @@ export class WatchdogTimerProcessor extends WorkerHost {
     if (job.name !== WATCHDOG_CHECK_JOB) {
       return { skipped: true, reason: 'unknown_job_name' };
     }
-    const { conversationId, scheduledAtAttempts } = job.data;
+    const { conversationId, organizationId, scheduledAtAttempts } = job.data;
+    if (!organizationId) return { skipped: true, reason: 'conversation_not_found' };
 
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId },
       include: {
         organization: true,
         contact: { select: { name: true, phone: true } },
