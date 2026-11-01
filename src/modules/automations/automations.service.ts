@@ -61,6 +61,7 @@ export class AutomationsService {
       dto.conditions,
     );
     const actions = this.validator.validateActions(dto.actions);
+    await this.assertReferences(organizationId, actions, conditions);
 
     return this.prisma.automation.create({
       data: {
@@ -109,6 +110,14 @@ export class AutomationsService {
       data.actions = actions as unknown as Prisma.InputJsonValue;
     }
 
+    await this.assertReferences(
+      organizationId,
+      dto.actions !== undefined ? data.actions : undefined,
+      dto.conditions !== undefined ? data.conditions : undefined,
+      existing.actions,
+      existing.conditions,
+    );
+
     if (dto.enabled !== undefined) {
       data.enabled = dto.enabled;
       // Re-enabling clears auto-pause state (user acknowledged the issue
@@ -133,6 +142,51 @@ export class AutomationsService {
       where: { id },
       data: { deletedAt: new Date(), enabled: false },
     });
+  }
+
+  private async assertReferences(
+    organizationId: string,
+    actions: unknown,
+    conditions: unknown,
+    oldActions?: unknown,
+    oldConditions?: unknown,
+  ) {
+    const fields: Record<string, string> = {
+      tagId: 'tag', pipelineId: 'pipeline', stageId: 'pipelineStage',
+      toStageId: 'pipelineStage', userId: 'userOrganization',
+      fromAssigneeId: 'userOrganization', toAssigneeId: 'userOrganization',
+      channelId: 'channel', contactId: 'contact', conversationId: 'conversation',
+    };
+    const collect = (aa: unknown, cc: unknown) => {
+      const refs = new Map<string, { model: string; id: string }>();
+      const add = (field: string, value: unknown) => {
+        const model = fields[field];
+        if (!model) return;
+        for (const id of Array.isArray(value) ? value : [value]) {
+          if (typeof id === 'string' && id) refs.set(`${model}:${id}`, { model, id });
+        }
+      };
+      if (Array.isArray(aa)) for (const action of aa) {
+        if (action?.params && typeof action.params === 'object')
+          for (const [field, value] of Object.entries(action.params)) add(field, value);
+      }
+      const root = cc as any;
+      if (Array.isArray(root?.groups)) for (const group of root.groups) {
+        if (Array.isArray(group?.rules)) for (const rule of group.rules) {
+          if (rule?.op !== 'is_set' && rule?.op !== 'is_not_set') add(rule?.field, rule?.value);
+        }
+      }
+      return refs;
+    };
+    const old = collect(oldActions, oldConditions);
+    for (const [key, { model, id }] of collect(actions, conditions)) {
+      if (old.has(key)) continue;
+      const where: any = { organizationId, [model === 'userOrganization' ? 'userId' : 'id']: id };
+      if (model === 'pipelineStage') { delete where.organizationId; where.pipeline = { organizationId }; }
+      if (model === 'channel' || model === 'contact' || model === 'conversation') where.deletedAt = null;
+      const found = await (this.prisma as any)[model].findFirst({ where, select: { id: true } });
+      if (!found) throw new NotFoundException('Reference not found');
+    }
   }
 
   async toggle(id: string, organizationId: string, enabled: boolean) {
