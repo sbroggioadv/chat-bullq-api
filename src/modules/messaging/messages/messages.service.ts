@@ -228,7 +228,7 @@ export class MessagesService {
         lastReadAt: new Date(),
       },
     });
-    this.realtimeGateway.emitToUser(senderId, 'conversation:read', {
+    this.realtimeGateway.emitToUserInOrg(senderId, organizationId, 'conversation:read', {
       conversationId: conversation.id,
       userId: senderId,
       lastReadAt: new Date(),

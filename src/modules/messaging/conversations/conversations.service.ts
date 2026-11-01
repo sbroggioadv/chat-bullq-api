@@ -627,7 +627,7 @@ export class ConversationsService {
       lastReadMessageId,
     );
 
-    this.realtimeGateway.emitToUser(userId, 'conversation:read', {
+    this.realtimeGateway.emitToUserInOrg(userId, organizationId, 'conversation:read', {
       conversationId,
       userId,
       lastReadAt: read.lastReadAt,
@@ -650,7 +650,7 @@ export class ConversationsService {
     await this.findOne(conversationId, organizationId, access);
     const result = await this.repository.markAsUnread(userId, conversationId);
 
-    this.realtimeGateway.emitToUser(userId, 'conversation:unread', {
+    this.realtimeGateway.emitToUserInOrg(userId, organizationId, 'conversation:unread', {
       conversationId,
       userId,
       unreadCount: result.unreadCount,

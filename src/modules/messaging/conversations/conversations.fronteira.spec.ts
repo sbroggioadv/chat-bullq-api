@@ -2,6 +2,14 @@ import { NotFoundException } from '@nestjs/common';
 import { ConversationsService } from './conversations.service';
 
 describe('fronteira das referências de conversa', () => {
+  it('publica leitura somente na organização ativa', async () => {
+    const repository = { findById: jest.fn(async () => ({ id: 'conv-A', organizationId: 'A', channelId: 'channel-A' })), markAsRead: jest.fn(async () => ({ lastReadAt: new Date(0) })) };
+    const gateway = { emitToUser: jest.fn(), emitToUserInOrg: jest.fn() };
+    const service = new ConversationsService(repository as any, {} as any, gateway as any, {} as any, {} as any, {} as any, { assertChannelAccess: jest.fn() } as any, {} as any, {} as any, {} as any, { attachByConversationIds: jest.fn(async () => new Map()) } as any);
+    await service.markAsRead('conv-A', 'A', 'user');
+    expect(gateway.emitToUserInOrg).toHaveBeenCalledWith('user', 'A', 'conversation:read', expect.any(Object));
+    expect(gateway.emitToUser).not.toHaveBeenCalled();
+  });
   it('recusa departamento e membro de outra organização antes de alterar a conversa', async () => {
     const repository = { findById: jest.fn(async () => ({ id: 'conv-A', organizationId: 'A', channelId: 'channel-A' })), update: jest.fn() };
     const fsm = { assign: jest.fn() };
