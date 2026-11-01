@@ -67,8 +67,7 @@ export class WebhookGatewayController {
     for (const locator of locators) {
       const candidates = (await this.channelsService.findActiveByType(channelType))
         .filter((channel) => adapter.matchesChannel(channel, locator));
-      if (channelType !== ChannelType.GMAIL &&
-          new Set(candidates.map((channel) => channel.organizationId)).size > 1) {
+      if (new Set(candidates.map((channel) => channel.organizationId)).size > 1) {
         this.logger.error(`Ambiguous webhook channels: ${candidates.map((channel) => channel.id).join(', ')}`);
         return res.status(200).json({ status: 'ambiguous_channel' });
       }

@@ -25,4 +25,16 @@ describe('roteamento do webhook entre espaços', () => {
     await t.controller.handleWebhook(ChannelType.WHATSAPP_ZAPPFY, { headers: {}, body: {} } as any, t.res as any);
     expect(t.queue.add).toHaveBeenCalledWith('process-inbound', expect.objectContaining({ channelId: 'a', organizationId: 'A' }), expect.anything());
   });
+  it('recusa Gmail com locator em organizações diferentes', async () => {
+    const t = setup([channel('a', 'A'), channel('b', 'B')]);
+    await t.controller.handleWebhook(ChannelType.GMAIL, { headers: {}, body: {} } as any, t.res as any);
+    expect(t.res.json).toHaveBeenCalledWith({ status: 'ambiguous_channel' });
+    expect(t.queue.add).not.toHaveBeenCalled();
+  });
+  it('processa Gmail com canais na mesma organização', async () => {
+    const t = setup([channel('a', 'A'), channel('b', 'A')]);
+    await t.controller.handleWebhook(ChannelType.GMAIL, { headers: {}, body: {} } as any, t.res as any);
+    expect(t.queue.add).toHaveBeenCalledWith('process-inbound', expect.objectContaining({ organizationId: 'A' }), expect.anything());
+  });
+
 });
