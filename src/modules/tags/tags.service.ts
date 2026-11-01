@@ -38,7 +38,7 @@ export class TagsService {
   }
 
   async findOne(id: string, orgId: string) {
-    const tag = await this.repository.findById(id);
+    const tag = await this.repository.findById(id, orgId);
     if (!tag || tag.organizationId !== orgId) {
       throw new NotFoundException('Tag not found');
     }

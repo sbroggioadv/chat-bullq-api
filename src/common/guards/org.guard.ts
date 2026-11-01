@@ -29,6 +29,13 @@ export class OrgGuard implements CanActivate {
     const organizationId = request.headers['x-organization-id'];
     const userId = request.user?.id;
 
+    if (request.apiKeyOrganizationId && userId) {
+      if (organizationId && organizationId !== request.apiKeyOrganizationId) {
+        throw new ForbiddenException('API key is bound to another organization');
+      }
+      return true;
+    }
+
     // API-key path: `ApiKeyStrategy` already resolved and attached
     // `request.organization` (the key is org-bound) and `accessibleChannelIds`.
     // There is no `x-organization-id` header in machine-to-machine calls — and

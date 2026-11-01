@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { OrgRole } from '@prisma/client';
 import { OrganizationsService } from './organizations.service';
 
 function buildService(invitation: any) {
@@ -61,4 +62,14 @@ describe('OrganizationsService.validateInvitation', () => {
       BadRequestException,
     );
   });
+});
+
+it('allows the trusted provisioning caller to invite the first owner of a new workspace', async () => {
+  const repository = {
+    findUserByEmail: jest.fn().mockResolvedValue(null),
+    createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
+  };
+  const service = new OrganizationsService(repository as any);
+  await expect(service.inviteMember('new-org', { email: 'test@example.com', role: OrgRole.OWNER }, 'inviter'))
+    .resolves.toMatchObject({ id: 'invite' });
 });

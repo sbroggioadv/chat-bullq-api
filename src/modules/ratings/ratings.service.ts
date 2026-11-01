@@ -40,9 +40,13 @@ export class RatingsService {
     if (!rating) throw new NotFoundException('Rating request not found');
     if (rating.respondedAt) throw new BadRequestException('Rating already submitted');
 
-    return this.prisma.conversationRating.update({
-      where: { token },
+    const result = await this.prisma.conversationRating.updateMany({
+      where: { token, respondedAt: null },
       data: { score, comment, respondedAt: new Date() },
+    });
+    if (result.count !== 1) throw new BadRequestException('Rating already submitted');
+    return this.prisma.conversationRating.findUnique({
+      where: { token },
       select: { id: true, score: true, respondedAt: true },
     });
   }

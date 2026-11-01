@@ -236,6 +236,11 @@ export class ChannelAccessService {
     channelId: string,
     userId: string,
   ): Promise<{ userId: string }> {
+    const channel = await this.prisma.channel.findFirst({
+      where: { id: channelId, organizationId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!channel) throw new NotFoundException('Channel not found');
     const membership = await this.getMembership(organizationId, userId);
     await this.prisma.channelAgent.deleteMany({
       where: {

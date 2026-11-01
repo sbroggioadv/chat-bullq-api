@@ -71,6 +71,13 @@ export class ProjectsService {
   }
 
   async create(organizationId: string, dto: CreateProjectDto) {
+    if (dto.conversationId) {
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id: dto.conversationId, organizationId, deletedAt: null },
+        select: { id: true },
+      });
+      if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    }
     const project = await this.prisma.project.create({
       data: {
         organizationId,
@@ -177,15 +184,6 @@ export class ProjectsService {
   }
 
   async getForConversation(organizationId: string, conversationId: string) {
-    const linked = await this.prisma.projectConversation.findFirst({
-      where: {
-        conversationId,
-        project: { organizationId, deletedAt: null },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (linked) return this.getById(organizationId, linked.projectId);
-
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, organizationId, deletedAt: null },
       select: {
@@ -196,7 +194,17 @@ export class ProjectsService {
         },
       },
     });
-    if (conv?.isGroup) {
+    if (!conv) throw new NotFoundException('Conversa não encontrada');
+    const linked = await this.prisma.projectConversation.findFirst({
+      where: {
+        conversationId,
+        project: { organizationId, deletedAt: null },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (linked) return this.getById(organizationId, linked.projectId);
+
+    if (conv.isGroup) {
       const jid = deriveGroupJid(conv);
       if (jid) {
         const legacy = await this.prisma.project.findFirst({
@@ -381,7 +389,8 @@ export class ProjectsService {
 
   async removeTask(organizationId: string, projectId: string, taskId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectTask.deleteMany({ where: { id: taskId, projectId } });
+    const result = await this.prisma.projectTask.deleteMany({ where: { id: taskId, projectId } });
+    if (!result.count) throw new NotFoundException('Task não encontrada');
     return this.getById(organizationId, projectId);
   }
 
@@ -432,9 +441,10 @@ export class ProjectsService {
 
   async removeAttachment(organizationId: string, projectId: string, attachmentId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectAttachment.deleteMany({
+    const result = await this.prisma.projectAttachment.deleteMany({
       where: { id: attachmentId, projectId },
     });
+    if (!result.count) throw new NotFoundException('Anexo não encontrado');
     return this.getById(organizationId, projectId);
   }
 
@@ -454,9 +464,10 @@ export class ProjectsService {
 
   async removeContact(organizationId: string, projectId: string, linkId: string) {
     await this.getById(organizationId, projectId);
-    await this.prisma.projectContact.deleteMany({
+    const result = await this.prisma.projectContact.deleteMany({
       where: { id: linkId, projectId },
     });
+    if (!result.count) throw new NotFoundException('Contato do projeto não encontrado');
     return this.getById(organizationId, projectId);
   }
 

@@ -21,9 +21,9 @@ export class QuickRepliesRepository {
     });
   }
 
-  async findById(id: string) {
+  async findById(id: string, organizationId: string, userId: string) {
     return this.prisma.quickReply.findFirst({
-      where: { id, deletedAt: null },
+      where: { id, organizationId, deletedAt: null, OR: [{ userId }, { userId: null }] },
     });
   }
 
