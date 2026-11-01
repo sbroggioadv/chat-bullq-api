@@ -37,6 +37,28 @@ function makeResolver(opts: {
 }
 
 describe('ProviderResolverService — baseUrl resolution', () => {
+  const providerKeys = [
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'KIMI_API_KEY',
+    'MOONSHOT_API_KEY', 'ZAI_API_KEY', 'ZHIPU_API_KEY', 'FUGU_API_KEY',
+    'SAKANA_API_KEY', 'QWEN_API_KEY', 'DASHSCOPE_API_KEY',
+  ];
+  let originalKeys: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    originalKeys = {};
+    for (const key of providerKeys) {
+      originalKeys[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of providerKeys) {
+      if (originalKeys[key] === undefined) delete process.env[key];
+      else process.env[key] = originalKeys[key];
+    }
+  });
+
   it('ORG cred com baseUrl custom → usa o custom (source ORG)', async () => {
     const { service } = makeResolver({
       provider: AiProvider.KIMI,

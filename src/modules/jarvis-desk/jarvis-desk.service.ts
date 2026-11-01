@@ -62,7 +62,7 @@ export class JarvisDeskService {
         data: {
           organizationId,
           name: JARVIS_CONTACT_NAME,
-          notes: 'Agente interno do BullQ — não é contato de atendimento.',
+          notes: 'Agente interno do Synq — não é contato de atendimento.',
           metadata: { jarvis: true },
           channels: {
             create: {
@@ -131,7 +131,7 @@ export class JarvisDeskService {
         status: MessageStatus.DELIVERED,
         content: {
           text:
-            'Oi. Eu sou o Jarvis — moro aqui no BullQ. ' +
+            'Oi. Eu sou o Jarvis — moro aqui no Synq. ' +
             'Pergunta como estão os chats, o que está preso, quem está sem resposta, ' +
             'ou como está o monitoramento. Eu olho o inbox de verdade; não atendo cliente.',
         },
