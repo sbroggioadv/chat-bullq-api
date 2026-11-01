@@ -33,6 +33,7 @@ export interface AgentMemoryRecord {
 
 /** Input passed to `MemoryExtractorService.extract`. */
 export interface ExtractionInput {
+  organizationId: string;
   agentId: string;
   contactId: string;
   /** Last ~20 turns, in chronological order (oldest first). */
@@ -63,6 +64,7 @@ export interface ExtractionResult {
 
 /** Job payload for the BullMQ `memory-extractor` queue. */
 export interface MemoryExtractorJobData {
+  organizationId: string;
   agentId: string;
   contactId: string;
   conversationId: string;

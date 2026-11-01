@@ -1093,7 +1093,7 @@ export class AiAgentRunnerService {
       try {
         await this.memoryExtractorQueue.add(
           'extract_memory',
-          { agentId, contactId, conversationId },
+          { agentId, contactId, conversationId, organizationId },
           { removeOnComplete: 100, removeOnFail: 50 },
         );
       } catch (err: any) {
