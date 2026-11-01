@@ -212,6 +212,19 @@ export class GmailOAuthService {
     try {
       const tokens = await this.exchangeCode(code);
       const email = (await this.fetchEmail(tokens.access_token)).toLowerCase();
+      if (email) {
+        const otherChannels = await this.prisma.channel.findMany({
+          where: {
+            organizationId: { not: payload.orgId },
+            type: ChannelType.GMAIL,
+            isActive: true,
+            deletedAt: null,
+          },
+        });
+        if (otherChannels.some((channel) =>
+          String((channel.config as any)?.email || '').toLowerCase() === email,
+        )) return fail('account_unavailable');
+      }
       // scopeGranted = o que o Google REALMENTE deu (fonte da verdade p/ Agenda).
       // scopeRequested = o que pedimos. scope = união p/ compat (canSend etc).
       const scopeGranted = String(tokens.scope || '').trim();
