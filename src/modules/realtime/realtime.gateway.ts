@@ -74,6 +74,7 @@ export class RealtimeGateway
 
         client.data.organizationId = orgId;
         client.join(`org:${orgId}`);
+        client.join(`user:${payload.sub}:org:${orgId}`);
         client.data.userOrganizationId = membership.id;
         client.data.role = membership.role;
 
@@ -274,6 +275,10 @@ export class RealtimeGateway
 
   emitToUser(userId: string, event: string, data: any) {
     this.server.to(`user:${userId}`).emit(event, data);
+  }
+
+  emitToUserInOrg(userId: string, organizationId: string, event: string, data: any) {
+    this.server.to(`user:${userId}:org:${organizationId}`).emit(event, data);
   }
 
   /**

@@ -25,6 +25,17 @@ describe('isolamento de salas em tempo real', () => {
     await gateway.handleConnection(client as any);
     expect(client.join).not.toHaveBeenCalledWith('org:A');
     expect(client.disconnect).toHaveBeenCalled();
+    expect(client.join).not.toHaveBeenCalledWith('user:user:org:A');
+  });
+  it('inscreve o usuário na sala pessoal da organização validada', async () => {
+    const { gateway } = setup();
+    const client = socket('A');
+    await gateway.handleConnection(client as any);
+    expect(client.join).toHaveBeenCalledWith('user:user:org:A');
+    const emit = jest.fn();
+    gateway.server = { to: jest.fn(() => ({ emit })) } as any;
+    gateway.emitToUserInOrg('user', 'A', 'event', {});
+    expect(gateway.server.to).toHaveBeenCalledWith('user:user:org:A');
   });
   it('recusa conversa de outra organização e aceita a própria', async () => {
     const { gateway } = setup();
