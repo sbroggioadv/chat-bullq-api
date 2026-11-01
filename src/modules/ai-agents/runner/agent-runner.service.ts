@@ -906,7 +906,7 @@ export class AiAgentRunnerService {
   }> {
     const skillLinks = await this.prisma.aiAgentSkill.findMany({
       where: { agentId },
-      include: { skill: { include: { tool: true } } },
+      include: { agent: { select: { organizationId: true } }, skill: { include: { tool: true } } },
     });
 
     const skillInstructions: string[] = [];
@@ -917,6 +917,7 @@ export class AiAgentRunnerService {
 
     for (const link of skillLinks) {
       const skill = link.skill;
+      if (skill.organizationId !== link.agent.organizationId) continue;
       if (!skill.isActive || skill.deletedAt) continue;
       if (skill.promptInstructions) {
         skillInstructions.push(skill.promptInstructions.trim());
@@ -927,7 +928,7 @@ export class AiAgentRunnerService {
         // (could be used later for auditing).
         continue;
       }
-      if (skill.tool) {
+      if (skill.tool && skill.tool.organizationId === link.agent.organizationId) {
         customSkillsByName.set(skill.name, skill);
       } else {
         this.logger.warn(

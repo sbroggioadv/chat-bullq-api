@@ -54,25 +54,37 @@ export class PipelinesService {
         where: { pipelineId, organizationId },
         orderBy: { order: 'asc' },
         include: {
-          contact: { select: { id: true, name: true, phone: true, avatarUrl: true } },
-          assignedTo: { select: { id: true, name: true, avatarUrl: true } },
+          contact: { select: { id: true, name: true, phone: true, avatarUrl: true, organizationId: true } },
+          assignedTo: { select: { id: true, name: true, avatarUrl: true, organizations: { select: { organizationId: true } } } },
           // Channel comes via the linked conversation — the kanban card UI
           // surfaces the icon (Zappfy/Meta/Instagram) so the operator can
           // tell at a glance where the conversation lives without opening it.
           conversation: {
             select: {
               id: true,
+              organizationId: true,
               channelId: true,
-              channel: { select: { id: true, type: true, name: true } },
+              channel: { select: { id: true, type: true, name: true, organizationId: true } },
             },
           },
         },
       }),
     ]);
 
-    const cardsByStage: Record<string, typeof cards> = {};
+    const safeCards = cards.map((c) => {
+      const contact = c.contact?.organizationId === organizationId
+        ? { id: c.contact.id, name: c.contact.name, phone: c.contact.phone, avatarUrl: c.contact.avatarUrl } : null;
+      const assignedTo = c.assignedTo?.organizations.some((o) => o.organizationId === organizationId)
+        ? { id: c.assignedTo.id, name: c.assignedTo.name, avatarUrl: c.assignedTo.avatarUrl } : null;
+      const conv = c.conversation?.organizationId === organizationId ? c.conversation : null;
+      const channel = conv?.channel?.organizationId === organizationId
+        ? { id: conv.channel.id, type: conv.channel.type, name: conv.channel.name } : null;
+      const conversation = conv && channel ? { id: conv.id, channelId: conv.channelId, channel } : null;
+      return { ...c, contactId: contact ? c.contactId : null, contact, assignedToId: assignedTo ? c.assignedToId : null, assignedTo, conversationId: conversation ? c.conversationId : null, conversation };
+    });
+    const cardsByStage: Record<string, typeof safeCards> = {};
     for (const s of stages) cardsByStage[s.id] = [];
-    for (const c of cards) {
+    for (const c of safeCards) {
       (cardsByStage[c.stageId] ||= []).push(c);
     }
 

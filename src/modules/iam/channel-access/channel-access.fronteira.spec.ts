@@ -14,3 +14,12 @@ describe('fronteira da conversa', () => {
     await expect((svc as any).assertConversationAccess('ALL', 'conv-a', 'org-a')).resolves.toBeUndefined();
   });
 });
+
+describe('grants cruzados', () => {
+  it('descarta canal de outra organização e preserva canal do dono', async () => {
+    const channels = [{ channelId: 'canal-a', organizationId: 'org-a' }, { channelId: 'canal-b', organizationId: 'org-b' }];
+    const findMany = jest.fn(async ({ where }: any) => channels.filter(c => !where.channel?.organizationId || c.organizationId === where.channel.organizationId));
+    const svc = new ChannelAccessService({ channelAgent: { findMany }, userOrganization: { findUnique: jest.fn().mockResolvedValue({ organizationId: 'org-b' }) } } as any);
+    expect(await svc.getAccessibleChannelIds('membro-b', 'AGENT' as any)).toEqual(new Set(['canal-b']));
+  });
+});

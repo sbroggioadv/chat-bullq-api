@@ -19,15 +19,15 @@ import {
 } from './dto/project.dto';
 
 const DETAIL_INCLUDE = {
-  responsible: { select: { id: true, name: true, avatarUrl: true } },
+  responsible: { select: { id: true, name: true, avatarUrl: true, organizations: { select: { organizationId: true } } } },
   tasks: { orderBy: { sortOrder: 'asc' as const } },
   attachments: { orderBy: { createdAt: 'desc' as const } },
   contacts: {
     include: {
-      contact: { select: { id: true, name: true, phone: true, email: true } },
+      contact: { select: { id: true, name: true, phone: true, email: true, organizationId: true } },
     },
   },
-  conversations: { select: { conversationId: true } },
+  conversations: { select: { conversationId: true, conversation: { select: { organizationId: true } } } },
 } as const;
 
 type ProjectDetail = Prisma.ProjectGetPayload<{ include: typeof DETAIL_INCLUDE }>;
@@ -46,21 +46,24 @@ export class ProjectsService {
   ) {}
 
   toDetail(p: ProjectDetail) {
+    const responsible = p.responsible?.organizations.some((o) => o.organizationId === p.organizationId)
+      ? { id: p.responsible.id, name: p.responsible.name, avatarUrl: p.responsible.avatarUrl }
+      : null;
     return {
       id: p.id,
       name: p.name,
       description: p.description,
       groupJid: p.groupJid,
       hoppeId: p.hoppeId,
-      responsibleUserId: p.responsibleUserId,
-      responsible: p.responsible,
+      responsibleUserId: responsible ? p.responsibleUserId : null,
+      responsible,
       status: p.status ?? 'TODO',
       metadata: (p.metadata as Record<string, unknown>) ?? {},
       exists: true,
-      conversationIds: p.conversations.map((c) => c.conversationId),
+      conversationIds: p.conversations.filter((c) => c.conversation.organizationId === p.organizationId).map((c) => c.conversationId),
       tasks: p.tasks,
       attachments: p.attachments,
-      contacts: p.contacts.map((c) => ({
+      contacts: p.contacts.filter((c) => c.contact.organizationId === p.organizationId).map((c) => ({
         id: c.id,
         contactId: c.contactId,
         name: c.contact.name,

@@ -95,6 +95,7 @@ export class AgentRouterService {
     if (dynamicCatalogEnabled) {
       agentCatalog = await this.loadChannelWorkerCatalog(
         conversation.channelId,
+        conversation.organizationId,
       );
       if (agentCatalog.length === 0) {
         this.logger.log({
@@ -244,12 +245,14 @@ export class AgentRouterService {
    */
   private async loadChannelWorkerCatalog(
     channelId: string,
+    organizationId: string,
   ): Promise<ClassifierAgentCatalogEntry[]> {
     const links = await this.prisma.aiAgentChannel.findMany({
       where: {
         channelId,
+        channel: { organizationId },
         mode: 'AUTONOMOUS',
-        agent: { isActive: true, deletedAt: null, kind: 'WORKER' },
+        agent: { organizationId, isActive: true, deletedAt: null, kind: 'WORKER' },
       },
       include: {
         agent: {
