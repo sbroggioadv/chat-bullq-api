@@ -61,18 +61,21 @@ export class SegmentLookupService {
     const cached = this.cache.get(channelId);
     if (cached && cached.expiresAt > Date.now()) return cached.routing;
 
-    const membership = await this.prisma.segmentChannel.findFirst({
+    const memberships = await this.prisma.segmentChannel.findMany({
       where: {
         channelId,
         segment: { isActive: true, deletedAt: null },
       },
       select: {
+        channel: { select: { organizationId: true } },
         segment: {
           select: {
             id: true,
+            organizationId: true,
             primaryChannelId: true,
+            primaryChannel: { select: { organizationId: true } },
             members: {
-              select: { channel: { select: { config: true } } },
+              select: { channel: { select: { config: true, organizationId: true } } },
             },
           },
         },
@@ -80,10 +83,14 @@ export class SegmentLookupService {
     });
 
     let routing: SegmentRouting | null = null;
-    const segment = membership?.segment;
+    const segment = memberships.find((m) =>
+      m.channel.organizationId === m.segment.organizationId &&
+      m.segment.primaryChannel?.organizationId === m.segment.organizationId,
+    )?.segment;
     if (segment && segment.primaryChannelId) {
       const ownNumbers = new Set<string>();
       for (const m of segment.members) {
+        if (m.channel.organizationId !== segment.organizationId) continue;
         const cfg = (m.channel?.config ?? {}) as Record<string, any>;
         const num = normalizePhone(cfg.ownPhone);
         if (num) ownNumbers.add(num);
