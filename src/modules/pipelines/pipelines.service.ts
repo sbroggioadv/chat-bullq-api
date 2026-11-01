@@ -51,7 +51,7 @@ export class PipelinesService {
         orderBy: { order: 'asc' },
       }),
       this.prisma.card.findMany({
-        where: { pipelineId },
+        where: { pipelineId, organizationId },
         orderBy: { order: 'asc' },
         include: {
           contact: { select: { id: true, name: true, phone: true, avatarUrl: true } },
@@ -430,6 +430,7 @@ export class PipelinesService {
           await tx.card.updateMany({
             where: {
               pipelineId: card.pipelineId,
+              organizationId,
               stageId: fromStageId,
               order: { gt: fromIndex, lte: dto.toIndex },
             },
@@ -439,6 +440,7 @@ export class PipelinesService {
           await tx.card.updateMany({
             where: {
               pipelineId: card.pipelineId,
+              organizationId,
               stageId: fromStageId,
               order: { gte: dto.toIndex, lt: fromIndex },
             },
@@ -450,6 +452,7 @@ export class PipelinesService {
         await tx.card.updateMany({
           where: {
             pipelineId: card.pipelineId,
+            organizationId,
             stageId: fromStageId,
             order: { gt: fromIndex },
           },
@@ -459,6 +462,7 @@ export class PipelinesService {
         await tx.card.updateMany({
           where: {
             pipelineId: card.pipelineId,
+            organizationId,
             stageId: dto.toStageId,
             order: { gte: dto.toIndex },
           },
