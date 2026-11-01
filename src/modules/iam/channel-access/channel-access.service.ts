@@ -38,8 +38,13 @@ export class ChannelAccessService {
   ): Promise<ChannelAccess> {
     // AGENT: identical to before — only explicit grants.
     if (!this.isBypassRole(role)) {
+      const orgId = organizationId ?? (await this.prisma.userOrganization.findUnique({
+        where: { id: userOrganizationId },
+        select: { organizationId: true },
+      }))?.organizationId;
+      if (!orgId) return new Set<string>();
       const rows = await this.prisma.channelAgent.findMany({
-        where: { userOrganizationId },
+        where: { userOrganizationId, channel: { organizationId: orgId } },
         select: { channelId: true },
       });
       return new Set(rows.map((r) => r.channelId));
