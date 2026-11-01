@@ -241,6 +241,19 @@ export class ConversationsService {
     const conversation = await this.findOne(id, organizationId, access);
 
     if (dto.assignedToId) {
+      const member = await this.prisma.userOrganization.findFirst({
+        where: { userId: dto.assignedToId, organizationId }, select: { id: true },
+      });
+      if (!member) throw new NotFoundException('Member not found');
+    }
+    if (dto.departmentId) {
+      const department = await this.prisma.department.findFirst({
+        where: { id: dto.departmentId, organizationId, deletedAt: null }, select: { id: true },
+      });
+      if (!department) throw new NotFoundException('Department not found');
+    }
+
+    if (dto.assignedToId) {
       await this.fsm.assign(id, dto.assignedToId, actorId);
     }
 
