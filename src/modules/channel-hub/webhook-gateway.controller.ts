@@ -65,10 +65,14 @@ export class WebhookGatewayController {
     // 2. Resolve one or more concrete Channel rows.
     const matchedChannels: Channel[] = [];
     for (const locator of locators) {
-      const channel = await this.channelsService.resolveByLocator(
-        channelType,
-        (c) => adapter.matchesChannel(c as Channel, locator),
-      );
+      const candidates = (await this.channelsService.findActiveByType(channelType))
+        .filter((channel) => adapter.matchesChannel(channel, locator));
+      if (channelType !== ChannelType.GMAIL &&
+          new Set(candidates.map((channel) => channel.organizationId)).size > 1) {
+        this.logger.error(`Ambiguous webhook channels: ${candidates.map((channel) => channel.id).join(', ')}`);
+        return res.status(200).json({ status: 'ambiguous_channel' });
+      }
+      const channel = candidates[0];
       if (channel) {
         if (!matchedChannels.some((m) => m.id === channel.id)) {
           matchedChannels.push(channel);
