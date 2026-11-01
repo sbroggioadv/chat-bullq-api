@@ -42,7 +42,7 @@ const makeDeps = () => {
       conversation: {
         findMany: jest.fn(async ({ where }: any) => {
           const ids: string[] = where.id?.in ?? [];
-          return ids.map((id) => conversations.get(id)).filter(Boolean);
+          return ids.map((id) => conversations.get(id)).filter((c) => c && (!where.organizationId || c.organizationId === where.organizationId));
         }),
       },
     },
@@ -162,7 +162,7 @@ describe('MessagesService.forwardMessage', () => {
     expect(dtos.every((d: any) => d.content.text === 'olá mundo')).toBe(true);
   });
 
-  it('rejeita destino cross-org com motivo claro', async () => {
+  it('oculta destino de outra organização', async () => {
     const res = await (svc as any).forwardMessage(
       'msg_text',
       ['conv_dst_a1', 'conv_cross'],
@@ -172,7 +172,7 @@ describe('MessagesService.forwardMessage', () => {
     );
     expect(res.queued).toEqual(['conv_dst_a1']);
     expect(res.rejected).toEqual([
-      { conversationId: 'conv_cross', reason: 'CROSS_ORG' },
+      { conversationId: 'conv_cross', reason: 'NOT_FOUND' },
     ]);
     expect(deps.sendImpl).toHaveBeenCalledTimes(1);
   });

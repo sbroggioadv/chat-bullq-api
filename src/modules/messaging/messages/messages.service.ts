@@ -625,7 +625,7 @@ export class MessagesService {
 
     // 5) Buscar conversas-destino + filtrar
     const destRows = await this.prisma.conversation.findMany({
-      where: { id: { in: destinationConversationIds } },
+      where: { id: { in: destinationConversationIds }, organizationId },
       select: { id: true, organizationId: true, channelId: true, isGroup: true },
     });
     const destMap = new Map(destRows.map((d) => [d.id, d]));
@@ -643,7 +643,7 @@ export class MessagesService {
         continue;
       }
       if (dest.organizationId !== organizationId) {
-        rejected.push({ conversationId: destId, reason: 'CROSS_ORG' });
+        rejected.push({ conversationId: destId, reason: 'NOT_FOUND' });
         continue;
       }
       if (!this.channelAccess.hasAccess(access, dest.channelId)) {
