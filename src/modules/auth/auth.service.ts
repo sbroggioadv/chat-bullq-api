@@ -104,9 +104,10 @@ export class AuthService {
         data: { status: 'ACCEPTED', acceptedAt: new Date() },
       });
 
-      // Also accept any other pending invitations for this email
+      // Expire duplicate invitations only in this organization.
       await tx.invitation.updateMany({
         where: {
+          organizationId: invitation.organizationId,
           email: dto.email,
           status: 'PENDING',
           id: { not: invitation.id },
