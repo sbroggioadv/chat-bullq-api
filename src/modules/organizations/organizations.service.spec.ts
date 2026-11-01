@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { OrgRole } from '@prisma/client';
 import { OrganizationsService } from './organizations.service';
 
@@ -64,27 +64,13 @@ describe('OrganizationsService.validateInvitation', () => {
   });
 });
 
-describe('OrganizationsService.inviteMember ownership', () => {
-  it('rejects an administrator inviting an owner before creating a membership', async () => {
-    const repository = {
-      findMembership: jest.fn().mockResolvedValue({ role: OrgRole.ADMIN }),
-      findUserByEmail: jest.fn().mockResolvedValue(null),
-      createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
-    };
-    const service = new OrganizationsService(repository as any);
-    await expect(service.inviteMember('org-a', { email: 'test@example.com', role: OrgRole.OWNER }, 'admin'))
-      .rejects.toThrow(ForbiddenException);
-    expect(repository.createInvitation).not.toHaveBeenCalled();
-  });
-
-  it('continues to allow an administrator to invite an agent', async () => {
-    const repository = {
-      findMembership: jest.fn(),
-      findUserByEmail: jest.fn().mockResolvedValue(null),
-      createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
-    };
-    const service = new OrganizationsService(repository as any);
-    await expect(service.inviteMember('org-a', { email: 'test@example.com', role: OrgRole.AGENT }, 'admin'))
-      .resolves.toMatchObject({ id: 'invite' });
-  });
+it('allows the trusted provisioning caller to invite the first owner of a new workspace', async () => {
+  const repository = {
+    findUserByEmail: jest.fn().mockResolvedValue(null),
+    createInvitation: jest.fn().mockResolvedValue({ id: 'invite' }),
+  };
+  const service = new OrganizationsService(repository as any);
+  await expect(service.inviteMember('new-org', { email: 'test@example.com', role: OrgRole.OWNER }, 'inviter'))
+    .resolves.toMatchObject({ id: 'invite' });
 });
+

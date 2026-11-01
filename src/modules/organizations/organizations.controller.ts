@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
@@ -67,7 +68,11 @@ export class OrganizationsController {
     @CurrentOrg('id') orgId: string,
     @Body() dto: InviteMemberDto,
     @CurrentUser('id') userId: string,
+    @CurrentOrg('userRole') actorRole: OrgRole,
   ) {
+    if (dto.role === OrgRole.OWNER && actorRole !== OrgRole.OWNER) {
+      throw new ForbiddenException('Only owners can invite an owner');
+    }
     return this.service.inviteMember(orgId, dto, userId);
   }
 
