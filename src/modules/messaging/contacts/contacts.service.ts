@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import axios from 'axios';
 import { ContactsRepository } from './contacts.repository';
 import { UpdateContactDto } from './dto/update-contact.dto';
@@ -111,9 +111,8 @@ export class ContactsService {
   }
 
   async findOne(id: string, organizationId: string) {
-    const contact = await this.repository.findById(id);
+    const contact = await this.repository.findById(id, organizationId);
     if (!contact) throw new NotFoundException('Contact not found');
-    if (contact.organizationId !== organizationId) throw new ForbiddenException();
     return contact;
   }
 

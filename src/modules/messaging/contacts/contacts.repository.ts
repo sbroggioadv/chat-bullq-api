@@ -69,9 +69,9 @@ export class ContactsRepository {
     return { contacts, total };
   }
 
-  async findById(id: string) {
+  async findById(id: string, organizationId: string) {
     return this.prisma.contact.findFirst({
-      where: { id, deletedAt: null },
+      where: { id, organizationId, deletedAt: null },
       include: {
         channels: { include: { channel: { select: { id: true, type: true, name: true } } } },
         tags: { include: { tag: true } },
