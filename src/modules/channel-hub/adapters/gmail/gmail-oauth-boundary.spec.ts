@@ -61,4 +61,15 @@ describe('canal no início do OAuth', () => {
     expect(JSON.parse(Buffer.from(state.split('.')[0], 'base64url').toString()).channelId).toBe('proprio');
     expect(findFirst).toHaveBeenCalledWith({ where: { id: 'proprio', organizationId: 'B', deletedAt: null }, select: { id: true } });
   });
+  it('recusa state com organização alterada e aceita a assinatura original', async () => {
+    const result = await service.start(input);
+    const state = new URL(result.url).searchParams.get('state')!;
+    const [body, signature] = state.split('.');
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString());
+    expect((service as any).verifyState(state).orgId).toBe('B');
+    payload.orgId = 'A';
+    const changed = `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${signature}`;
+    expect((service as any).verifyState.bind(service, changed)).toThrow('state signature mismatch');
+    expect(await service.handleCallback('code', changed)).toContain('gmail=error&reason=invalid_state');
+  });
 });

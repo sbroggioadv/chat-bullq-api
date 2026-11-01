@@ -57,6 +57,14 @@ export class TagConversationTool implements AiTool {
       return { output: { ok: false, error: 'no valid tag names' } };
     }
 
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: ctx.conversationId, organizationId: ctx.organizationId },
+      select: { id: true },
+    });
+    if (!conversation) {
+      return { output: { ok: false, error: 'conversation not found' } };
+    }
+
     const existing = await this.prisma.tag.findMany({
       where: { organizationId: ctx.organizationId, name: { in: names } },
       select: { id: true, name: true },

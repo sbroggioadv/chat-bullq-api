@@ -29,12 +29,6 @@ export class TagsRepository {
     return this.prisma.tag.delete({ where: { id } });
   }
 
-  async addTagToConversation(conversationId: string, tagId: string) {
-    return this.prisma.conversationTag.create({
-      data: { conversationId, tagId },
-    });
-  }
-
   async removeTagFromConversation(conversationId: string, tagId: string) {
     return this.prisma.conversationTag.delete({
       where: {

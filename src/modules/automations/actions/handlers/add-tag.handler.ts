@@ -66,6 +66,13 @@ export class AddTagHandler implements ActionHandler {
             errorMessage: 'add_tag target=conversation but event has no conversationId',
           };
         }
+        const conversation = await prisma.conversation.findFirst({
+          where: { id: payload.conversationId, organizationId },
+          select: { id: true },
+        });
+        if (!conversation) {
+          return { ok: false, errorCode: 'invalid_ref', errorMessage: 'conversation not found in org' };
+        }
         // Single TX so the cascade event is in the outbox iff the tag
         // attach committed. Same pattern as the user-facing TagsService.
         await prisma.$transaction(async (tx) => {
