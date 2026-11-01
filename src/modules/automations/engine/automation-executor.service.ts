@@ -60,6 +60,23 @@ export class AutomationExecutorService {
     );
     if (automations.length === 0) return;
 
+    const { contactId, conversationId, channelId } = job.payload;
+    const referencesOk = job.payload.organizationId === organizationId && !!(await this.prisma.organization.findFirst({
+      where: {
+        id: organizationId,
+        contacts: { some: { id: contactId } },
+        ...(channelId ? { channels: { some: { id: channelId } } } : {}),
+        ...(conversationId ? { conversations: { some: {
+          id: conversationId,
+          contactId,
+          ...(channelId ? { channelId } : {}),
+          contact: { organizationId },
+          channel: { organizationId },
+        } } } : {}),
+      },
+      select: { id: true },
+    }));
+
     for (const automation of automations) {
       // Loop guard: same automation can't appear twice in the same trace.
       // Bigger picture: a chain like A → B → A would be a depth-2 loop;
@@ -122,6 +139,16 @@ export class AutomationExecutorService {
           automation.id,
           'creator no longer in workspace',
         );
+        continue;
+      }
+
+      if (!referencesOk) {
+        await this.persistRun(automation, job, {
+          status: AutomationRunStatus.SKIPPED,
+          errorCode: 'cross_org_reference',
+          actionsLog: [],
+          durationMs: 0,
+        });
         continue;
       }
 
@@ -303,7 +330,9 @@ export class AutomationExecutorService {
           status: data.status,
           errorCode: data.errorCode ?? null,
           errorMessage: data.errorMessage ?? null,
-          triggerPayload: job.payload as unknown as Prisma.InputJsonValue,
+          triggerPayload: (data.errorCode === 'cross_org_reference'
+            ? { organizationId: job.organizationId, contactId: job.payload.contactId, conversationId: job.payload.conversationId ?? null, channelId: job.payload.channelId ?? null }
+            : job.payload) as unknown as Prisma.InputJsonValue,
           actionsLog: data.actionsLog as unknown as Prisma.InputJsonValue,
           durationMs: data.durationMs,
           finishedAt: new Date(),
