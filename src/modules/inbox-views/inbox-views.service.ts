@@ -137,11 +137,8 @@ export class InboxViewsService {
   }
 
   async findOne(id: string, organizationId: string, userId: string) {
-    const view = await this.prisma.inboxView.findUnique({ where: { id } });
+    const view = await this.prisma.inboxView.findFirst({ where: { id, organizationId, userId } });
     if (!view) throw new NotFoundException('Inbox view not found');
-    if (view.organizationId !== organizationId || view.userId !== userId) {
-      throw new ForbiddenException();
-    }
     return view;
   }
 
