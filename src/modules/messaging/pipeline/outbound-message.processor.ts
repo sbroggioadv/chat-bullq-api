@@ -35,6 +35,20 @@ export class OutboundMessageProcessor extends WorkerHost {
       where: { id: channelId },
     });
 
+    const outbound = await this.prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      select: { conversation: { select: { id: true, organizationId: true } } },
+    });
+    if (channel.organizationId !== outbound.conversation.organizationId) {
+      await this.prisma.message.update({
+        where: { id: messageId },
+        data: { status: MessageStatus.FAILED, failedReason: 'cross_org_channel' },
+      });
+      this.emitStatusUpdate(outbound.conversation.id, messageId, MessageStatus.FAILED);
+      this.logger.warn(`Outbound blocked: msg=${messageId} channel=${channelId} conversation=${outbound.conversation.id}`);
+      return { success: false, reason: 'cross_org_channel' };
+    }
+
     const adapter = this.adapterRegistry.getOutbound(channel.type);
 
     // Humanize: if this message was sent by an AI agent, simulate typing
