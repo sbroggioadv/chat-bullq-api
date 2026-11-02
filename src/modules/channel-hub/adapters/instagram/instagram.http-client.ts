@@ -157,7 +157,7 @@ export class InstagramHttpClient {
       const meta = err?.response?.data?.error;
       const numeric = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '-';
       const identifier = (value: unknown) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : '-';
-      return `HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'}, code=${numeric(meta?.code)}, subcode=${numeric(meta?.error_subcode)}, type=${identifier(meta?.type)}, fbtrace_id=${identifier(meta?.fbtrace_id)}`;
+      return `HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'}, code=${numeric(meta?.code)}, subcode=${numeric(meta?.error_subcode)}, type=${identifier(meta?.type)}, fbtrace_id=${typeof meta?.fbtrace_id === 'string' && /^[A-Za-z0-9_\/+=-]{1,64}$/.test(meta.fbtrace_id) ? meta.fbtrace_id : '-'}`;
     };
 
     try {
