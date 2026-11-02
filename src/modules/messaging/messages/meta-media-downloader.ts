@@ -117,7 +117,7 @@ export function isMirrorableMetaMediaUrl(rawUrl: unknown): rawUrl is string {
   }
 }
 
-const BLOCKED_RANGES = (() => {
+const BLOCKED_V4 = (() => {
   const list = new net.BlockList();
   const v4: Array<[string, number]> = [
     ['0.0.0.0', 8],
@@ -128,6 +128,7 @@ const BLOCKED_RANGES = (() => {
     ['172.16.0.0', 12],
     ['192.0.0.0', 24],
     ['192.0.2.0', 24],
+    ['192.88.99.0', 24],
     ['192.168.0.0', 16],
     ['198.18.0.0', 15],
     ['198.51.100.0', 24],
@@ -136,26 +137,45 @@ const BLOCKED_RANGES = (() => {
     ['240.0.0.0', 4],
   ];
   for (const [addr, prefix] of v4) list.addSubnet(addr, prefix, 'ipv4');
+  return list;
+})();
+
+/**
+ * IPv6 por lista FECHADA: só passa unicast global (2000::/3). Tudo fora dela
+ * é recusado sem precisar ser listado — inclusive ::/96 (compatível IPv4,
+ * ex.: ::127.0.0.1), ::ffff:0:0/96 (IPv4 mapeado), 64:ff9b::/96 e
+ * 64:ff9b:1::/48 (NAT64), fc00::/7, fe80::/10, ::1, :: e multicast.
+ */
+const GLOBAL_V6 = (() => {
+  const list = new net.BlockList();
+  list.addSubnet('2000::', 3, 'ipv6');
+  return list;
+})();
+
+/** Dentro de 2000::/3, faixas que ainda assim não são destino legítimo. */
+const BLOCKED_V6_INSIDE_GLOBAL = (() => {
+  const list = new net.BlockList();
   const v6: Array<[string, number]> = [
-    ['::', 128],
-    ['::1', 128],
-    ['fc00::', 7],
-    ['fe80::', 10],
-    ['ff00::', 8],
-    ['2001:db8::', 32],
+    ['2001::', 23], // atribuições de protocolo da IETF, inclui Teredo 2001::/32
+    ['2001:db8::', 32], // documentação
+    ['2002::', 16], // 6to4 (embute IPv4 qualquer)
+    ['3fff::', 20], // documentação
   ];
   for (const [addr, prefix] of v6) list.addSubnet(addr, prefix, 'ipv6');
   return list;
 })();
 
-/** true para IP privado, loopback, link-local, reservado ou multicast. */
+/**
+ * true para todo endereço que não seja destino público legítimo: IPv4
+ * privado/loopback/link-local/reservado/multicast e IPv6 fora do unicast
+ * global (lista fechada acima). Texto que não é IP também é recusado.
+ */
 export function isPrivateAddress(address: string): boolean {
   const family = net.isIP(address);
-  if (family === 4) return BLOCKED_RANGES.check(address, 'ipv4');
+  if (family === 4) return BLOCKED_V4.check(address, 'ipv4');
   if (family === 6) {
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
-    if (mapped) return BLOCKED_RANGES.check(mapped[1], 'ipv4');
-    return BLOCKED_RANGES.check(address, 'ipv6');
+    if (!GLOBAL_V6.check(address, 'ipv6')) return true;
+    return BLOCKED_V6_INSIDE_GLOBAL.check(address, 'ipv6');
   }
   return true;
 }

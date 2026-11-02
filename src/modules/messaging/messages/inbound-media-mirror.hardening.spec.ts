@@ -179,3 +179,83 @@ describe('Achado 2: prazo único somando todos os saltos', () => {
     expect(spent.reduce((a, b) => a + b, 0)).toBe(2_000);
   });
 });
+
+// ─── Achado 3 — IPv6 especial, por DNS simulado ────────────────────────────
+
+describe('Achado 3: o lookup recusa toda faixa especial (DNS simulado)', () => {
+  /** Roda safeLookup com o DNS devolvendo exatamente `address`. */
+  function lookupResolvingTo(address: string, opts: dns.LookupOptions = {}) {
+    const family = address.includes(':') ? 6 : 4;
+    (jest.spyOn(dns, 'lookup') as unknown as jest.Mock).mockImplementationOnce(
+      (_h: string, _o: unknown, cb: any) => cb(null, [{ address, family }]),
+    );
+    return new Promise<{ err: any; address: any }>((resolve) =>
+      safeLookup('lookaside.fbsbx.com', opts, (err, addr) => resolve({ err, address: addr })),
+    );
+  }
+
+  it.each([
+    ['::127.0.0.1', '::/96 compatível IPv4 (loopback)'],
+    ['::10.0.0.1', '::/96 compatível IPv4 (privado)'],
+    ['::ffff:127.0.0.1', '::ffff:0:0/96 mapeado (decimal)'],
+    ['::ffff:7f00:1', '::ffff:0:0/96 mapeado (hexadecimal)'],
+    ['::ffff:157.240.12.35', '::ffff:0:0/96 mapeado, mesmo de IP público'],
+    ['64:ff9b::7f00:1', 'NAT64 64:ff9b::/96'],
+    ['64:ff9b::a00:1', 'NAT64 64:ff9b::/96 para 10.0.0.1'],
+    ['64:ff9b:1::a00:1', 'NAT64 local 64:ff9b:1::/48'],
+    ['2001:0:4136:e378:8000:63bf:3fff:fdd2', 'Teredo 2001::/32'],
+    ['2001:db8::1', 'documentação 2001:db8::/32'],
+    ['2002:7f00:1::1', '6to4 2002::/16 (embute 127.0.0.1)'],
+    ['2002:9df0:c23::1', '6to4 2002::/16 (embute IP público)'],
+    ['fc00::1', 'ULA fc00::/7'],
+    ['fd12:3456::1', 'ULA fc00::/7 (fd)'],
+    ['fe80::1', 'link-local fe80::/10'],
+    ['::1', 'loopback'],
+    ['::', 'não especificado'],
+    ['ff02::1', 'multicast'],
+    ['0.0.0.0', 'IPv4 0/8'],
+    ['10.1.2.3', 'IPv4 10/8'],
+    ['100.64.0.1', 'IPv4 CGNAT 100.64/10'],
+    ['127.0.0.1', 'IPv4 loopback'],
+    ['169.254.169.254', 'IPv4 link-local / metadados de nuvem'],
+    ['172.16.5.4', 'IPv4 172.16/12'],
+    ['192.0.0.8', 'IPv4 192.0.0/24'],
+    ['192.168.0.10', 'IPv4 192.168/16'],
+    ['198.18.0.1', 'IPv4 benchmark 198.18/15'],
+    ['224.0.0.1', 'IPv4 multicast'],
+    ['255.255.255.255', 'IPv4 broadcast'],
+  ])('recusa %s (%s)', async (address) => {
+    const res = await lookupResolvingTo(address);
+
+    expect(res.err?.code).toBe('EPRIVATEADDR');
+    expect(isPrivateAddress(address)).toBe(true);
+  });
+
+  it.each([['157.240.12.35'], ['31.13.85.8'], ['2a03:2880:f12f:83:face:b00c:0:25de']])(
+    'deixa passar endereço público %s',
+    async (address) => {
+      const single = await lookupResolvingTo(address);
+      const all = await lookupResolvingTo(address, { all: true });
+
+      expect(single.err).toBeNull();
+      expect(single.address).toBe(address);
+      expect(all.address).toEqual([{ address, family: address.includes(':') ? 6 : 4 }]);
+    },
+  );
+
+  it('recusa se QUALQUER endereço da resposta for especial', async () => {
+    (jest.spyOn(dns, 'lookup') as unknown as jest.Mock).mockImplementationOnce(
+      (_h: string, _o: unknown, cb: any) =>
+        cb(null, [
+          { address: '2a03:2880:f12f:83:face:b00c:0:25de', family: 6 },
+          { address: '64:ff9b::a9fe:a9fe', family: 6 },
+        ]),
+    );
+
+    const res = await new Promise<any>((resolve) =>
+      safeLookup('lookaside.fbsbx.com', {}, (err) => resolve(err)),
+    );
+
+    expect(res?.code).toBe('EPRIVATEADDR');
+  });
+});
