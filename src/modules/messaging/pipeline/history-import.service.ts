@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   Channel,
+  ChannelType,
   ConversationStatus,
   MessageContentType as PrismaContentType,
   MessageDirection,
@@ -65,10 +66,8 @@ export class HistoryImportService {
       }
     }
 
-    // 2) Legacy fallback: open conversation for same contact on channel
-    //    (WhatsApp/IG historical behavior). Skip when we have a thread id —
-    //    otherwise every Gmail thread from the same sender collapses into one.
-    const existing = normalized.externalConversationId
+    // Gmail threads must remain distinct; other channels reuse an open conversation.
+    const existing = channel.type === ChannelType.GMAIL && normalized.externalConversationId
       ? null
       : await this.prisma.conversation.findFirst({
           where: {
@@ -87,10 +86,21 @@ export class HistoryImportService {
         });
 
     if (existing) {
+      const data: Record<string, any> = {};
+      if (normalized.externalConversationId) {
+        const metadata = existing.metadata;
+        data.metadata = {
+          ...(metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : {}),
+          externalConversationId: normalized.externalConversationId,
+        };
+      }
       if (normalized.lastMessageAt && (!existing.lastMessageAt || normalized.lastMessageAt > existing.lastMessageAt)) {
+        data.lastMessageAt = normalized.lastMessageAt;
+      }
+      if (Object.keys(data).length) {
         await this.prisma.conversation.update({
           where: { id: existing.id },
-          data: { lastMessageAt: normalized.lastMessageAt },
+          data,
         });
       }
       return { conversationId: existing.id, contactId, isNew: false };
@@ -181,8 +191,8 @@ export class HistoryImportService {
       new Date(0),
     );
     if (latestTimestamp.getTime() > 0) {
-      await this.prisma.conversation.update({
-        where: { id: conversationId },
+      await this.prisma.conversation.updateMany({
+        where: { id: conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: latestTimestamp } }] },
         data: { lastMessageAt: latestTimestamp },
       });
     }

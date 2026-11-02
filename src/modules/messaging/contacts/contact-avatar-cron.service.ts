@@ -16,6 +16,8 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ContactAvatarCronService.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private cursor: string | null = null;
+  private externalCursor: string | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -34,7 +36,7 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
     }
 
     const intervalMs =
-      Number(process.env.CONTACT_AVATAR_CRON_MS) || 24 * 60 * 60 * 1000;
+      Number(process.env.CONTACT_AVATAR_CRON_MS) || 60 * 60 * 1000;
     // First pass soon after boot so redeploy actually refreshes avatars.
     const firstDelayMs =
       Number(process.env.CONTACT_AVATAR_CRON_FIRST_DELAY_MS) || 45_000;
@@ -71,10 +73,16 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
     this.running = true;
     const start = Date.now();
     try {
-      // All active WA contact-channels (cap 800/tick). Force-enrich + rehost.
-      const targets = await this.prisma.contactChannel.findMany({
+      const batchSize = Math.max(1, Number(process.env.CONTACT_AVATAR_CRON_BATCH) || 100);
+      const configuredShare = Number(process.env.CONTACT_AVATAR_CRON_CDN_SHARE);
+      const share = process.env.CONTACT_AVATAR_CRON_CDN_SHARE !== undefined && Number.isFinite(configuredShare) ? Math.min(1, Math.max(0, configuredShare)) : 0.2;
+      const externalQuota = Math.min(batchSize, Math.max(1, Math.floor(batchSize * share)));
+      const configuredPause = Number(process.env.CONTACT_AVATAR_CRON_PAUSE_MS);
+      const pauseMs = process.env.CONTACT_AVATAR_CRON_PAUSE_MS !== undefined && Number.isFinite(configuredPause) && configuredPause >= 0 ? configuredPause : 750;
+      const missingTargets = await this.prisma.contactChannel.findMany({
         where: {
-          contact: { deletedAt: null },
+          contact: { deletedAt: null, avatarUrl: null },
+          ...(this.cursor ? { id: { gt: this.cursor } } : {}),
           channel: {
             type: 'WHATSAPP_ZAPPFY',
             deletedAt: null,
@@ -83,50 +91,63 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
           externalId: { not: '' },
         },
         include: { channel: true },
-        take: 800,
+        orderBy: { id: 'asc' },
+        take: batchSize,
       });
+
+      const externalTake = batchSize - Math.min(missingTargets.length, batchSize - externalQuota);
+      const externalTargets = await this.prisma.contactChannel.findMany({
+        where: {
+          contact: { deletedAt: null, avatarUrl: { not: null }, NOT: { avatarUrl: { contains: '/api/v1/uploads/' } } },
+          ...(this.externalCursor ? { id: { gt: this.externalCursor } } : {}),
+          channel: { type: 'WHATSAPP_ZAPPFY', deletedAt: null, isActive: true },
+          externalId: { not: '' },
+        },
+        include: { channel: true },
+        orderBy: { id: 'asc' },
+        take: externalTake,
+      });
+      const missingCount = Math.min(missingTargets.length, batchSize - externalTargets.length);
+      const targets = [...missingTargets.slice(0, missingCount), ...externalTargets];
 
       let enriched = 0;
       let rehosted = 0;
       let skipped = 0;
       let failed = 0;
-      const CONCURRENCY = 5;
+      let scanned = 0;
+      let rateLimited = false;
+      for (const [index, cc] of targets.entries()) {
+        if (scanned > 0 && pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
+        scanned++;
+        try {
+          const r = await this.zappfyEnricher.enrich(cc.channel as any, cc.externalId, { force: true });
+          if (r.reason === 'rate_limited') {
+            rateLimited = true;
+            break;
+          }
+          if (r.enriched) enriched++;
+          else if (r.reason === 'error') failed++;
+          else skipped++;
 
-      for (let i = 0; i < targets.length; i += CONCURRENCY) {
-        const batch = targets.slice(i, i + CONCURRENCY);
-        await Promise.all(
-          batch.map(async (cc) => {
-            try {
-              const r = await this.zappfyEnricher.enrich(
-                cc.channel as any,
-                cc.externalId,
-                { force: true },
-              );
-              if (r.enriched) enriched++;
-              else if (r.reason === 'error') failed++;
-              else skipped++;
-
-              const contact = await this.prisma.contact.findUnique({
-                where: { id: cc.contactId },
-                select: { id: true, avatarUrl: true },
-              });
-              if (contact?.avatarUrl) {
-                const ok = await this.contactsService.rehostAvatarToBullq(
-                  contact.id,
-                  contact.avatarUrl,
-                );
-                if (ok) rehosted++;
-              }
-            } catch {
-              failed++;
-            }
-          }),
-        );
+          const contact = await this.prisma.contact.findUnique({
+            where: { id: cc.contactId },
+            select: { id: true, avatarUrl: true },
+          });
+          if (contact?.avatarUrl && await this.contactsService.rehostAvatarToBullq(contact.id, contact.avatarUrl)) rehosted++;
+        } catch {
+          failed++;
+        }
+        if (index < missingCount) this.cursor = cc.id;
+        else this.externalCursor = cc.id;
       }
+      if (!rateLimited || scanned > missingCount) {
+        if (missingCount === missingTargets.length && missingTargets.length < batchSize) this.cursor = null;
+      }
+      if (!rateLimited && externalTargets.length < externalTake) this.externalCursor = null;
 
       this.logger.log({
         msg: 'contact_avatar_cron_done',
-        scanned: targets.length,
+        scanned,
         enriched,
         rehosted,
         skipped,
@@ -135,7 +156,7 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
       });
 
       return {
-        scanned: targets.length,
+        scanned,
         enriched,
         rehosted,
         skipped,
