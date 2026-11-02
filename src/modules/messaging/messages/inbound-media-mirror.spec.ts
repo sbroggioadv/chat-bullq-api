@@ -312,9 +312,14 @@ describe('InboundMediaMirrorService.runJob', () => {
     expect(err.message).toBe('http_status:404');
     expect(h.uploads.saveInboundMedia).not.toHaveBeenCalled();
     const calls = rawCalls(h.prisma);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].sql).toContain(`jsonb_build_object( 'mediaMirror', jsonb_build_object( 'status', 'failed'`);
-    expect(calls[0].values.slice(0, 2)).toEqual(['http_status', 404]);
+    expect(h.http).toHaveBeenCalledTimes(1); // mesma URL nos dois campos: um download só
+    expect(calls).toHaveLength(2); // uma desistência registrada por campo
+    expect(calls[0].sql).toContain(`'{mediaMirror}'`);
+    expect(calls[0].sql).toContain(`jsonb_build_object( 'status', 'failed'`);
+    expect(calls.map((c: any) => c.values.slice(0, 3))).toEqual([
+      ['media', 'http_status', 404],
+      ['story', 'http_status', 404],
+    ]);
     expect(calls[0].sql).not.toContain('mediaUrl');
     expect(h.prisma.message.update).not.toHaveBeenCalled();
     expect(h.prisma.message.delete).not.toHaveBeenCalled();
@@ -331,7 +336,7 @@ describe('InboundMediaMirrorService.runJob', () => {
     expect(notFinal.message).toBe('http_status:503');
     expect(callsAfterRetry).toBe(0);
     expect(final).toBeInstanceOf(UnrecoverableError);
-    expect(rawCalls(h.prisma)).toHaveLength(1);
+    expect(rawCalls(h.prisma).map((c: any) => c.values[0])).toEqual(['media', 'story']);
   });
 
   it('idempotente: com a URL já nossa não faz nada; duas execuções = um download', async () => {

@@ -204,4 +204,17 @@ suite('Espelhamento — SQL em Postgres real', () => {
     expect(after.content).toEqual({ mediaUrl: CDN_404 });
     expect(JSON.stringify(after.metadata)).toContain('"http_status"');
   });
+
+  it('registro por campo preserva o registro do outro campo e o resto do metadata', async () => {
+    const prior = { isEcho: false, mediaMirror: { story: { status: 'failed', reason: 'http_status', httpStatus: 404 } } };
+    await seed('per-field', JSON.stringify({ mediaUrl: CDN_404 }), JSON.stringify(prior));
+    const { service } = serviceReading(snapshot('per-field', { content: { mediaUrl: CDN_404 }, metadata: prior }));
+
+    await run(service, 'per-field');
+    const after = await read('per-field');
+
+    expect(after.metadata.isEcho).toBe(false);
+    expect(after.metadata.mediaMirror.story).toEqual(prior.mediaMirror.story);
+    expect(after.metadata.mediaMirror.media).toMatchObject({ status: 'failed', reason: 'http_status', httpStatus: 404 });
+  });
 });

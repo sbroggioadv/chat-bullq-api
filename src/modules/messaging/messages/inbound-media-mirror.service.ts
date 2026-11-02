@@ -57,11 +57,16 @@ interface MirrorTargets {
   storyUrl?: string;
 }
 
+type MirrorField = 'media' | 'story';
+
 interface MirrorFailure {
   reason: string;
   retryable: boolean;
   status?: number;
 }
+
+const failureCode = (f: MirrorFailure): string =>
+  f.status ? `${f.reason}:${f.status}` : f.reason;
 
 const asRecord = (v: unknown): Record<string, any> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {};
@@ -180,27 +185,44 @@ export class InboundMediaMirrorService {
     });
     if (!message) return { status: 'not_found' };
 
+    // Cada campo é independente: uma desistência num não impede nem encerra
+    // a tentativa do outro. Campo com desistência já registrada não é tentado
+    // de novo.
     const targets = collectMirrorTargets(message);
-    if (!targets.mediaUrl && !targets.storyUrl) return { status: 'noop' };
+    const recorded = asRecord(asRecord(message.metadata).mediaMirror);
+    const work: Array<[MirrorField, string]> = [];
+    if (targets.mediaUrl && asRecord(recorded.media).status !== 'failed') {
+      work.push(['media', targets.mediaUrl]);
+    }
+    if (targets.storyUrl && asRecord(recorded.story).status !== 'failed') {
+      work.push(['story', targets.storyUrl]);
+    }
+    if (!work.length) return { status: 'noop' };
 
-    const savedByOriginal = new Map<string, string>();
-    const done: Array<'media' | 'story'> = [];
-    let failure: MirrorFailure | undefined;
-
-    const mirrorField = async (field: 'media' | 'story', original: string) => {
-      const host = hostOf(original);
-      try {
-        let ours = savedByOriginal.get(original);
-        if (!ours) {
-          const media = await this.downloader.download(original);
+    // Menção a story: a mesma URL nos dois campos é baixada uma vez só.
+    const storedByOriginal = new Map<string, Promise<string>>();
+    const store = (original: string): Promise<string> => {
+      let pending = storedByOriginal.get(original);
+      if (!pending) {
+        pending = this.downloader.download(original).then(async (media) => {
           const saved = await this.uploads.saveInboundMedia({
             buffer: media.buffer,
             mimeType: media.mimeType,
             channelId: data.channelId,
           });
-          ours = saved.url;
-          savedByOriginal.set(original, ours);
-        }
+          return saved.url;
+        });
+        storedByOriginal.set(original, pending);
+      }
+      return pending;
+    };
+
+    const done: MirrorField[] = [];
+    const failures: Array<[MirrorField, MirrorFailure]> = [];
+    for (const [field, original] of work) {
+      const host = hostOf(original);
+      try {
+        const ours = await store(original);
         const rows =
           field === 'media'
             ? await this.swapContentMediaUrl(message.id, original, ours)
@@ -212,7 +234,7 @@ export class InboundMediaMirrorService {
           err instanceof MediaDownloadError
             ? { reason: err.reason, retryable: err.retryable, status: err.status }
             : { reason: 'store_failed', retryable: true };
-        failure ??= f;
+        failures.push([field, f]);
         this.logger.warn({
           msg: 'ig_media_mirror_failed',
           messageId: message.id,
@@ -224,19 +246,19 @@ export class InboundMediaMirrorService {
           final: opts.isFinalAttempt || !f.retryable,
         });
       }
-    };
-
-    if (targets.mediaUrl) await mirrorField('media', targets.mediaUrl);
-    if (targets.storyUrl) await mirrorField('story', targets.storyUrl);
-
-    if (!failure) return { status: 'mirrored', fields: done };
-
-    const code = failure.status ? `${failure.reason}:${failure.status}` : failure.reason;
-    if (opts.isFinalAttempt || !failure.retryable) {
-      await this.recordFailure(message.id, failure);
-      throw new UnrecoverableError(code);
     }
-    throw new Error(code);
+
+    if (!failures.length) return { status: 'mirrored', fields: done };
+
+    // Desistência definitiva (permanente, ou transitória na última tentativa)
+    // é registrada por campo; transitória antes da última tentativa retenta
+    // o job inteiro (os campos já espelhados viram no-op na próxima).
+    for (const [field, f] of failures) {
+      if (!f.retryable || opts.isFinalAttempt) await this.recordFailure(message.id, field, f);
+    }
+    const transient = failures.find(([, f]) => f.retryable);
+    if (transient && !opts.isFinalAttempt) throw new Error(failureCode(transient[1]));
+    throw new UnrecoverableError(failureCode(failures[0][1]));
   }
 
   // SQL: `metadata`/`content` podem guardar JSON que não é objeto (escalar,
@@ -269,19 +291,25 @@ export class InboundMediaMirrorService {
         AND "metadata" #>> '{replyTo,story,url}' = ${original}`;
   }
 
-  /** Registra o motivo da desistência; nunca lança. */
-  private async recordFailure(id: string, failure: MirrorFailure): Promise<void> {
+  /**
+   * Registra a desistência de UM campo em metadata.mediaMirror.<campo>,
+   * preservando o registro do outro campo. Nunca lança.
+   */
+  private async recordFailure(id: string, field: MirrorField, failure: MirrorFailure): Promise<void> {
     try {
       await this.prisma.$executeRaw`
         UPDATE "messages"
-        SET "metadata" = (CASE WHEN jsonb_typeof("metadata") = 'object'
-                               THEN "metadata" ELSE '{}'::jsonb END)
-          || jsonb_build_object(
-              'mediaMirror', jsonb_build_object(
-                'status', 'failed',
-                'reason', ${failure.reason}::text,
-                'httpStatus', ${failure.status ?? null}::int,
-                'at', ${new Date().toISOString()}::text))
+        SET "metadata" = jsonb_set(
+              (CASE WHEN jsonb_typeof("metadata") = 'object'
+                    THEN "metadata" ELSE '{}'::jsonb END),
+              '{mediaMirror}',
+              (CASE WHEN jsonb_typeof("metadata" -> 'mediaMirror') = 'object'
+                    THEN "metadata" -> 'mediaMirror' ELSE '{}'::jsonb END)
+                || jsonb_build_object(${field}::text, jsonb_build_object(
+                     'status', 'failed',
+                     'reason', ${failure.reason}::text,
+                     'httpStatus', ${failure.status ?? null}::int,
+                     'at', ${new Date().toISOString()}::text)))
         WHERE "id" = ${id}`;
     } catch (err) {
       this.logger.warn({

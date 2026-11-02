@@ -180,6 +180,71 @@ describe('Achado 2: prazo único somando todos os saltos', () => {
   });
 });
 
+// ─── Achado 5 — campos independentes ──────────────────────────────────────
+
+describe('Achado 5: mediaUrl e story.url são tentados e registrados de forma independente', () => {
+  /** Transporte por URL: cada link tem sua resposta. */
+  const byUrl = (map: Record<string, MediaHttpResponse>) => async (url: string) =>
+    map[url] ?? ok();
+  const twoFields = (metadata: Record<string, any> = {}) =>
+    row({
+      type: 'TEXT',
+      content: { text: 'amei', mediaUrl: CDN_MEDIA },
+      metadata: { replyTo: { story: { url: CDN_STORY, kind: 'reply' } }, ...metadata },
+    });
+  const recordedFields = (prisma: any) =>
+    rawSql(prisma)
+      .filter((c: any) => c.sql.includes("'failed'"))
+      .map((c: any) => c.values[0]);
+
+  it('404 em mediaUrl + erro transitório em story.url: tenta os dois, registra só a mídia e retenta o job', async () => {
+    const h = harness({
+      message: twoFields(),
+      http: byUrl({ [CDN_MEDIA]: ok({ status: 404 }), [CDN_STORY]: ok({ status: 503 }) }),
+    });
+
+    const err = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false }).catch((e) => e);
+
+    expect(h.http.mock.calls.map((c) => c[0])).toEqual([CDN_MEDIA, CDN_STORY]);
+    expect(err).not.toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toBe('http_status:503');
+    expect(recordedFields(h.prisma)).toEqual(['media']);
+  });
+
+  it('na retentativa, o campo com desistência registrada não é tentado de novo', async () => {
+    const h = harness({
+      message: twoFields({ mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404 } } }),
+    });
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(h.http.mock.calls.map((c) => c[0])).toEqual([CDN_STORY]);
+    expect(res).toEqual({ status: 'mirrored', fields: ['story'] });
+  });
+
+  it('404 em mediaUrl não impede a story de ser espelhada; o job desiste só da mídia', async () => {
+    const h = harness({ message: twoFields(), http: byUrl({ [CDN_MEDIA]: ok({ status: 404 }) }) });
+
+    const err = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(rawSql(h.prisma).some((c: any) => c.sql.includes('{replyTo,story,url}') && c.values[0] === OURS)).toBe(true);
+    expect(recordedFields(h.prisma)).toEqual(['media']);
+  });
+
+  it('última tentativa: registra a falha de cada campo separadamente', async () => {
+    const h = harness({
+      message: twoFields(),
+      http: byUrl({ [CDN_MEDIA]: ok({ status: 404 }), [CDN_STORY]: ok({ status: 503 }) }),
+    });
+
+    const err = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: true }).catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(recordedFields(h.prisma)).toEqual(['media', 'story']);
+  });
+});
+
 // ─── Achado 7 — eco e mensagens enviadas ──────────────────────────────────
 
 describe('Achado 7: eco do Instagram é espelhado; enviada pelo BullQ não', () => {
