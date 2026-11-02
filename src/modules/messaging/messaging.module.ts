@@ -24,6 +24,12 @@ import { MessagesRepository } from './messages/messages.repository';
 import { TranscriptionService } from './messages/transcription.service';
 import { UploadsService } from './messages/uploads.service';
 import { MediaResolverService } from './messages/media-resolver.service';
+import { MetaMediaDownloader } from './messages/meta-media-downloader';
+import {
+  INBOUND_MEDIA_MIRROR_QUEUE,
+  InboundMediaMirrorService,
+} from './messages/inbound-media-mirror.service';
+import { InboundMediaMirrorProcessor } from './messages/inbound-media-mirror.processor';
 import { ContactsController } from './contacts/contacts.controller';
 import { ContactsService } from './contacts/contacts.service';
 import { ContactsRepository } from './contacts/contacts.repository';
@@ -35,6 +41,7 @@ import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service
       { name: 'inbound-messages' },
       { name: 'outbound-messages' },
       { name: 'chatbot-processor' },
+      { name: INBOUND_MEDIA_MIRROR_QUEUE },
     ),
     forwardRef(() => ChannelHubModule),
     RatingsModule,
@@ -61,6 +68,9 @@ import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service
     TranscriptionService,
     UploadsService,
     MediaResolverService,
+    MetaMediaDownloader,
+    InboundMediaMirrorService,
+    InboundMediaMirrorProcessor,
     ContactsService,
     ContactsRepository,
     ContactAvatarCronService,

@@ -1,4 +1,5 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
+import { InboundMediaMirrorService } from '../messages/inbound-media-mirror.service';
 import {
   Channel,
   ChannelType,
@@ -49,6 +50,9 @@ export class HistoryImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly realtimeGateway: RealtimeGateway,
+    // @Optional só para specs que constroem o serviço por posição; no
+    // MessagingModule o provider está registrado e é sempre injetado.
+    @Optional() private readonly mediaMirror?: InboundMediaMirrorService,
   ) {}
 
   async importConversation(
@@ -178,17 +182,24 @@ export class HistoryImportService {
     // Antes de gravar cada página, leitura comum (sem lock): se a conversa
     // virou extra fundida pela limpeza de duplicadas, nada é gravado e
     // MergedConversationError sobe — a sincronização re-resolve a conversa.
-    return this.prisma.$transaction(async (tx) => {
+    const { createdExternalIds, ...result } = await this.prisma.$transaction(async (tx) => {
       await throwIfMergedExtra(tx, conversationId);
       return this.insertMessages(tx, conversationId, messages);
     });
+
+    // SPEC-017: depois do commit, enfileira o espelhamento da mídia do CDN da
+    // Meta das recebidas recém-criadas. enqueueImported nunca lança.
+    if (channel.type === ChannelType.INSTAGRAM && createdExternalIds.length) {
+      await this.mediaMirror?.enqueueImported(channel.id, conversationId, createdExternalIds);
+    }
+    return result;
   }
 
   private async insertMessages(
     tx: Prisma.TransactionClient,
     conversationId: string,
     messages: NormalizedHistoricalMessage[],
-  ): Promise<MessagesImportResult> {
+  ): Promise<MessagesImportResult & { createdExternalIds: string[] }> {
     const externalIds = messages.map((m) => m.externalMessageId).filter(Boolean);
     const existing = await tx.message.findMany({
       where: {
@@ -204,7 +215,7 @@ export class HistoryImportService {
     );
 
     if (toCreate.length === 0) {
-      return { imported: 0, skipped: messages.length };
+      return { imported: 0, skipped: messages.length, createdExternalIds: [] };
     }
 
     await tx.message.createMany({
@@ -241,7 +252,11 @@ export class HistoryImportService {
       });
     }
 
-    return { imported: toCreate.length, skipped: messages.length - toCreate.length };
+    return {
+      imported: toCreate.length,
+      skipped: messages.length - toCreate.length,
+      createdExternalIds: toCreate.map((m) => m.externalMessageId),
+    };
   }
 
   async notifyConversationImported(

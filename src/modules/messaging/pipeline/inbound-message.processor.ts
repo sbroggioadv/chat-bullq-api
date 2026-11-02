@@ -1,6 +1,7 @@
 import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Logger, Optional } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import { InboundMediaMirrorService } from '../messages/inbound-media-mirror.service';
 import { PrismaService } from '../../../database/prisma.service';
 import { IdempotencyService } from './idempotency.service';
 import { ContactResolverService } from './contact-resolver.service';
@@ -101,6 +102,9 @@ export class InboundMessageProcessor extends WorkerHost {
     private readonly outbox: OutboxService,
     private readonly watchdog: WatchdogService,
     @InjectQueue('chatbot-processor') private readonly chatbotQueue: Queue,
+    // @Optional só para specs que constroem o processor por posição; no
+    // MessagingModule o provider está registrado e é sempre injetado.
+    @Optional() private readonly mediaMirror?: InboundMediaMirrorService,
   ) {
     super();
   }
@@ -277,6 +281,19 @@ export class InboundMessageProcessor extends WorkerHost {
       this.realtimeGateway.emitToConversation(conversationId, 'message:new', {
         message: savedMessage,
       });
+
+      // SPEC-017: mídia do CDN da Meta expira. A mensagem já está gravada;
+      // o espelhamento vai para a fila sem esperar e não atrasa nem derruba
+      // este job. enqueueForMessage já loga e devolve false em qualquer falha;
+      // o catch só impede uma rejeição solta se esse contrato mudar.
+      if (
+        message.channelType === ChannelType.INSTAGRAM &&
+        direction === MessageDirection.INBOUND
+      ) {
+        this.mediaMirror
+          ?.enqueueForMessage(savedMessage, channelId)
+          .catch(() => undefined);
+      }
 
       if (
         !isEcho &&
