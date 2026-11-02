@@ -26,6 +26,8 @@ const MAX_MESSAGES_PER_CONVERSATION = 500;
 const REQUEST_DELAY_MS = 400;
 const RATE_LIMIT_BACKOFF_MS = 60_000;
 const MAX_RATE_LIMIT_RETRIES = 3;
+/** Quantos ids externos de conversas que falharam ficam no metadata do job. */
+const MAX_FAILED_IDS_RECORDED = 50;
 
 @Processor(CHANNEL_SYNC_QUEUE, { concurrency: 1 })
 export class ChannelSyncProcessor extends WorkerHost {
@@ -96,6 +98,7 @@ export class ChannelSyncProcessor extends WorkerHost {
       let msgImported = 0;
       let contactsImported = 0;
       const seenContactIds = new Set<string>();
+      const failed: string[] = [];
 
       for (const conv of conversations) {
         const cancelled = await this.isCancelled(syncJobId);
@@ -103,13 +106,12 @@ export class ChannelSyncProcessor extends WorkerHost {
 
         try {
           let importResult = await this.importer.importConversation(channel, conv);
-          convImported++;
           if (!seenContactIds.has(importResult.contactId)) {
             seenContactIds.add(importResult.contactId);
             if (importResult.isNew) contactsImported++;
           }
 
-          let msgResult: { count: number; conversationId: string };
+          let msgResult: number;
           try {
             msgResult = await this.importConversationMessages(
               channel,
@@ -120,8 +122,9 @@ export class ChannelSyncProcessor extends WorkerHost {
             );
           } catch (err) {
             if (!(err instanceof MergedConversationError)) throw err;
-            // Extra fundida cuja original não serve: re-resolve uma vez (a
-            // busca do importador exclui a extra arquivada).
+            // A conversa virou extra fundida: re-resolve UMA vez pela
+            // resolução padrão do importador (exclui arquivadas no WhatsApp)
+            // e reimporta — a deduplicação por externalId evita repetir.
             importResult = await this.importer.importConversation(channel, conv);
             msgResult = await this.importConversationMessages(
               channel,
@@ -131,12 +134,14 @@ export class ChannelSyncProcessor extends WorkerHost {
               filters,
             );
           }
-          msgImported += msgResult.count;
+          msgImported += msgResult;
+          // Só conta como importada a conversa cujas mensagens entraram.
+          convImported++;
 
-          if (msgResult.count > 0) {
+          if (msgResult > 0) {
             await this.importer.notifyConversationImported(
               channel.organizationId,
-              msgResult.conversationId,
+              importResult.conversationId,
             );
           }
 
@@ -160,33 +165,51 @@ export class ChannelSyncProcessor extends WorkerHost {
             });
           }
         } catch (err: any) {
+          failed.push(conv.externalConversationId);
           this.logger.warn(
             `Failed to import conversation ${conv.externalConversationId}: ${err.message}`,
           );
         }
       }
 
+      // Conversa que falhou é pendência recuperável: o job NÃO termina
+      // COMPLETED limpo. Fica FAILED com a contagem e os ids externos;
+      // rodar a sincronização de novo é seguro (dedup por externalId).
+      const finalStatus = failed.length > 0 ? ChannelSyncStatus.FAILED : ChannelSyncStatus.COMPLETED;
+      const errorMessage = failed.length > 0
+        ? `${failed.length} de ${conversations.length} conversa(s) não importada(s); rode a sincronização de novo (é idempotente).`
+        : null;
       await this.prisma.channelSyncJob.update({
         where: { id: syncJobId },
         data: {
-          status: ChannelSyncStatus.COMPLETED,
+          status: finalStatus,
           finishedAt: new Date(),
           conversationsImported: convImported,
           messagesImported: msgImported,
           contactsImported,
+          ...(failed.length > 0
+            ? {
+                errorMessage,
+                metadata: {
+                  conversationsFailed: failed.length,
+                  failedExternalConversationIds: failed.slice(0, MAX_FAILED_IDS_RECORDED),
+                },
+              }
+            : {}),
         },
       });
       this.emitProgress(channel.organizationId, syncJobId, channelId, {
-        status: ChannelSyncStatus.COMPLETED,
-        phase: 'done',
+        status: finalStatus,
+        phase: failed.length > 0 ? 'failed' : 'done',
         conversationsTotal: conversations.length,
         conversationsImported: convImported,
         messagesImported: msgImported,
         contactsImported,
+        ...(errorMessage ? { errorMessage } : {}),
       });
 
       this.logger.log(
-        `Sync ${syncJobId} complete: ${convImported}/${conversations.length} conversations, ${msgImported} messages`,
+        `Sync ${syncJobId} ${failed.length > 0 ? 'finished with pending conversations' : 'complete'}: ${convImported}/${conversations.length} conversations, ${msgImported} messages, ${failed.length} failed`,
       );
     } catch (err: any) {
       this.logger.error(`Sync ${syncJobId} failed: ${err.message}`, err.stack);
@@ -225,7 +248,7 @@ export class ChannelSyncProcessor extends WorkerHost {
     externalConversationId: string,
     conversationId: string,
     filters: HistorySyncFilters,
-  ): Promise<{ count: number; conversationId: string }> {
+  ): Promise<number> {
     let cursor: string | undefined;
     let imported = 0;
     do {
@@ -239,9 +262,6 @@ export class ChannelSyncProcessor extends WorkerHost {
         conversationId,
         result.messages,
       );
-      // Se a conversa virou extra fundida no meio da paginação, o importador
-      // desviou para a original: as próximas páginas vão direto para ela.
-      conversationId = res.conversationId;
       // Count both newly-inserted and skipped (already-existing) messages.
       // Without `+ res.skipped`, re-syncs or races with inbound webhook
       // produce undercount (QA-S17-010): if 62/63 messages exist, reports 1.
@@ -253,7 +273,7 @@ export class ChannelSyncProcessor extends WorkerHost {
       if (imported >= MAX_MESSAGES_PER_CONVERSATION) break;
       await this.sleep(REQUEST_DELAY_MS);
     } while (cursor);
-    return { count: imported, conversationId };
+    return imported;
   }
 
   private async isCancelled(syncJobId: string): Promise<boolean> {

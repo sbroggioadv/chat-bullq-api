@@ -75,6 +75,16 @@ export class IdempotencyService implements OnModuleDestroy {
     );
   }
 
+  /** Desfaz a claim (DEL) quando o processamento falhou antes de persistir,
+   *  para o retry do job conseguir reivindicar e processar de novo. */
+  async releaseClaim(
+    externalMessageId: string,
+    channelId: string,
+  ): Promise<void> {
+    if (!externalMessageId) return;
+    await this.redis.del(this.key(channelId, externalMessageId));
+  }
+
   async isDuplicate(
     externalMessageId: string,
     channelId: string,

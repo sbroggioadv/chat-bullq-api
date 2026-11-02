@@ -9,10 +9,9 @@ describe('HistoryImportService conversation resolution', () => {
     prisma = {
       contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'cc', contactId: 'contact', profileName: 'Nome', contact: { organizationId: 'org' } }), update: jest.fn() },
       message: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn() },
-      conversation: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'new' }) },
+      // findUnique: importMessages confere (leitura comum) se o destino é extra fundida.
+      conversation: { findFirst: jest.fn(), findUnique: jest.fn().mockResolvedValue({ metadata: {} }), update: jest.fn(), updateMany: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'new' }) },
       conversationAuditLog: { create: jest.fn() },
-      // importMessages revalida o destino numa transação (extra fundida → original).
-      $queryRaw: jest.fn().mockResolvedValue([{ metadata: {}, status: 'OPEN' }]),
       $transaction: jest.fn((fn: any) => fn(prisma)),
     };
     service = new HistoryImportService(prisma, {} as any);

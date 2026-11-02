@@ -17,7 +17,7 @@ import { OutboxService } from '../../automations/outbox/outbox.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import {
   MergedConversationError,
-  writableConversation,
+  throwIfMergedExtra,
 } from '../conversations/merged-conversation';
 import {
   AutomationTrigger,
@@ -113,9 +113,13 @@ export class InboundMessageProcessor extends WorkerHost {
     const { channelId, organizationId, message, webhookEventId } =
       job.data as InboundJobData;
 
+    // Estado para o catch: a claim só é liberada se ESTE worker a obteve e a
+    // mensagem ainda não foi persistida (senão o retry reprocessaria o efeito).
+    let claimed = false;
+    let persisted = false;
     try {
       // Atomic duplicate check: only the first worker proceeds.
-      const claimed = await this.idempotency.claimProcessing(
+      claimed = await this.idempotency.claimProcessing(
         message.externalMessageId,
         channelId,
       );
@@ -190,16 +194,11 @@ export class InboundMessageProcessor extends WorkerHost {
       // doesn't exist in the DB. `isNew` lets us emit only on the FIRST
       // creation — webhook re-deliveries that hit the (conv,external)
       // unique find existing rows and skip the emit.
-      // O destino é revalidado DENTRO da TX: se a conversa resolvida virou
-      // extra fundida pela limpeza de duplicadas, a mensagem vai para a
-      // original e nunca cai escondida na extra arquivada.
-      const persist = (candidateId: string) => this.prisma.$transaction(
+      // Antes de gravar, leitura comum (sem lock): se a conversa resolvida
+      // virou extra fundida pela limpeza de duplicadas, nada é gravado nela.
+      const persist = (conversationId: string) => this.prisma.$transaction(
         async (tx) => {
-          const target = await writableConversation(tx, candidateId, {
-            organizationId,
-            channelId,
-          });
-          const conversationId = target.id;
+          await throwIfMergedExtra(tx, conversationId);
           const result = await this.upsertMessage(
             tx,
             conversationId,
@@ -244,36 +243,31 @@ export class InboundMessageProcessor extends WorkerHost {
               },
             );
           }
-          return { ...result, target };
+          return result;
         },
       );
 
-      let persisted: Awaited<ReturnType<typeof persist>>;
+      let saved: Awaited<ReturnType<typeof persist>>;
       try {
-        persisted = await persist(conversationId);
+        saved = await persist(conversationId);
       } catch (err) {
         if (!(err instanceof MergedConversationError)) throw err;
-        // Extra fundida cuja original não serve: re-resolve uma vez (a busca
-        // exclui arquivadas, então a extra não volta).
+        // Extra fundida: reusa o resolvedor padrão (exclui arquivadas, pega a
+        // aberta mais recente, reabre fechada recente ou cria nova). Uma vez
+        // só; se cair de novo numa extra fundida, a falha sobe (job falha,
+        // webhook_event FAILED, claim liberada para o retry).
+        const from = conversationId;
         ({ conversationId, status } = await this.conversationResolver.resolve(
           organizationId,
           channelId,
           contactId,
           message.isGroup,
         ));
-        persisted = await persist(conversationId);
+        this.logger.warn({ msg: 'inbound_redirected_from_merged_conversation', from, to: conversationId });
+        saved = await persist(conversationId);
       }
-      const { message: savedMessage, target } = persisted;
-      if (target.redirectedFrom) {
-        this.logger.warn({
-          msg: 'inbound_redirected_from_merged_conversation',
-          from: target.redirectedFrom,
-          to: target.id,
-          messageId: savedMessage.id,
-        });
-        conversationId = target.id;
-        status = target.status ?? status;
-      }
+      persisted = true;
+      const { message: savedMessage } = saved;
 
       this.realtimeGateway.emitToChannel(channelId, 'message:new', {
         message: savedMessage,
@@ -379,10 +373,20 @@ export class InboundMessageProcessor extends WorkerHost {
       if (webhookEventId) {
         await this.webhookEvents.markFailed(webhookEventId, err.message);
       }
-      // Release the claim so retries can try again — next attempt re-acquires.
-      await this.idempotency
-        .markProcessed(message.externalMessageId, channelId)
-        .catch(() => undefined);
+      // Falha ANTES de persistir: libera a claim (DEL) para o retry
+      // reprocessar de verdade. (O markProcessed antigo REGRAVAVA a chave por
+      // 24h e o retry voltava como duplicate_claim, perdendo a mensagem.)
+      // Falha DEPOIS de persistir: mantém a chave — reprocessar duplicaria
+      // efeitos (IA, watchdog) de uma mensagem que já está salva.
+      if (claimed && !persisted) {
+        await this.idempotency
+          .releaseClaim(message.externalMessageId, channelId)
+          .catch(() => undefined);
+      } else if (persisted) {
+        await this.idempotency
+          .markProcessed(message.externalMessageId, channelId)
+          .catch(() => undefined);
+      }
       throw err;
     }
   }

@@ -9,7 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
-import { writableConversation } from '../conversations/merged-conversation';
+import { throwIfMergedExtra } from '../conversations/merged-conversation';
 import {
   NormalizedHistoricalConversation,
   NormalizedHistoricalMessage,
@@ -25,8 +25,6 @@ export interface ConversationImportResult {
 export interface MessagesImportResult {
   imported: number;
   skipped: number;
-  /** Conversa que recebeu a página (a original, se a pedida era extra fundida). */
-  conversationId: string;
 }
 
 // Entre várias candidatas, vence a de mensagem mais recente, com desempate fixo.
@@ -166,24 +164,14 @@ export class HistoryImportService {
     conversationId: string,
     messages: NormalizedHistoricalMessage[],
   ): Promise<MessagesImportResult> {
-    if (messages.length === 0) return { imported: 0, skipped: 0, conversationId };
+    if (messages.length === 0) return { imported: 0, skipped: 0 };
 
-    // Destino revalidado DENTRO da transação de cada página: se a conversa
-    // virou extra fundida pela limpeza de duplicadas, o histórico vai para a
-    // original. O chamador passa a usar o id devolvido nas páginas seguintes.
+    // Antes de gravar cada página, leitura comum (sem lock): se a conversa
+    // virou extra fundida pela limpeza de duplicadas, nada é gravado e
+    // MergedConversationError sobe — a sincronização re-resolve a conversa.
     return this.prisma.$transaction(async (tx) => {
-      const target = await writableConversation(tx, conversationId, {
-        organizationId: channel.organizationId,
-        channelId: channel.id,
-      });
-      if (target.redirectedFrom) {
-        this.logger.warn({
-          msg: 'import_redirected_from_merged_conversation',
-          from: target.redirectedFrom,
-          to: target.id,
-        });
-      }
-      return this.insertMessages(tx, target.id, messages);
+      await throwIfMergedExtra(tx, conversationId);
+      return this.insertMessages(tx, conversationId, messages);
     });
   }
 
@@ -207,7 +195,7 @@ export class HistoryImportService {
     );
 
     if (toCreate.length === 0) {
-      return { imported: 0, skipped: messages.length, conversationId };
+      return { imported: 0, skipped: messages.length };
     }
 
     await tx.message.createMany({
@@ -244,7 +232,7 @@ export class HistoryImportService {
       });
     }
 
-    return { imported: toCreate.length, skipped: messages.length - toCreate.length, conversationId };
+    return { imported: toCreate.length, skipped: messages.length - toCreate.length };
   }
 
   async notifyConversationImported(

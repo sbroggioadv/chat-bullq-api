@@ -1,5 +1,3 @@
-import { ConversationStatus, Prisma } from '@prisma/client';
-
 /**
  * Marca que a limpeza de duplicadas grava na conversa EXTRA ao fundi-la na
  * original (scripts/ops/2026-11-02-limpar-duplicadas/02-aplicar.sql): o valor
@@ -17,47 +15,27 @@ export function mergedOriginalId(metadata: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** A extra foi fundida e a original não serve de destino (sumiu, outra org/canal ou deletada). */
+/** O destino de uma escrita é extra fundida: nada foi gravado; o chamador re-resolve. */
 export class MergedConversationError extends Error {
   constructor(readonly conversationId: string) {
-    super('conversation_merged_original_unavailable');
+    super('conversation_merged');
     this.name = 'MergedConversationError';
   }
 }
 
-export interface WritableConversation {
-  id: string;
-  /** Status lido na mesma transação; `null` se a conversa não existe. */
-  status: ConversationStatus | null;
-  /** Id da extra fundida de onde a escrita foi desviada, se houve desvio. */
-  redirectedFrom: string | null;
-}
+type ConversationReader = {
+  conversation: {
+    findUnique(args: { where: { id: string }; select: { metadata: true } }): Promise<{ metadata: unknown } | null>;
+  };
+};
 
 /**
- * Destino gravável para mensagem que ENTRA (inbound, importação), revalidado
- * dentro da transação do chamador. `FOR SHARE` espera uma fusão em curso (a
- * limpeza trava a extra `FOR UPDATE`) e lê o estado já commitado. Se o destino
- * virou extra fundida, devolve a original — mesma organização e canal, não
- * deletada. Se a original não servir, lança MergedConversationError para o
- * chamador re-resolver uma vez.
+ * Leitura COMUM (sem `FOR SHARE`/`FOR UPDATE`) antes de gravar mensagem que
+ * entra (inbound, importação). Lock compartilhado aqui levava dois inbounds da
+ * mesma conversa a deadlock ao atualizar `last_message_at` (parecer-revisor-api-2,
+ * item 4). A corrida residual com a fusão é coberta pela janela sem escritores.
  */
-export async function writableConversation(
-  tx: Prisma.TransactionClient,
-  conversationId: string,
-  scope: { organizationId: string; channelId: string },
-): Promise<WritableConversation> {
-  const [row] = await tx.$queryRaw<{ metadata: unknown; status: ConversationStatus }[]>(Prisma.sql`
-    SELECT metadata, status FROM conversations WHERE id = ${conversationId} FOR SHARE`);
-  const originalId = mergedOriginalId(row?.metadata);
-  if (!originalId) {
-    return { id: conversationId, status: row?.status ?? null, redirectedFrom: null };
-  }
-  const original = await tx.conversation.findFirst({
-    where: { id: originalId, organizationId: scope.organizationId, channelId: scope.channelId, deletedAt: null },
-    select: { id: true, status: true, metadata: true },
-  });
-  if (!original || mergedOriginalId(original.metadata)) {
-    throw new MergedConversationError(conversationId);
-  }
-  return { id: original.id, status: original.status, redirectedFrom: conversationId };
+export async function throwIfMergedExtra(db: ConversationReader, conversationId: string): Promise<void> {
+  const row = await db.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } });
+  if (mergedOriginalId(row?.metadata)) throw new MergedConversationError(conversationId);
 }

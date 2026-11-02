@@ -1,8 +1,10 @@
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { UnprocessableEntityException } from '@nestjs/common';
 import {
   MergedConversationError,
   mergedOriginalId,
-  writableConversation,
+  throwIfMergedExtra,
 } from './merged-conversation';
 import { SendMessageHandler } from '../../automations/actions/handlers/send-message.handler';
 import { ChatbotProcessor } from '../../chatbot/engine/chatbot.processor';
@@ -33,47 +35,40 @@ describe('mergedOriginalId', () => {
   });
 });
 
-describe('writableConversation — destino revalidado na transação', () => {
-  function tx(row: unknown, original: unknown = null) {
-    return {
-      $queryRaw: jest.fn().mockResolvedValue(row ? [row] : []),
-      conversation: { findFirst: jest.fn().mockResolvedValue(original) },
-    };
-  }
-  const scope = { organizationId: 'org', channelId: 'ch' };
+describe('throwIfMergedExtra — leitura comum antes de gravar mensagem que entra', () => {
+  // O fake só tem findUnique: SQL cru ($queryRaw com FOR SHARE/UPDATE) quebraria aqui.
+  const db = (metadata: unknown) => ({ conversation: { findUnique: jest.fn().mockResolvedValue(metadata === undefined ? null : { metadata }) } });
 
-  it('conversa normal (ou arquivada à mão) → o próprio id, lendo com FOR SHARE', async () => {
-    const t = tx({ metadata: { imported: true }, status: 'OPEN' });
+  it('conversa sem a marca (inclusive arquivada à mão) → segue, com um findUnique comum', async () => {
+    const d = db({ imported: true });
 
-    const r = await writableConversation(t as any, 'conv', scope);
-
-    expect(r).toEqual({ id: 'conv', status: 'OPEN', redirectedFrom: null });
-    expect(t.$queryRaw.mock.calls[0][0].sql).toContain('FOR SHARE');
-    expect(t.$queryRaw.mock.calls[0][0].values).toEqual(['conv']);
-    expect(t.conversation.findFirst).not.toHaveBeenCalled();
+    await expect(throwIfMergedExtra(d as any, 'conv')).resolves.toBeUndefined();
+    expect(d.conversation.findUnique).toHaveBeenCalledWith({ where: { id: 'conv' }, select: { metadata: true } });
   });
 
-  it('extra fundida → a original, conferindo organização, canal e não deletada', async () => {
-    const t = tx({ metadata: FUNDIDA, status: 'OPEN' }, { id: 'original', status: 'PENDING', metadata: {} });
-
-    const r = await writableConversation(t as any, 'extra', scope);
-
-    expect(r).toEqual({ id: 'original', status: 'PENDING', redirectedFrom: 'extra' });
-    expect(t.conversation.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'original', organizationId: 'org', channelId: 'ch', deletedAt: null },
-    }));
+  it('extra fundida → MergedConversationError (nada é gravado pelo chamador)', async () => {
+    await expect(throwIfMergedExtra(db(FUNDIDA) as any, 'extra')).rejects.toBeInstanceOf(MergedConversationError);
   });
 
-  it('original indisponível (outra org/canal, deletada ou sumida) → MergedConversationError', async () => {
-    const t = tx({ metadata: FUNDIDA, status: 'OPEN' }, null);
-
-    await expect(writableConversation(t as any, 'extra', scope)).rejects.toBeInstanceOf(MergedConversationError);
+  it('conversa inexistente → não é extra fundida (a gravação falha depois pela FK, como antes)', async () => {
+    await expect(throwIfMergedExtra(db(undefined) as any, 'sumiu')).resolves.toBeUndefined();
   });
+});
 
-  it('original que também é extra fundida → MergedConversationError (não encadeia)', async () => {
-    const t = tx({ metadata: FUNDIDA, status: 'OPEN' }, { id: 'original', status: 'OPEN', metadata: { cleanup_merged_into: 'outra' } });
+describe('caminho de gravação da mensagem que entra NÃO usa lock de linha (deadlock entre inbounds)', () => {
+  // Dois inbounds da mesma conversa com FOR SHARE seguido de UPDATE se
+  // bloqueiam mutuamente (parecer-revisor-api-2, item 4). Sem lock explícito,
+  // o INSERT da mensagem pega só FOR KEY SHARE (FK), compatível com o UPDATE.
+  const semComentarios = (src: string) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  it.each([
+    'merged-conversation.ts',
+    '../pipeline/inbound-message.processor.ts',
+    '../pipeline/history-import.service.ts',
+    '../pipeline/conversation-resolver.service.ts',
+  ])('%s não tem FOR SHARE / FOR UPDATE / FOR NO KEY UPDATE / FOR KEY SHARE', (arquivo) => {
+    const codigo = semComentarios(readFileSync(join(__dirname, arquivo), 'utf8'));
 
-    await expect(writableConversation(t as any, 'extra', scope)).rejects.toBeInstanceOf(MergedConversationError);
+    expect(codigo).not.toMatch(/\bFOR\s+(NO\s+KEY\s+UPDATE|KEY\s+SHARE|SHARE|UPDATE)\b/i);
   });
 });
 
