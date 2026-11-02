@@ -204,12 +204,24 @@ export class AgentRouterService {
     scopedAgentIds?: string[],
   ): Promise<AgentSelection | null> {
     if (scopedAgentIds) {
-      const link = await this.prisma.aiAgentChannel.findFirst({
+      const eligibleAgent = { organizationId: conversation.organizationId, isActive: true, deletedAt: null };
+      const activeLink = conversation.activeAgentId && scopedAgentIds.includes(conversation.activeAgentId)
+        ? await this.prisma.aiAgentChannel.findFirst({
+            where: {
+              channelId: conversation.channelId,
+              mode: 'AUTONOMOUS',
+              agent: { ...eligibleAgent, id: conversation.activeAgentId },
+            },
+            include: { agent: { select: { id: true, name: true } } },
+          })
+        : null;
+      const link = activeLink ?? await this.prisma.aiAgentChannel.findFirst({
         where: {
           channelId: conversation.channelId,
           mode: 'AUTONOMOUS',
-          agent: { id: { in: scopedAgentIds }, organizationId: conversation.organizationId, isActive: true, deletedAt: null },
+          agent: { ...eligibleAgent, id: { in: scopedAgentIds } },
         },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         include: { agent: { select: { id: true, name: true } } },
       });
       if (!link?.agent) return null;

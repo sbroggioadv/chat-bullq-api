@@ -84,6 +84,26 @@ describe('AgentRouterService — autoatendimento', () => {
     expect((await service.shouldHandle(conversation)).handle).toBe(true);
     expect((await service.selectAgent(conversation, 'oi'))?.agentId).toBe('scoped');
   });
+  it('prefere o agente ativo quando está escopado e vinculado ao canal', async () => {
+    scope();
+    agents.push({ id: 's2', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] });
+    conversation.activeAgentId = 's2';
+    prisma.aiAgentChannel.findFirst.mockImplementation(async ({ where }: any) =>
+      ({ agent: where.agent.id === 's2' ? { id: 's2', name: 'Segundo' } : { id: 'scoped', name: 'Primeiro' } }));
+    expect((await service.selectAgent(conversation, 'oi'))?.agentId).toBe('s2');
+  });
+  it('sem agente ativo elegível seleciona pelo vínculo mais antigo e id como desempate', async () => {
+    scope();
+    agents.push({ id: 's2', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] });
+    conversation.activeAgentId = 'outro';
+    prisma.aiAgentChannel.findFirst.mockImplementation(async ({ orderBy }: any) => ({
+      agent: orderBy ? { id: 'scoped', name: 'Primeiro' } : { id: 's2', name: 'Segundo' },
+    }));
+    expect((await service.selectAgent(conversation, 'oi'))?.agentId).toBe('scoped');
+    expect(prisma.aiAgentChannel.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    }));
+  });
   it('grupo permitido e mencionado atende com organização desligada', async () => {
     org.aiEnabled = false; conversation.isGroup = true; conversation.aiAllowedInGroup = true;
     (service as any).groupMentionDetector.findMatchingAgent = jest.fn().mockResolvedValue({ id: 'a1' });
