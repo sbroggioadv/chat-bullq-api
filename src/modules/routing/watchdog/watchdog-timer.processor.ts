@@ -78,6 +78,17 @@ export class WatchdogTimerProcessor extends WorkerHost {
     if (conversation.deletedAt) {
       return { skipped: true, reason: 'conversation_deleted' };
     }
+    // Job agendado antes do arquivamento: descarta sem tocar a conversa —
+    // qualquer update mexeria em updatedAt/estado de uma conversa que não
+    // deve mais ser atendida.
+    if (conversation.isArchived) {
+      this.logger.debug({
+        msg: 'watchdog_job_discarded',
+        reason: 'conversation_archived',
+        conversationId,
+      });
+      return { skipped: true, reason: 'conversation_archived' };
+    }
     if (!conversation.organization.watchdogEnabled) {
       await this.clearJobId(conversationId);
       return { skipped: true, reason: 'watchdog_disabled' };

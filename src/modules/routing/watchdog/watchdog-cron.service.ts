@@ -26,6 +26,7 @@ import {
  * Estratégia: query barata indexada por (orgId, status, lastMessageAt)
  * com WHERE deleted_at IS NULL. Filtra:
  *  - status IN (BOT, PENDING, OPEN)
+ *  - isArchived = false (arquivada não é reativada)
  *  - lastMessageAt < now() - 15min (margem)
  *  - aiEnabled IS NOT FALSE (respeita kill switch humano)
  *  - watchdogJobId IS NULL OR job não existe mais na fila
@@ -81,6 +82,9 @@ export class WatchdogCronService implements OnModuleInit {
     const candidates = await this.prisma.conversation.findMany({
       where: {
         deletedAt: null,
+        // Arquivada = histórico já tratado (ex.: duplicada fundida); o
+        // watchdog não reativa atendimento sobre ela.
+        isArchived: false,
         isStuck: false,
         status: {
           in: [
