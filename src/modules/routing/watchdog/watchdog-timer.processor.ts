@@ -81,14 +81,7 @@ export class WatchdogTimerProcessor extends WorkerHost {
     // Job agendado antes do arquivamento: descarta sem tocar a conversa —
     // qualquer update mexeria em updatedAt/estado de uma conversa que não
     // deve mais ser atendida.
-    if (conversation.isArchived) {
-      this.logger.debug({
-        msg: 'watchdog_job_discarded',
-        reason: 'conversation_archived',
-        conversationId,
-      });
-      return { skipped: true, reason: 'conversation_archived' };
-    }
+    if (conversation.isArchived) return this.discardArchived(conversationId);
     if (!conversation.organization.watchdogEnabled) {
       await this.clearJobId(conversationId);
       return { skipped: true, reason: 'watchdog_disabled' };
@@ -165,14 +158,17 @@ export class WatchdogTimerProcessor extends WorkerHost {
     // Atualiza contador antes de agir — se o agent run der erro, a próxima
     // execução do watchdog vê stuckAttempts já incrementado e progride o
     // limite mesmo assim (caso contrário ficaria em loop pra sempre).
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
+    // Condicional: se a conversa foi arquivada depois da checagem de entrada,
+    // nada é gravado e o job é descartado.
+    const counted = await this.prisma.conversation.updateMany({
+      where: { id: conversationId, isArchived: false },
       data: {
         stuckAttempts: nextAttempts,
         lastWatchdogCheckAt: new Date(),
         watchdogJobId: null,
       },
     });
+    if (counted.count === 0) return this.discardArchived(conversationId);
 
     // Em status=OPEN com humano atribuído, primeiro notifica o humano —
     // só reativa IA se ele tá fora há tempo (já passou delayHumanIdleMin
@@ -197,6 +193,8 @@ export class WatchdogTimerProcessor extends WorkerHost {
       where: { id: conversationId },
     });
     if (!fresh) return { skipped: true, reason: 'conversation_vanished' };
+    // Arquivada durante o processamento: não chama roteador nem IA.
+    if (fresh.isArchived) return this.discardArchived(conversationId);
 
     const decision = await this.agentRouter.shouldHandle(fresh);
     if (!decision.handle) {
@@ -241,6 +239,15 @@ export class WatchdogTimerProcessor extends WorkerHost {
       // mensagem do cliente OU o cron de fallback vão tentar de novo.
       return { reactivated: false, error: msg, attempts: nextAttempts };
     }
+  }
+
+  private discardArchived(conversationId: string) {
+    this.logger.debug({
+      msg: 'watchdog_job_discarded',
+      reason: 'conversation_archived',
+      conversationId,
+    });
+    return { skipped: true, reason: 'conversation_archived' };
   }
 
   private async markStuck(

@@ -55,6 +55,8 @@ export class WatchdogService {
     });
 
     if (!conversation) return;
+    // Arquivada não é vigiada: nem agenda job nem grava nela.
+    if (conversation.isArchived) return;
     if (!conversation.organization.watchdogEnabled) return;
     const jarvis = await this.prisma.channel.findUnique({
       where: { id: conversation.channelId },
@@ -95,10 +97,16 @@ export class WatchdogService {
       removeOnFail: 50,
     });
 
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
+    // Condicional: se foi arquivada entre a leitura e aqui, não grava e
+    // retira o job recém-criado.
+    const marked = await this.prisma.conversation.updateMany({
+      where: { id: conversationId, isArchived: false },
       data: { watchdogJobId: jobId },
     });
+    if (marked.count === 0) {
+      await this.cancelByJobId(jobId);
+      return;
+    }
 
     this.logger.debug(
       `Watchdog scheduled: conv=${conversationId} status=${conversation.status} delayMin=${delayMin}`,
@@ -114,9 +122,10 @@ export class WatchdogService {
     const jobId = this.jobIdFor(conversationId);
     await this.cancelByJobId(jobId);
 
+    // Condicional: conversa arquivada não é gravada (o job, se havia, já saiu).
     await this.prisma.conversation
-      .update({
-        where: { id: conversationId },
+      .updateMany({
+        where: { id: conversationId, isArchived: false },
         data: {
           watchdogJobId: null,
           stuckAttempts: 0,
