@@ -81,6 +81,14 @@ export class InstagramHttpClient {
     };
     if (cursor) params.after = cursor;
 
+    const safeError = (err: any): string => {
+      const status = Number(err?.response?.status ?? err?.status);
+      const meta = err?.response?.data?.error;
+      const numeric = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '-';
+      const identifier = (value: unknown) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : '-';
+      return `HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'}, code=${numeric(meta?.code)}, subcode=${numeric(meta?.error_subcode)}, type=${identifier(meta?.type)}, fbtrace_id=${identifier(meta?.fbtrace_id)}`;
+    };
+
     try {
       const { data } = await client.get('/me/conversations', { params });
       const items: any[] = data?.data ?? [];
@@ -152,6 +160,14 @@ export class InstagramHttpClient {
     let name: string | undefined;
     let profile_pic: string | undefined;
 
+    const safeError = (err: any): string => {
+      const status = Number(err?.response?.status ?? err?.status);
+      const meta = err?.response?.data?.error;
+      const numeric = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '-';
+      const identifier = (value: unknown) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : '-';
+      return `HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'}, code=${numeric(meta?.code)}, subcode=${numeric(meta?.error_subcode)}, type=${identifier(meta?.type)}, fbtrace_id=${identifier(meta?.fbtrace_id)}`;
+    };
+
     try {
       const { data } = await client.get('/me/conversations', {
         params: {
@@ -168,8 +184,7 @@ export class InstagramHttpClient {
         name = contact.name;
       }
     } catch (err: any) {
-      const status = Number(err?.response?.status ?? err?.status);
-      this.logger.warn(`Instagram busca de conversa falhou (HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'})`);
+      this.logger.warn(`Instagram busca de conversa falhou (${safeError(err)})`);
     }
 
     try {
@@ -180,8 +195,7 @@ export class InstagramHttpClient {
       name = name || data?.name;
       profile_pic = data?.profile_pic || profile_pic;
     } catch (err: any) {
-      const status = Number(err?.response?.status ?? err?.status);
-      this.logger.warn(`Instagram busca direta falhou (HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'})`);
+      if (!username || !name) this.logger.warn(`Instagram busca direta falhou (${safeError(err)})`);
     }
 
     if (!username && !name && !profile_pic) return null;
