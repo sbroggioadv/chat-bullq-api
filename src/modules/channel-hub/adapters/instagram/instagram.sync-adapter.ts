@@ -12,6 +12,7 @@ import {
   SyncCapabilities,
 } from '../../ports/types';
 import { InstagramHttpClient } from './instagram.http-client';
+import { buildInstagramTemplateContent } from './instagram.message-mapper';
 
 @Injectable()
 export class InstagramSyncAdapter implements HistorySyncPort {
@@ -193,6 +194,10 @@ export class InstagramSyncAdapter implements HistorySyncPort {
     const attachments = raw.attachments?.data || [];
     if (attachments.length > 0) {
       const first = attachments[0];
+      // Cartão (template) no mesmo shape do webhook — ver
+      // buildInstagramTemplateContent. Os `fields` pedidos à Graph API hoje
+      // não incluem subcampos de template; este ramo é defensivo.
+      if (first?.type === 'template') return MessageContentType.TEMPLATE;
       const mime: string = first?.mime_type || '';
       const rawType: string = first?.type || (first?.image_data ? 'image' : '');
       if (mime.startsWith('image/') || rawType === 'image' || first?.image_data) return MessageContentType.IMAGE;
@@ -212,6 +217,10 @@ export class InstagramSyncAdapter implements HistorySyncPort {
     raw: Record<string, any>,
     type: MessageContentType,
   ): NormalizedMessageContent {
+    if (type === MessageContentType.TEMPLATE) {
+      return buildInstagramTemplateContent(raw.attachments?.data?.[0]?.payload);
+    }
+
     if (raw.message) {
       const attachments = raw.attachments?.data || [];
       if (attachments.length > 0 && type !== MessageContentType.TEXT) {

@@ -270,7 +270,7 @@ export class InstagramMessageMapper {
         case 'fall_back':
           return { text: payload.title || payload.text || '[Mensagem não suportada pelo Instagram]' };
         case 'template':
-          return this.extractTemplateContent(payload);
+          return buildInstagramTemplateContent(payload);
         default:
           // Última barreira: tentar extrair URL ou título do payload antes
           // de mostrar o tipo cru. Evita '[ig reel]' e similares.
@@ -282,65 +282,92 @@ export class InstagramMessageMapper {
 
     return { text: '[Unsupported message]' };
   }
+}
 
-  private extractTemplateContent(payload: Record<string, any>): NormalizedInboundMessage['content'] {
-    // Instagram nests data under a key named after the template type
-    // (e.g. payload.generic.elements, payload.button.buttons). Older shapes
-    // also expose template_type + sibling fields directly on payload.
-    const wrapperKey = Object.keys(payload).find(
-      (k) => payload[k] && typeof payload[k] === 'object' && !Array.isArray(payload[k]),
-    );
-    const inner =
-      wrapperKey && (payload[wrapperKey] as Record<string, any>) ? payload[wrapperKey] : payload;
-    const templateType =
-      (payload.template_type as string | undefined) || wrapperKey || undefined;
+/**
+ * Texto gravado quando a Meta entrega um cartão `generic` sem nenhum elemento
+ * (medido em produção em 02/11: `payload.generic.elements = []` nas 10 vezes).
+ * Não há conteúdo a recuperar; o texto fixo evita a bolha em branco no inbox.
+ */
+export const INSTAGRAM_EMPTY_GENERIC_CARD_TEXT =
+  '[Cartão do Instagram — a Meta não enviou o conteúdo]';
 
-    const mapBtn = (b: any): TemplateButton => ({
-      type: String(b?.type ?? 'web_url'),
-      title: String(b?.title ?? ''),
-      url: b?.url ? String(b.url) : undefined,
-      payload: b?.payload ? String(b.payload) : undefined,
-    });
+/**
+ * Converte o `payload` de um anexo `template` do Instagram em conteúdo
+ * normalizado. Usado pelo webhook (mapper) e pela importação de histórico
+ * (sync adapter). Defensivo: chaves ausentes ou de tipo errado não quebram.
+ */
+export function buildInstagramTemplateContent(
+  rawPayload: unknown,
+): NormalizedInboundMessage['content'] {
+  const payload: Record<string, any> =
+    rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+      ? (rawPayload as Record<string, any>)
+      : {};
+  // Instagram nests data under a key named after the template type
+  // (e.g. payload.generic.elements, payload.button.buttons). Older shapes
+  // also expose template_type + sibling fields directly on payload.
+  const wrapperKey = Object.keys(payload).find(
+    (k) => payload[k] && typeof payload[k] === 'object' && !Array.isArray(payload[k]),
+  );
+  const inner: Record<string, any> = wrapperKey ? payload[wrapperKey] : payload;
+  const templateType =
+    (typeof payload.template_type === 'string' ? payload.template_type : undefined) ||
+    wrapperKey ||
+    undefined;
 
-    const rawButtons = Array.isArray(inner.buttons)
-      ? inner.buttons
-      : Array.isArray(payload.buttons)
-        ? payload.buttons
-        : [];
-    const buttons: TemplateButton[] = rawButtons.map(mapBtn);
+  const mapBtn = (b: any): TemplateButton => ({
+    type: String(b?.type ?? 'web_url'),
+    title: String(b?.title ?? ''),
+    url: b?.url ? String(b.url) : undefined,
+    payload: b?.payload ? String(b.payload) : undefined,
+  });
 
-    const rawElements = Array.isArray(inner.elements)
-      ? inner.elements
-      : Array.isArray(payload.elements)
-        ? payload.elements
-        : [];
-    const elements: TemplateElement[] = rawElements.map((el: any) => ({
-      title: el?.title ? String(el.title) : undefined,
-      subtitle: el?.subtitle ? String(el.subtitle) : undefined,
-      imageUrl: el?.image_url ? String(el.image_url) : undefined,
-      defaultActionUrl: el?.default_action?.url ? String(el.default_action.url) : undefined,
-      buttons: Array.isArray(el?.buttons) ? el.buttons.map(mapBtn) : undefined,
+  const rawButtons = Array.isArray(inner.buttons)
+    ? inner.buttons
+    : Array.isArray(payload.buttons)
+      ? payload.buttons
+      : [];
+  const buttons: TemplateButton[] = rawButtons.map(mapBtn);
+
+  const rawElements: unknown[] = Array.isArray(inner.elements)
+    ? inner.elements
+    : Array.isArray(payload.elements)
+      ? payload.elements
+      : [];
+  const elements: TemplateElement[] = rawElements
+    .filter((el): el is Record<string, any> => !!el && typeof el === 'object')
+    .map((el) => ({
+      title: el.title ? String(el.title) : undefined,
+      subtitle: el.subtitle ? String(el.subtitle) : undefined,
+      imageUrl: el.image_url ? String(el.image_url) : undefined,
+      defaultActionUrl: el.default_action?.url ? String(el.default_action.url) : undefined,
+      buttons: Array.isArray(el.buttons) ? el.buttons.map(mapBtn) : undefined,
     }));
 
-    const headerText =
-      (inner.text ? String(inner.text) : undefined) ||
-      (payload.text ? String(payload.text) : undefined);
-    const elementText = elements
-      .map((el) => [el.title, el.subtitle].filter(Boolean).join(' — '))
-      .filter(Boolean)
-      .join('\n');
-    const text = headerText || elementText || undefined;
+  const headerText =
+    (inner.text ? String(inner.text) : undefined) ||
+    (payload.text ? String(payload.text) : undefined);
+  const elementText = elements
+    .map((el) => [el.title, el.subtitle].filter(Boolean).join(' — '))
+    .filter(Boolean)
+    .join('\n');
+  const text =
+    templateType === 'generic' && elements.length === 0
+      ? INSTAGRAM_EMPTY_GENERIC_CARD_TEXT
+      : headerText || elementText || undefined;
+  const mediaUrl = elements.find((el) => el.imageUrl)?.imageUrl;
 
-    return {
-      text,
-      template: {
-        templateType,
-        text: headerText,
-        buttons: buttons.length ? buttons : undefined,
-        elements: elements.length ? elements : undefined,
-      },
-    };
-  }
+  return {
+    text,
+    ...(mediaUrl ? { mediaUrl } : {}),
+    template: {
+      templateType,
+      text: headerText,
+      buttons: buttons.length ? buttons : undefined,
+      elements: elements.length ? elements : undefined,
+    },
+  };
 }
 
 /**
