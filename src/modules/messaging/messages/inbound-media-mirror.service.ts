@@ -52,7 +52,8 @@ export interface MirrorableMessage {
 export type MirrorRunResult =
   | { status: 'not_found' }
   | { status: 'noop' }
-  | { status: 'mirrored'; fields: Array<'media' | 'story'> }
+  | { status: 'mirrored'; fields: Array<'media' | 'story'>; conflicts?: Array<'media' | 'story'> }
+  | { status: 'conflict'; conflicts: Array<'media' | 'story'> }
   | { status: 'skipped'; reason: 'conversation_merged' };
 
 interface MirrorTargets {
@@ -256,6 +257,8 @@ export class InboundMediaMirrorService {
     };
 
     const done: MirrorField[] = [];
+    const conflicts: MirrorField[] = [];
+    const referenced = new Set<string>();
     const failures: Array<[MirrorField, MirrorFailure]> = [];
     for (const [field, original] of work) {
       const host = hostOf(original);
@@ -265,6 +268,14 @@ export class InboundMediaMirrorService {
           field === 'media'
             ? await this.swapContentMediaUrl(message.id, original, ours)
             : await this.swapStoryUrl(message.id, original, ours);
+        if (rows === 0) {
+          // Nada trocado: a URL do campo mudou ou a conversa foi fundida
+          // entre a leitura e a escrita. Não é sucesso nem falha de download.
+          conflicts.push(field);
+          this.logger.warn({ msg: 'ig_media_mirror_conflict', messageId: message.id, host, field, reason: 'conflict' });
+          continue;
+        }
+        referenced.add(ours);
         done.push(field);
         this.logger.log({ msg: 'ig_media_mirrored', messageId: message.id, host, field, rows });
       } catch (err) {
@@ -286,7 +297,16 @@ export class InboundMediaMirrorService {
       }
     }
 
-    if (!failures.length) return { status: 'mirrored', fields: done };
+    // Arquivo salvo que nenhum campo passou a referenciar (conflito) é apagado
+    // na hora: sem isso ele ficaria órfão na storage.
+    await this.deleteUnreferenced(message.id, storedByOriginal, referenced);
+
+    if (!failures.length) {
+      if (!done.length && conflicts.length) return { status: 'conflict', conflicts };
+      return conflicts.length
+        ? { status: 'mirrored', fields: done, conflicts }
+        : { status: 'mirrored', fields: done };
+    }
 
     // Desistência definitiva (permanente, ou transitória na última tentativa)
     // é registrada por campo; transitória antes da última tentativa retenta
@@ -300,6 +320,24 @@ export class InboundMediaMirrorService {
     const transient = failures.find(([, f]) => f.retryable);
     if (transient && !opts.isFinalAttempt) throw new Error(failureCode(transient[1]));
     throw new UnrecoverableError(failureCode(failures[0][1]));
+  }
+
+  /** Apaga os arquivos salvos neste job que não ficaram referenciados. Nunca lança. */
+  private async deleteUnreferenced(
+    messageId: string,
+    stored: Map<string, Promise<string>>,
+    referenced: Set<string>,
+  ): Promise<void> {
+    for (const pending of stored.values()) {
+      const ours = await pending.catch(() => null);
+      if (!ours || referenced.has(ours)) continue;
+      try {
+        const deleted = await this.uploads.deleteInboundMedia(ours);
+        this.logger.log({ msg: 'ig_media_mirror_orphan_deleted', messageId, deleted });
+      } catch (err) {
+        this.logger.warn({ msg: 'ig_media_mirror_orphan_delete_failed', messageId, error: errorName(err) });
+      }
+    }
   }
 
   // SQL: `metadata`/`content` podem guardar JSON que não é objeto (escalar,

@@ -86,8 +86,10 @@ suite('Espelhamento — SQL em Postgres real', () => {
         return res.rowCount ?? 0;
       },
     };
+    const deleteInboundMedia = jest.fn(async () => true);
     const uploads = {
       saveInboundMedia: async () => ({ url: OURS, mimeType: 'image/jpeg', size: 3, filename: 'abc.jpg' }),
+      deleteInboundMedia,
     } as unknown as UploadsService;
     const service = new InboundMediaMirrorService(
       prisma,
@@ -95,7 +97,7 @@ suite('Espelhamento — SQL em Postgres real', () => {
       MetaMediaDownloader.withTransport(okImage),
       { add: jest.fn() } as any,
     );
-    return { service, executed };
+    return { service, executed, deleteInboundMedia };
   }
 
   const snapshot = (id: string, over: Record<string, any> = {}) => ({
@@ -165,7 +167,7 @@ suite('Espelhamento — SQL em Postgres real', () => {
     const res = await run(service, id);
     const after = await read(id);
 
-    expect(res).toEqual({ status: 'mirrored', fields: ['media', 'story'] });
+    expect(res).toEqual({ status: 'conflict', conflicts: ['media', 'story'] });
     expect(executed.every((e) => e.rowCount === 0)).toBe(true);
     expect(after.content).toEqual(before.content);
     expect(after.metadata).toEqual(before.metadata);
@@ -231,6 +233,33 @@ suite('Espelhamento — SQL em Postgres real', () => {
 
     expect(executed.map((e) => e.rowCount)).toEqual([1]);
     expect((await read('archived')).content).toEqual({ mediaUrl: OURS });
+  });
+
+  describe('Rodada 3 (B): 0 linhas não é sucesso', () => {
+    it('conversa fundida no banco: resultado conflict, nada escrito, arquivo salvo apagado', async () => {
+      await seed('b-merged', JSON.stringify({ mediaUrl: CDN }), '{}', '{"cleanup_merged_into":"conv-original"}');
+      const { service, executed, deleteInboundMedia } = serviceReading(snapshot('b-merged', { content: { mediaUrl: CDN }, metadata: {} }));
+
+      const res = await run(service, 'b-merged');
+
+      expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+      expect(executed.map((e) => e.rowCount)).toEqual([0]);
+      expect(deleteInboundMedia).toHaveBeenCalledWith(OURS);
+      expect((await read('b-merged')).content).toEqual({ mediaUrl: CDN });
+    });
+
+    it('URL trocada no banco (a antiga baixou bem): resultado conflict e arquivo salvo apagado', async () => {
+      const CDN_OTHER = 'https://scontent.cdninstagram.com/v/other.jpg';
+      await seed('b-url', JSON.stringify({ mediaUrl: CDN_OTHER }), '{}');
+      const { service, executed, deleteInboundMedia } = serviceReading(snapshot('b-url', { content: { mediaUrl: CDN }, metadata: {} }));
+
+      const res = await run(service, 'b-url');
+
+      expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+      expect(executed.map((e) => e.rowCount)).toEqual([0]);
+      expect(deleteInboundMedia).toHaveBeenCalledWith(OURS);
+      expect((await read('b-url')).content).toEqual({ mediaUrl: CDN_OTHER });
+    });
   });
 
   describe('Rodada 3 (A): falha antiga não bloqueia URL nova', () => {

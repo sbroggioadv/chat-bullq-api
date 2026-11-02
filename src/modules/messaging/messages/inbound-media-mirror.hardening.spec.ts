@@ -54,6 +54,7 @@ function harness(opts: { message?: any; http?: MediaHttpGet } = {}) {
   };
   const uploads = {
     saveInboundMedia: jest.fn(async () => ({ url: OURS, mimeType: 'image/jpeg', size: 3, filename: 'abc.jpg' })),
+    deleteInboundMedia: jest.fn(async () => true),
   } as unknown as UploadsService;
   const http = jest.fn(opts.http ?? (async () => ok()));
   const queue = { add: jest.fn(async () => ({})) };
@@ -299,6 +300,50 @@ describe('Rodada 3 (A): a falha registrada vale só para a URL que falhou', () =
     await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
 
     expect(h.http).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Rodada 3 (B) — UPDATE com 0 linhas não é sucesso ─────────────────────
+
+describe('Rodada 3 (B): UPDATE que não pegou linha vira conflito e o arquivo salvo é apagado', () => {
+  let warned: unknown[][];
+  beforeEach(() => {
+    warned = [];
+    (Logger.prototype.warn as unknown as jest.Mock).mockImplementation((...a: unknown[]) => warned.push(a));
+  });
+
+  it('0 linhas (URL trocada ou conversa fundida): não marca mirrored, registra conflict e apaga o arquivo', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockResolvedValue(0);
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+    expect(h.uploads.deleteInboundMedia).toHaveBeenCalledWith(OURS);
+    expect(rawSql(h.prisma).some((c: any) => c.sql.includes("'failed'"))).toBe(false);
+    expect(JSON.stringify(warned)).toContain('"reason":"conflict"');
+    expect(JSON.stringify(warned)).not.toContain('TOKEN_A');
+  });
+
+  it('mesma URL nos dois campos: um troca, o outro dá 0 linhas → arquivo referenciado fica', async () => {
+    const h = harness({
+      message: row({ type: 'TEXT', content: { mediaUrl: CDN_MEDIA }, metadata: { replyTo: { story: { url: CDN_MEDIA } } } }),
+    });
+    h.prisma.$executeRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'mirrored', fields: ['media'], conflicts: ['story'] });
+    expect(h.uploads.deleteInboundMedia).not.toHaveBeenCalled();
+  });
+
+  it('com 1 linha nada é apagado', async () => {
+    const h = harness();
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'mirrored', fields: ['media'] });
+    expect(h.uploads.deleteInboundMedia).not.toHaveBeenCalled();
   });
 });
 

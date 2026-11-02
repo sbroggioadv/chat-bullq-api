@@ -231,6 +231,29 @@ export class UploadsService {
     };
   }
 
+  /**
+   * Apaga uma mídia espelhada por saveInboundMedia, dada a URL pública que ela
+   * devolveu. Só aceita o formato exato que saveInboundMedia gera
+   * (`inbound/<canal>/<AAAA-MM-DD>/<32 hex>.<ext>`) sob a nossa base de URL;
+   * qualquer outra coisa devolve false sem tocar a storage.
+   */
+  async deleteInboundMedia(url: string): Promise<boolean> {
+    const prefix = `${this.publicBaseUrl}/`;
+    if (typeof url !== 'string' || !url.startsWith(prefix)) return false;
+    const key = url.slice(prefix.length);
+    if (!UploadsService.INBOUND_KEY.test(key)) return false;
+    if (this.storage.isReady()) {
+      await this.storage.getClient().removeObject(this.storage.getBucket(), key);
+    } else {
+      await fs.promises.unlink(path.join(this.rootDir, key));
+    }
+    this.logger.log(`Inbound media deleted: ${key}`);
+    return true;
+  }
+
+  private static readonly INBOUND_KEY =
+    /^inbound\/[A-Za-z0-9_-]+\/\d{4}-\d{2}-\d{2}\/[a-f0-9]{32}\.[a-z0-9]{1,8}$/;
+
   async saveAudio(file: {
     buffer: Buffer;
     mimetype: string;
