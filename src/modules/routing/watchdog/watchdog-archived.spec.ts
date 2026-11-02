@@ -26,82 +26,121 @@ function conversation(over: Record<string, unknown> = {}) {
   };
 }
 
-describe('watchdog — timer descarta job agendado de conversa arquivada', () => {
-  function setup(row: ReturnType<typeof conversation>, fresh: unknown = row, archivedBeforeCount = false) {
+describe('watchdog — timer nunca grava nem reativa a IA em conversa arquivada', () => {
+  // Fake COM ESTADO: updateMany aplica o where (inclusive isArchived) sobre a
+  // linha e devolve a contagem real; update grava sem condição (para provar
+  // que não é mais usado); count honra o filtro. `arquivarEm` arquiva a linha
+  // durante um await específico do fluxo, simulando o usuário/limpeza.
+  type Ponto = 'entrada' | 'horario' | 'ultima_msg' | 'fresh' | 'roteador' | 'gatilho';
+  function setup(over: Record<string, unknown> = {}, arquivarEm?: Ponto) {
+    const row: any = conversation(over);
+    const arquivar = (p: Ponto) => { if (arquivarEm === p) row.isArchived = true; };
+    const snapshot = () => ({ ...row });
+    const aplica = (where: any) => Object.entries(where).every(([k, v]) => row[k] === v);
     const prisma = {
       conversation: {
-        findFirst: jest.fn().mockResolvedValue(row),
-        findUnique: jest.fn().mockResolvedValue(fresh),
-        update: jest.fn().mockResolvedValue({}),
-        // updateMany condicional (isArchived:false): conta 0 se arquivaram no meio.
-        updateMany: jest.fn().mockResolvedValue({ count: archivedBeforeCount ? 0 : 1 }),
+        findFirst: jest.fn(async () => { arquivar('entrada'); return snapshot(); }),
+        findUnique: jest.fn(async () => { arquivar('fresh'); return snapshot(); }),
+        update: jest.fn(async ({ data }: any) => Object.assign(row, data)),
+        updateMany: jest.fn(async ({ where, data }: any) => (aplica(where) ? (Object.assign(row, data), { count: 1 }) : { count: 0 })),
+        count: jest.fn(async ({ where }: any) => (aplica(where) ? 1 : 0)),
       },
       message: {
-        findFirst: jest.fn().mockResolvedValue({ direction: MessageDirection.INBOUND, createdAt: new Date('2026-11-02T11:00:00Z') }),
+        findFirst: jest.fn(async ({ where }: any) => {
+          arquivar(where.direction ? 'gatilho' : 'ultima_msg');
+          return { id: 'm', direction: MessageDirection.INBOUND, createdAt: new Date('2026-11-02T11:00:00Z') };
+        }),
       },
     };
-    const config = { isWithinBusinessHours: jest.fn().mockReturnValue(true), resolve: jest.fn().mockReturnValue({ maxAttempts: 3 }) };
-    const notifications = { notify: jest.fn().mockResolvedValue(undefined), notifyOrgAgents: jest.fn() };
+    const config = {
+      isWithinBusinessHours: jest.fn(() => { arquivar('horario'); return true; }),
+      resolve: jest.fn().mockReturnValue({ maxAttempts: 3 }),
+    };
+    const notifications = { notify: jest.fn().mockResolvedValue(undefined), notifyOrgAgents: jest.fn().mockResolvedValue(undefined) };
     const agentRunner = { run: jest.fn().mockResolvedValue(undefined) };
-    const agentRouter = { shouldHandle: jest.fn().mockResolvedValue({ handle: true }) };
+    const agentRouter = { shouldHandle: jest.fn(async () => { arquivar('roteador'); return { handle: true }; }) };
     const realtime = { emitToOrg: jest.fn() };
     const processor = new WatchdogTimerProcessor(
       prisma as any, config as any, notifications as any, agentRunner as any, agentRouter as any, realtime as any, {} as any,
     );
     const debug = jest.spyOn((processor as any).logger, 'debug').mockImplementation(() => undefined);
-    const job: any = { name: WATCHDOG_CHECK_JOB, data: { conversationId: 'c', organizationId: 'A', scheduledAtAttempts: 0 } };
-    return { prisma, agentRunner, agentRouter, processor, debug, job };
+    const job: any = { name: WATCHDOG_CHECK_JOB, data: { conversationId: 'c', organizationId: 'A', scheduledAtAttempts: over.stuckAttempts ?? 0 } };
+    return { row, prisma, notifications, agentRunner, agentRouter, processor, debug, job };
   }
+  const DESCARTE = { skipped: true, reason: 'conversation_archived' };
 
-  it('conversa arquivada → descarta sem atualizar a conversa nem reativar a IA', async () => {
-    const { prisma, agentRunner, processor, debug, job } = setup(conversation({ isArchived: true }));
+  it('já arquivada na entrada → descarta sem gravar nem reativar; log debug sem dado de cliente', async () => {
+    const { row, prisma, agentRunner, processor, debug, job } = setup({ isArchived: true, watchdogJobId: 'watchdog-c' });
 
-    const result = await processor.process(job);
-
-    expect(result).toEqual({ skipped: true, reason: 'conversation_archived' });
+    expect(await processor.process(job)).toEqual(DESCARTE);
     expect(prisma.conversation.update).not.toHaveBeenCalled();
     expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
     expect(prisma.message.findFirst).not.toHaveBeenCalled();
     expect(agentRunner.run).not.toHaveBeenCalled();
+    expect(row.watchdogJobId).toBe('watchdog-c');
     expect(debug).toHaveBeenCalledWith(expect.objectContaining({ reason: 'conversation_archived' }));
     const logged = JSON.stringify(debug.mock.calls);
     expect(logged).not.toContain(CLIENTE_NOME);
     expect(logged).not.toContain(CLIENTE_FONE);
   });
 
-  it('conversa não arquivada (ou desarquivada) segue o fluxo normal do watchdog', async () => {
-    const { prisma, agentRunner, processor, job } = setup(conversation({ isArchived: false }));
+  it('não arquivada (ou desarquivada) → fluxo normal: conta tentativa, promove PENDING→BOT e roda a IA', async () => {
+    const { row, agentRunner, processor, job } = setup();
 
-    const result = await processor.process(job);
-
-    expect(result).toEqual({ reactivated: true, attempts: 1 });
-    expect(prisma.conversation.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'c', isArchived: false },
-      data: expect.objectContaining({ stuckAttempts: 1 }),
-    }));
+    expect(await processor.process(job)).toEqual({ reactivated: true, attempts: 1 });
+    expect(row).toMatchObject({ stuckAttempts: 1, status: ConversationStatus.BOT });
     expect(agentRunner.run).toHaveBeenCalledTimes(1);
   });
 
-  it('arquivada entre a entrada e a contagem → nada gravado, roteador e IA não rodam', async () => {
-    const { prisma, agentRunner, agentRouter, processor, job } = setup(conversation(), conversation(), true);
+  it('clearJobId: arquivada durante a checagem de horário (status WAITING) → watchdogJobId intacto', async () => {
+    const { row, prisma, processor, job } = setup({ status: ConversationStatus.WAITING, watchdogJobId: 'watchdog-c' }, 'horario');
 
-    const result = await processor.process(job);
-
-    expect(result).toEqual({ skipped: true, reason: 'conversation_archived' });
+    expect(await processor.process(job)).toEqual({ skipped: true, reason: 'status_WAITING' });
+    expect(row.watchdogJobId).toBe('watchdog-c');
     expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('markStuck: arquivada antes de marcar presa → não grava isStuck nem notifica os gestores', async () => {
+    const { row, prisma, notifications, processor, job } = setup({ stuckAttempts: 3 }, 'ultima_msg');
+
+    expect(await processor.process(job)).toEqual(DESCARTE);
+    expect(row).toMatchObject({ isArchived: true, stuckAttempts: 3 });
+    expect(row.isStuck).toBeUndefined();
+    expect(notifications.notifyOrgAgents).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('contagem de tentativas: arquivada antes de contar → nada gravado, roteador e IA não rodam', async () => {
+    const { row, agentRunner, agentRouter, processor, job } = setup({}, 'ultima_msg');
+
+    expect(await processor.process(job)).toEqual(DESCARTE);
+    expect(row.stuckAttempts).toBe(0);
     expect(agentRouter.shouldHandle).not.toHaveBeenCalled();
     expect(agentRunner.run).not.toHaveBeenCalled();
   });
 
-  it('`fresh` arquivada (arquivou durante o processamento) → aborta antes do roteador e da IA, sem update', async () => {
-    const { prisma, agentRunner, agentRouter, processor, job } = setup(conversation(), conversation({ isArchived: true }));
+  it('`fresh` arquivada → aborta antes do roteador e da IA', async () => {
+    const { agentRunner, agentRouter, processor, job } = setup({}, 'fresh');
 
-    const result = await processor.process(job);
-
-    expect(result).toEqual({ skipped: true, reason: 'conversation_archived' });
+    expect(await processor.process(job)).toEqual(DESCARTE);
     expect(agentRouter.shouldHandle).not.toHaveBeenCalled();
     expect(agentRunner.run).not.toHaveBeenCalled();
+  });
+
+  it('promoção para BOT: arquivada DURANTE o roteamento (PENDING) → não promove e não roda a IA', async () => {
+    const { row, prisma, agentRunner, processor, job } = setup({}, 'roteador');
+
+    expect(await processor.process(job)).toEqual(DESCARTE);
+    expect(row.status).toBe(ConversationStatus.PENDING);
+    expect(agentRunner.run).not.toHaveBeenCalled();
     expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('arquivada durante a busca do gatilho (status OPEN, sem promoção) → revalida e não roda a IA', async () => {
+    const { agentRunner, processor, job } = setup({ status: ConversationStatus.OPEN }, 'gatilho');
+
+    expect(await processor.process(job)).toEqual(DESCARTE);
+    expect(agentRunner.run).not.toHaveBeenCalled();
   });
 });
 

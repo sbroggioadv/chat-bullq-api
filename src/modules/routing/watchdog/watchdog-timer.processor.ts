@@ -146,11 +146,12 @@ export class WatchdogTimerProcessor extends WorkerHost {
     // humano e notifica gestores. Opera como "última cartada": ao virar
     // PENDING + isStuck a conversa aparece no filtro "presas" do dashboard.
     if (nextAttempts > cfg.maxAttempts) {
-      await this.markStuck(
+      const marked = await this.markStuck(
         conversationId,
         conversation.organizationId,
         conversation.contact?.name ?? conversation.contact?.phone ?? 'Cliente',
       );
+      if (!marked) return this.discardArchived(conversationId);
       await this.clearJobId(conversationId);
       return { stuck: true, attempts: conversation.stuckAttempts };
     }
@@ -215,13 +216,22 @@ export class WatchdogTimerProcessor extends WorkerHost {
     }
 
     try {
+      // Revalida logo antes da IA: arquivada DURANTE o roteamento ou a busca
+      // do gatilho → aborta sem gravar e sem rodar a IA.
       // Se status=PENDING, promove pra BOT antes do run — assim a UI
-      // mostra a IA atendendo e não fica "ninguém pegou".
+      // mostra a IA atendendo e não fica "ninguém pegou". A promoção é a
+      // própria revalidação (updateMany condicional, confere a contagem).
       if (conversation.status === ConversationStatus.PENDING) {
-        await this.prisma.conversation.update({
-          where: { id: conversationId },
+        const promoted = await this.prisma.conversation.updateMany({
+          where: { id: conversationId, isArchived: false },
           data: { status: ConversationStatus.BOT },
         });
+        if (promoted.count === 0) return this.discardArchived(conversationId);
+      } else {
+        const ativa = await this.prisma.conversation.count({
+          where: { id: conversationId, isArchived: false },
+        });
+        if (ativa === 0) return this.discardArchived(conversationId);
       }
 
       await this.agentRunner.run({ conversation: fresh, triggerMessage });
@@ -250,19 +260,22 @@ export class WatchdogTimerProcessor extends WorkerHost {
     return { skipped: true, reason: 'conversation_archived' };
   }
 
+  /** Marca presa e notifica. Devolve `false` (sem gravar nem notificar) se a
+   *  conversa foi arquivada no meio — atualização condicional. */
   private async markStuck(
     conversationId: string,
     organizationId: string,
     contactName: string,
-  ): Promise<void> {
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
+  ): Promise<boolean> {
+    const marked = await this.prisma.conversation.updateMany({
+      where: { id: conversationId, isArchived: false },
       data: {
         isStuck: true,
         status: ConversationStatus.PENDING,
         watchdogJobId: null,
       },
     });
+    if (marked.count === 0) return false;
 
     await this.notifications.notifyOrgAgents({
       organizationId,
@@ -277,6 +290,7 @@ export class WatchdogTimerProcessor extends WorkerHost {
     });
 
     this.logger.warn(`Conversation marked STUCK: conv=${conversationId}`);
+    return true;
   }
 
   private async notifyAssignee(
@@ -303,10 +317,11 @@ export class WatchdogTimerProcessor extends WorkerHost {
       );
   }
 
+  /** Limpa o watchdogJobId só se não arquivada (atualização condicional). */
   private async clearJobId(conversationId: string): Promise<void> {
     await this.prisma.conversation
-      .update({
-        where: { id: conversationId },
+      .updateMany({
+        where: { id: conversationId, isArchived: false },
         data: { watchdogJobId: null },
       })
       .catch(() => undefined);
