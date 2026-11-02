@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue, UnrecoverableError } from 'bullmq';
 import { MessageDirection } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
+import { mergedOriginalId } from '../conversations/merged-conversation';
 import { UploadsService } from './uploads.service';
 import {
   MediaDownloadError,
@@ -50,7 +51,8 @@ export interface MirrorableMessage {
 export type MirrorRunResult =
   | { status: 'not_found' }
   | { status: 'noop' }
-  | { status: 'mirrored'; fields: Array<'media' | 'story'> };
+  | { status: 'mirrored'; fields: Array<'media' | 'story'> }
+  | { status: 'skipped'; reason: 'conversation_merged' };
 
 interface MirrorTargets {
   mediaUrl?: string;
@@ -181,9 +183,29 @@ export class InboundMediaMirrorService {
   async runJob(data: MirrorJobData, opts: { isFinalAttempt: boolean }): Promise<MirrorRunResult> {
     const message = await this.prisma.message.findUnique({
       where: { id: data.messageId },
-      select: { id: true, direction: true, type: true, content: true, metadata: true },
+      select: {
+        id: true,
+        direction: true,
+        type: true,
+        content: true,
+        metadata: true,
+        conversation: { select: { metadata: true } },
+      },
     });
     if (!message) return { status: 'not_found' };
+
+    // Extra fundida pela limpeza de duplicadas: não escreve nada, não retenta.
+    // Só a marca da fusão conta — conversa arquivada pelo usuário segue normal.
+    // Os UPDATEs repetem a checagem no WHERE para cobrir a fusão que acontecer
+    // entre esta leitura e a escrita.
+    if (mergedOriginalId(message.conversation?.metadata)) {
+      this.logger.log({
+        msg: 'ig_media_mirror_skipped',
+        messageId: message.id,
+        reason: 'conversation_merged',
+      });
+      return { status: 'skipped', reason: 'conversation_merged' };
+    }
 
     // Cada campo é independente: uma desistência num não impede nem encerra
     // a tentativa do outro. Campo com desistência já registrada não é tentado
@@ -275,7 +297,12 @@ export class InboundMediaMirrorService {
             || jsonb_build_object('originalMediaUrl', ${original}::text)
       WHERE "id" = ${id}
         AND jsonb_typeof("content") = 'object'
-        AND "content"->>'mediaUrl' = ${original}`;
+        AND "content"->>'mediaUrl' = ${original}
+        AND NOT EXISTS (
+          SELECT 1 FROM "conversations" c
+          WHERE c."id" = "messages"."conversation_id"
+            AND jsonb_typeof(c."metadata" -> 'cleanup_merged_into') = 'string'
+            AND c."metadata" ->> 'cleanup_merged_into' <> '')`;
   }
 
   /** Troca metadata.replyTo.story.url só se ainda for o link original. */
@@ -288,7 +315,12 @@ export class InboundMediaMirrorService {
       WHERE "id" = ${id}
         AND jsonb_typeof("metadata") = 'object'
         AND jsonb_typeof("metadata" #> '{replyTo,story}') = 'object'
-        AND "metadata" #>> '{replyTo,story,url}' = ${original}`;
+        AND "metadata" #>> '{replyTo,story,url}' = ${original}
+        AND NOT EXISTS (
+          SELECT 1 FROM "conversations" c
+          WHERE c."id" = "messages"."conversation_id"
+            AND jsonb_typeof(c."metadata" -> 'cleanup_merged_into') = 'string'
+            AND c."metadata" ->> 'cleanup_merged_into' <> '')`;
   }
 
   /**
@@ -310,7 +342,12 @@ export class InboundMediaMirrorService {
                      'reason', ${failure.reason}::text,
                      'httpStatus', ${failure.status ?? null}::int,
                      'at', ${new Date().toISOString()}::text)))
-        WHERE "id" = ${id}`;
+        WHERE "id" = ${id}
+          AND NOT EXISTS (
+            SELECT 1 FROM "conversations" c
+            WHERE c."id" = "messages"."conversation_id"
+              AND jsonb_typeof(c."metadata" -> 'cleanup_merged_into') = 'string'
+              AND c."metadata" ->> 'cleanup_merged_into' <> '')`;
     } catch (err) {
       this.logger.warn({
         msg: 'ig_media_mirror_record_failure_failed',

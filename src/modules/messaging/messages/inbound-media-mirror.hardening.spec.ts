@@ -245,6 +245,44 @@ describe('Achado 5: mediaUrl e story.url são tentados e registrados de forma in
   });
 });
 
+// ─── Achado 8 — conversa extra fundida pela limpeza ───────────────────────
+
+describe('Achado 8: extra fundida não recebe escrita; arquivada pelo usuário sim', () => {
+  it('conversa com cleanup_merged_into: não baixa, não escreve, não retenta', async () => {
+    const h = harness({ message: row({ conversation: { metadata: { cleanup_merged_into: 'conv-original' } } }) });
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'skipped', reason: 'conversation_merged' });
+    expect(h.http).not.toHaveBeenCalled();
+    expect(h.prisma.$executeRaw).not.toHaveBeenCalled();
+    expect(h.prisma.message.update).not.toHaveBeenCalled();
+  });
+
+  it('conversa arquivada pelo usuário (sem a marca) é espelhada normalmente', async () => {
+    const h = harness({ message: row({ conversation: { isArchived: true, metadata: { archivedBy: 'user-1' } } }) });
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'mirrored', fields: ['media'] });
+  });
+
+  it('todo UPDATE repete a checagem da marca no WHERE (fusão entre a leitura e a escrita)', async () => {
+    const h = harness({ http: async () => ok({ status: 404 }) });
+    const swap = harness();
+
+    await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: true }).catch(() => undefined);
+    await swap.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    const all = [...rawSql(h.prisma), ...rawSql(swap.prisma)];
+    expect(all.length).toBe(2);
+    for (const c of all) {
+      expect(c.sql).toContain(`NOT EXISTS ( SELECT 1 FROM "conversations" c WHERE c."id" = "messages"."conversation_id"`);
+      expect(c.sql).toContain(`'cleanup_merged_into'`);
+    }
+  });
+});
+
 // ─── Achado 7 — eco e mensagens enviadas ──────────────────────────────────
 
 describe('Achado 7: eco do Instagram é espelhado; enviada pelo BullQ não', () => {

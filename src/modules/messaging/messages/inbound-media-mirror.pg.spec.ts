@@ -205,6 +205,33 @@ suite('Espelhamento — SQL em Postgres real', () => {
     expect(JSON.stringify(after.metadata)).toContain('"http_status"');
   });
 
+  it('corrida com a limpeza: conversa fundida depois da leitura não recebe nenhuma escrita', async () => {
+    // O worker leu a conversa ainda sem a marca; no banco ela já foi fundida.
+    await seed('merged-race', JSON.stringify(snapshot('x').content), JSON.stringify(snapshot('x').metadata), '{"cleanup_merged_into":"conv-original"}');
+    await seed('merged-race-404', JSON.stringify({ mediaUrl: CDN_404 }), '{}', '{"cleanup_merged_into":"conv-original"}');
+    const before = await read('merged-race');
+    const { service, executed } = serviceReading(snapshot('merged-race'));
+    const failing = serviceReading(snapshot('merged-race-404', { content: { mediaUrl: CDN_404 }, metadata: {} }));
+
+    await run(service, 'merged-race');
+    await run(failing.service, 'merged-race-404', true);
+
+    expect(executed.map((e) => e.rowCount)).toEqual([0, 0]);
+    expect(failing.executed.map((e) => e.rowCount)).toEqual([0]);
+    expect(await read('merged-race')).toMatchObject({ content: before.content, metadata: before.metadata });
+    expect((await read('merged-race-404')).metadata).toEqual({});
+  });
+
+  it('conversa arquivada pelo usuário (sem a marca) recebe a escrita normalmente', async () => {
+    await seed('archived', JSON.stringify({ mediaUrl: CDN }), '{}', '{"archivedBy":"user-1"}');
+    const { service, executed } = serviceReading(snapshot('archived', { content: { mediaUrl: CDN }, metadata: {} }));
+
+    await run(service, 'archived');
+
+    expect(executed.map((e) => e.rowCount)).toEqual([1]);
+    expect((await read('archived')).content).toEqual({ mediaUrl: OURS });
+  });
+
   it('registro por campo preserva o registro do outro campo e o resto do metadata', async () => {
     const prior = { isEcho: false, mediaMirror: { story: { status: 'failed', reason: 'http_status', httpStatus: 404 } } };
     await seed('per-field', JSON.stringify({ mediaUrl: CDN_404 }), JSON.stringify(prior));
