@@ -235,15 +235,29 @@ describe('importador de histórico — conversa arquivada nunca é escolhida', (
   const importar = (prisma: any, type: ChannelType = ChannelType.WHATSAPP_ZAPPFY, n = normalized()) =>
     new HistoryImportService(prisma, {} as any).importConversation(channel(type), n);
 
-  it('busca por externalConversationId ignora a extra arquivada que ainda tem o id', async () => {
+  it.each([ChannelType.WHATSAPP_ZAPPFY, ChannelType.WHATSAPP_OFFICIAL])(
+    'thread de WhatsApp (%s) arquivada não é achada pela busca por thread',
+    async (type) => {
+      const prisma = prismaWith([
+        conv({ id: 'extra', isArchived: true, metadata: { externalConversationId: 'thread-1' } }),
+        conv({ id: 'original' }),
+      ]);
+
+      const result = await importar(prisma, type);
+
+      expect(result).toEqual({ conversationId: 'original', contactId: 'contact', isNew: false });
+    },
+  );
+
+  it('thread Gmail arquivada pelo usuário continua sendo achada pela busca por thread (sem conversa nova)', async () => {
     const prisma = prismaWith([
-      conv({ id: 'extra', isArchived: true, metadata: { externalConversationId: 'thread-1' } }),
-      conv({ id: 'original' }),
+      conv({ id: 'thread-gmail-arquivada', isArchived: true, metadata: { externalConversationId: 'thread-1' } }),
     ]);
 
-    const result = await importar(prisma);
+    const result = await importar(prisma, ChannelType.GMAIL);
 
-    expect(result).toEqual({ conversationId: 'original', contactId: 'contact', isNew: false });
+    expect(result).toEqual({ conversationId: 'thread-gmail-arquivada', contactId: 'contact', isNew: false });
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
   });
 
   it('busca por contato ignora a arquivada, mesmo que o banco a devolva primeiro', async () => {

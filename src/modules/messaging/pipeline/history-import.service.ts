@@ -25,13 +25,20 @@ export interface MessagesImportResult {
   skipped: number;
 }
 
-// Conversa arquivada nunca recebe histórico importado: fica fora da escolha.
 // Entre várias candidatas, vence a de mensagem mais recente, com desempate fixo.
 const MOST_RECENT_FIRST = [
   { lastMessageAt: { sort: 'desc' as const, nulls: 'last' as const } },
   { createdAt: 'desc' as const },
   { id: 'desc' as const },
 ];
+
+// Busca por thread: no WhatsApp a arquivada é duplicada fundida e fica de
+// fora. No Gmail a thread É a conversa — arquivada pelo usuário continua
+// sendo a dona da thread (senão a reimportação duplicaria o histórico).
+const THREAD_LOOKUP_SKIPS_ARCHIVED: ReadonlySet<ChannelType> = new Set([
+  ChannelType.WHATSAPP_ZAPPFY,
+  ChannelType.WHATSAPP_OFFICIAL,
+]);
 
 @Injectable()
 export class HistoryImportService {
@@ -54,7 +61,7 @@ export class HistoryImportService {
         where: {
           organizationId: channel.organizationId,
           channelId: channel.id,
-          isArchived: false,
+          ...(THREAD_LOOKUP_SKIPS_ARCHIVED.has(channel.type) ? { isArchived: false } : {}),
           metadata: {
             path: ['externalConversationId'],
             equals: normalized.externalConversationId,
