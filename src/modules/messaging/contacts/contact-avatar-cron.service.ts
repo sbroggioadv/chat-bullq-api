@@ -17,6 +17,7 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private cursor: string | null = null;
+  private externalCursor: string | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -91,13 +92,29 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
         take: batchSize,
       });
 
+      const missingCount = targets.length;
+      if (missingCount < batchSize) {
+        const externalTargets = await this.prisma.contactChannel.findMany({
+          where: {
+            contact: { deletedAt: null, avatarUrl: { not: null }, NOT: { avatarUrl: { contains: '/api/v1/uploads/' } } },
+            ...(this.externalCursor ? { id: { gt: this.externalCursor } } : {}),
+            channel: { type: 'WHATSAPP_ZAPPFY', deletedAt: null, isActive: true },
+            externalId: { not: '' },
+          },
+          include: { channel: true },
+          orderBy: { id: 'asc' },
+          take: batchSize - missingCount,
+        });
+        targets.push(...externalTargets);
+      }
+
       let enriched = 0;
       let rehosted = 0;
       let skipped = 0;
       let failed = 0;
       let scanned = 0;
       let rateLimited = false;
-      for (const cc of targets) {
+      for (const [index, cc] of targets.entries()) {
         if (scanned > 0 && pauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pauseMs));
         scanned++;
         try {
@@ -118,9 +135,13 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
         } catch {
           failed++;
         }
-        this.cursor = cc.id;
+        if (index < missingCount) this.cursor = cc.id;
+        else this.externalCursor = cc.id;
       }
-      if (!rateLimited && targets.length < batchSize) this.cursor = null;
+      if (!rateLimited || scanned > missingCount) {
+        if (missingCount < batchSize) this.cursor = null;
+      }
+      if (!rateLimited && missingCount < batchSize && targets.length < batchSize) this.externalCursor = null;
 
       this.logger.log({
         msg: 'contact_avatar_cron_done',
