@@ -294,7 +294,7 @@ export class ConversationsService {
 
     // Tri-state:
     //   null  = limpa override, conversa volta a seguir regras globais
-    //   true  = força ON (sobrepõe kill switch e horário)
+    //   true  = força ON (respeita o desligamento da organização e panic mode)
     //   false = força OFF
     const updated = await this.prisma.conversation.update({
       where: { id },
@@ -457,6 +457,12 @@ export class ConversationsService {
       activeAgentId: agentId,
       reason: 'agent-pinned',
     });
+
+    const decision = await this.agentRouter.shouldHandle(updated as Conversation);
+    if (!decision.handle) {
+      this.logger.log(`setActiveAgent skipped for conv ${id}: ${decision.reason} (actor=${actorId})`);
+      return { engaged: false, reason: decision.reason, agentName: agent.name };
+    }
 
     // Pick latest inbound (preferred) or fallback to any latest message.
     const triggerMessage =
