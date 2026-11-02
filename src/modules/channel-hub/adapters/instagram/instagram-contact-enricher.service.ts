@@ -77,7 +77,14 @@ export class InstagramContactEnricherService {
     try {
       const data = await this.httpClient.getUserProfile(channel, igUserId);
       return data;
-    } catch {
+    } catch (err: any) {
+      const status = Number(err?.response?.status ?? err?.status);
+      const statusText = Number.isInteger(status) && status >= 100 && status <= 599
+        ? String(status)
+        : 'indisponível';
+      this.logger.warn(
+        `Instagram profile fetch failed (HTTP ${statusText}) for ***${igUserId.slice(-4)}: falha na busca do perfil`,
+      );
       return null;
     }
   }
