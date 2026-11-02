@@ -370,24 +370,44 @@ export class InboundMessageProcessor extends WorkerHost {
         `Inbound failed (channel=${channelId} ext=${message.externalMessageId}): ${err.message}`,
         err.stack,
       );
-      if (webhookEventId) {
-        await this.webhookEvents.markFailed(webhookEventId, err.message);
-      }
-      // Falha ANTES de persistir: libera a claim (DEL) para o retry
-      // reprocessar de verdade. (O markProcessed antigo REGRAVAVA a chave por
-      // 24h e o retry voltava como duplicate_claim, perdendo a mensagem.)
-      // Falha DEPOIS de persistir: mantém a chave — reprocessar duplicaria
-      // efeitos (IA, watchdog) de uma mensagem que já está salva.
-      if (claimed && !persisted) {
-        await this.idempotency
-          .releaseClaim(message.externalMessageId, channelId)
-          .catch(() => undefined);
-      } else if (persisted) {
-        await this.idempotency
-          .markProcessed(message.externalMessageId, channelId)
-          .catch(() => undefined);
+      try {
+        if (webhookEventId) {
+          await this.webhookEvents.markFailed(webhookEventId, err.message);
+        }
+      } catch (markErr: any) {
+        // Não mascara o erro original nem impede a liberação da claim.
+        this.logger.warn(
+          `markFailed failed (webhookEvent=${webhookEventId}): ${markErr?.message ?? markErr}`,
+        );
+      } finally {
+        // Falha ANTES de persistir: libera a claim (DEL) para o retry
+        // reprocessar de verdade. (O markProcessed antigo REGRAVAVA a chave
+        // por 24h e o retry voltava como duplicate_claim, perdendo a mensagem.)
+        // Falha DEPOIS de persistir: mantém a chave — reprocessar duplicaria
+        // efeitos (IA, watchdog) de uma mensagem que já está salva.
+        await this.settleClaim(claimed, persisted, message.externalMessageId, channelId);
       }
       throw err;
+    }
+  }
+
+  /** Destino da claim de idempotência após falha; nunca lança (só loga). */
+  private async settleClaim(
+    claimed: boolean,
+    persisted: boolean,
+    externalMessageId: string,
+    channelId: string,
+  ): Promise<void> {
+    try {
+      if (claimed && !persisted) {
+        await this.idempotency.releaseClaim(externalMessageId, channelId);
+      } else if (persisted) {
+        await this.idempotency.markProcessed(externalMessageId, channelId);
+      }
+    } catch (claimErr: any) {
+      this.logger.warn(
+        `Idempotency claim settle failed (channel=${channelId} ext=${externalMessageId} persisted=${persisted}): ${claimErr?.message ?? claimErr}`,
+      );
     }
   }
 

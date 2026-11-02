@@ -235,6 +235,35 @@ describe('inbound — claim de idempotência (preexistente em f6d34ed)', () => {
     expect(w.messages).toHaveLength(1);
   });
 
+  it('markFailed falha → a claim é liberada mesmo assim e o retry persiste', async () => {
+    const w = world([conv({ id: 'c1' })]);
+    const contactResolver = { resolve: jest.fn().mockRejectedValueOnce(new Error('db_timeout')).mockResolvedValue({ contactId: 'contact', isNew: false }) };
+    const { processor, job, webhookEvents, idem } = inbound(w, { contactResolver });
+    webhookEvents.markFailed.mockRejectedValueOnce(new Error('webhook_db_down'));
+
+    await expect(processor.process(job)).rejects.toThrow('db_timeout');
+    expect(idem.releaseClaim).toHaveBeenCalledWith('wamid-1', 'ch');
+    const retry = await processor.process(job);
+
+    expect(retry).toMatchObject({ conversationId: 'c1' });
+    expect(w.messages).toHaveLength(1);
+  });
+
+  it('markFailed E a liberação falham → relança o erro ORIGINAL e loga as duas falhas sem mascarar', async () => {
+    const w = world([conv({ id: 'c1' })]);
+    const contactResolver = { resolve: jest.fn().mockRejectedValueOnce(new Error('db_timeout')) };
+    const { processor, job, webhookEvents, idem } = inbound(w, { contactResolver });
+    webhookEvents.markFailed.mockRejectedValueOnce(new Error('webhook_db_down'));
+    idem.releaseClaim.mockRejectedValueOnce(new Error('redis_down'));
+    const warn = jest.spyOn((processor as any).logger, 'warn').mockImplementation(() => undefined);
+
+    await expect(processor.process(job)).rejects.toThrow('db_timeout');
+    expect(idem.releaseClaim).toHaveBeenCalledTimes(1);
+    const avisos = JSON.stringify(warn.mock.calls);
+    expect(avisos).toContain('webhook_db_down');
+    expect(avisos).toContain('redis_down');
+  });
+
   it('falha DEPOIS de persistir mantém a claim: o retry não reprocessa (sem efeito em dobro)', async () => {
     const w = world([conv({ id: 'c1' })]);
     const gateway = { emitToChannel: jest.fn().mockImplementationOnce(() => { throw new Error('socket'); }), emitToConversation: jest.fn() };
@@ -320,6 +349,20 @@ describe('sincronização — re-resolve uma vez; falha vira pendência visível
     expect(importer.importConversation).toHaveBeenCalledTimes(2);
     expect(importer.notifyConversationImported).toHaveBeenCalledWith('org', 'original');
     expect(final()).toMatchObject({ status: 'COMPLETED', conversationsImported: 1, messagesImported: 1 });
+  });
+
+  it('só a publicação de progresso falha (aviso à caixa) → conversa conta como importada, job COMPLETED sem pendência', async () => {
+    const importer = {
+      importConversation: jest.fn().mockResolvedValue({ conversationId: 'c1', contactId: 'c', isNew: false }),
+      importMessages: jest.fn().mockResolvedValue({ imported: 1, skipped: 0 }),
+      notifyConversationImported: jest.fn().mockRejectedValue(new Error('socket_down')),
+    };
+    const { processor, final } = setup(importer);
+
+    await processor.process(job);
+
+    expect(final()).toMatchObject({ status: 'COMPLETED', conversationsImported: 1, messagesImported: 1 });
+    expect(final().errorMessage).toBeUndefined();
   });
 
   it('segunda tentativa também falha → job FAILED com contagem e id da conversa pendente (as outras entram)', async () => {

@@ -138,31 +138,40 @@ export class ChannelSyncProcessor extends WorkerHost {
           // Só conta como importada a conversa cujas mensagens entraram.
           convImported++;
 
-          if (msgResult > 0) {
-            await this.importer.notifyConversationImported(
-              channel.organizationId,
-              importResult.conversationId,
-            );
-          }
+          // Publicar progresso (aviso à caixa, contadores do job, realtime)
+          // é separado da importação: se só isso falhar, a conversa JÁ foi
+          // importada e não vira pendência — o total final é gravado no fim.
+          try {
+            if (msgResult > 0) {
+              await this.importer.notifyConversationImported(
+                channel.organizationId,
+                importResult.conversationId,
+              );
+            }
 
-          await this.prisma.channelSyncJob.update({
-            where: { id: syncJobId },
-            data: {
-              conversationsImported: convImported,
-              messagesImported: msgImported,
-              contactsImported,
-            },
-          });
-
-          if (convImported % 5 === 0 || convImported === conversations.length) {
-            this.emitProgress(channel.organizationId, syncJobId, channelId, {
-              status: ChannelSyncStatus.RUNNING,
-              phase: 'importing',
-              conversationsTotal: conversations.length,
-              conversationsImported: convImported,
-              messagesImported: msgImported,
-              contactsImported,
+            await this.prisma.channelSyncJob.update({
+              where: { id: syncJobId },
+              data: {
+                conversationsImported: convImported,
+                messagesImported: msgImported,
+                contactsImported,
+              },
             });
+
+            if (convImported % 5 === 0 || convImported === conversations.length) {
+              this.emitProgress(channel.organizationId, syncJobId, channelId, {
+                status: ChannelSyncStatus.RUNNING,
+                phase: 'importing',
+                conversationsTotal: conversations.length,
+                conversationsImported: convImported,
+                messagesImported: msgImported,
+                contactsImported,
+              });
+            }
+          } catch (progressErr: any) {
+            this.logger.warn(
+              `Progress publish failed for imported conversation ${conv.externalConversationId}: ${progressErr?.message ?? progressErr}`,
+            );
           }
         } catch (err: any) {
           failed.push(conv.externalConversationId);
