@@ -239,14 +239,21 @@ export class InboundMediaMirrorService {
     throw new Error(code);
   }
 
+  // SQL: `metadata`/`content` podem guardar JSON que não é objeto (escalar,
+  // null, array). `||` com não-objeto vira ARRAY (provado em Postgres 16), por
+  // isso toda escrita parte de `CASE WHEN jsonb_typeof(...) = 'object'`.
+
   /** Troca content.mediaUrl só se ainda for o link original (compare-and-set). */
   private swapContentMediaUrl(id: string, original: string, ours: string): Promise<number> {
     return this.prisma.$executeRaw`
       UPDATE "messages"
       SET "content" = jsonb_set("content", '{mediaUrl}', to_jsonb(${ours}::text)),
-          "metadata" = COALESCE("metadata", '{}'::jsonb)
+          "metadata" = (CASE WHEN jsonb_typeof("metadata") = 'object'
+                             THEN "metadata" ELSE '{}'::jsonb END)
             || jsonb_build_object('originalMediaUrl', ${original}::text)
-      WHERE "id" = ${id} AND "content"->>'mediaUrl' = ${original}`;
+      WHERE "id" = ${id}
+        AND jsonb_typeof("content") = 'object'
+        AND "content"->>'mediaUrl' = ${original}`;
   }
 
   /** Troca metadata.replyTo.story.url só se ainda for o link original. */
@@ -256,7 +263,10 @@ export class InboundMediaMirrorService {
       SET "metadata" = jsonb_set(
             jsonb_set("metadata", '{replyTo,story,url}', to_jsonb(${ours}::text)),
             '{replyTo,story,originalUrl}', to_jsonb(${original}::text))
-      WHERE "id" = ${id} AND "metadata" #>> '{replyTo,story,url}' = ${original}`;
+      WHERE "id" = ${id}
+        AND jsonb_typeof("metadata") = 'object'
+        AND jsonb_typeof("metadata" #> '{replyTo,story}') = 'object'
+        AND "metadata" #>> '{replyTo,story,url}' = ${original}`;
   }
 
   /** Registra o motivo da desistência; nunca lança. */
@@ -264,7 +274,9 @@ export class InboundMediaMirrorService {
     try {
       await this.prisma.$executeRaw`
         UPDATE "messages"
-        SET "metadata" = COALESCE("metadata", '{}'::jsonb) || jsonb_build_object(
+        SET "metadata" = (CASE WHEN jsonb_typeof("metadata") = 'object'
+                               THEN "metadata" ELSE '{}'::jsonb END)
+          || jsonb_build_object(
               'mediaMirror', jsonb_build_object(
                 'status', 'failed',
                 'reason', ${failure.reason}::text,

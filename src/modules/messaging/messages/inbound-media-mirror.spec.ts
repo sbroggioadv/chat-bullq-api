@@ -282,10 +282,10 @@ describe('InboundMediaMirrorService.runJob', () => {
 
     const [media, story] = rawCalls(h.prisma);
     expect(media.sql).toContain(`UPDATE "messages" SET "content" = jsonb_set("content", '{mediaUrl}', to_jsonb(?::text))`);
-    expect(media.sql).toContain(`"metadata" = COALESCE("metadata", '{}'::jsonb) || jsonb_build_object('originalMediaUrl', ?::text)`);
-    expect(media.sql).toContain(`WHERE "id" = ? AND "content"->>'mediaUrl' = ?`);
+    expect(media.sql).toContain(`"metadata" = (CASE WHEN jsonb_typeof("metadata") = 'object' THEN "metadata" ELSE '{}'::jsonb END) || jsonb_build_object('originalMediaUrl', ?::text)`);
+    expect(media.sql).toContain(`WHERE "id" = ? AND jsonb_typeof("content") = 'object' AND "content"->>'mediaUrl' = ?`);
     expect(story.sql).toContain(`jsonb_set("metadata", '{replyTo,story,url}', to_jsonb(?::text))`);
-    expect(story.sql).toContain(`WHERE "id" = ? AND "metadata" #>> '{replyTo,story,url}' = ?`);
+    expect(story.sql).toContain(`AND jsonb_typeof("metadata" #> '{replyTo,story}') = 'object' AND "metadata" #>> '{replyTo,story,url}' = ?`);
     expect(h.prisma.message.update).not.toHaveBeenCalled();
   });
 
