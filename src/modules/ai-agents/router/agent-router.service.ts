@@ -67,6 +67,13 @@ export class AgentRouterService {
     latestMessageText: string,
     recentMessages: ClassifierMessage[] = [],
   ): Promise<AgentSelection | null> {
+    // O runner reavalia o escopo, pois o card pode mudar após o gate.
+    if (!conversation.isGroup && conversation.aiEnabled !== true) {
+      const scopedIds = await this.pipelineScopedAgentIds(conversation.organizationId, conversation.id);
+      if (!scopedIds.length) return null;
+      return this.fallbackToOrchestrator(conversation, scopedIds);
+    }
+
     // 1. Conversa em andamento — mantém o agent atual
     if (conversation.activeAgentId) {
       const agent = await this.prisma.aiAgent.findUnique({
@@ -193,7 +200,21 @@ export class AgentRouterService {
 
   private async fallbackToOrchestrator(
     conversation: Conversation,
+    scopedAgentIds?: string[],
   ): Promise<AgentSelection | null> {
+    if (scopedAgentIds) {
+      const link = await this.prisma.aiAgentChannel.findFirst({
+        where: {
+          channelId: conversation.channelId,
+          mode: 'AUTONOMOUS',
+          agent: { id: { in: scopedAgentIds }, organizationId: conversation.organizationId, isActive: true, deletedAt: null },
+        },
+        include: { agent: { select: { id: true, name: true } } },
+      });
+      if (!link?.agent) return null;
+      return { agentId: link.agent.id, agentName: link.agent.name, classifiedIntent: null,
+        classifierConfidence: null, skippedOrchestrator: false, classifierCostUsd: 0 };
+    }
     // kind: ORCHESTRATOR é obrigatório — sem esse filtro o findFirst
     // devolvia um worker arbitrário do canal (visto em prod: Daniel
     // recebendo small talk/spam/fallback que era do Augusto).
@@ -284,7 +305,9 @@ export class AgentRouterService {
   ): Promise<{
     handle: boolean;
     reason?: string;
+    scopedAgentIds?: string[];
   }> {
+    // Precedência: panic → JARVIS → conversa OFF → grupo → organização desligada → autoatendimento → vínculo no canal.
     // S22.2 — Panic mode é a PRIMEIRA coisa. Override absoluto: ignora scope,
     // conv override, channel override, tudo. Kill switch de emergência.
     const orgPanic = await this.prisma.organization.findUnique({
@@ -354,12 +377,13 @@ export class AgentRouterService {
       return { handle: false, reason: 'org.aiEnabled=false' };
     }
 
-    if (convOverride !== true && !conversation.activeAgentId) {
-      const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
+    let scopedAgentIds: string[] | undefined;
+    if (convOverride !== true) {
+      scopedAgentIds = await this.pipelineScopedAgentIds(
         conversation.organizationId,
         conversation.id,
       );
-      if (!hasScopedAgent) {
+      if (!scopedAgentIds.length) {
         return { handle: false, reason: 'AUTOATENDIMENTO_OFF' };
       }
     }
@@ -377,12 +401,12 @@ export class AgentRouterService {
 
     // Mesmo com override pra ON, ainda precisa existir um agente ativo
     // pra atender essa conversa. Sem isso, não tem o que rodar.
-    if (!conversation.activeAgentId) {
+    if (scopedAgentIds || !conversation.activeAgentId) {
       const link = await this.prisma.aiAgentChannel.findFirst({
         where: {
           channelId: conversation.channelId,
           mode: 'AUTONOMOUS',
-          agent: { isActive: true, deletedAt: null },
+          agent: { isActive: true, deletedAt: null, ...(scopedAgentIds ? { id: { in: scopedAgentIds }, organizationId: conversation.organizationId } : {}) },
         },
       });
       if (!link) {
@@ -410,13 +434,13 @@ export class AgentRouterService {
       }
     }
 
-    return { handle: true };
+    return scopedAgentIds ? { handle: true, scopedAgentIds } : { handle: true };
   }
 
-  private async hasPipelineScopedAgentForConversation(
+  private async pipelineScopedAgentIds(
     organizationId: string,
     conversationId: string,
-  ): Promise<boolean> {
+  ): Promise<string[]> {
     const activeCards = await this.prisma.card.findMany({
       where: { conversationId, status: 'OPEN' },
       select: { pipelineId: true },
@@ -424,8 +448,8 @@ export class AgentRouterService {
     const pipelineIds = Array.from(
       new Set(activeCards.map((c) => c.pipelineId).filter(Boolean) as string[]),
     );
-    if (pipelineIds.length === 0) return false;
-    const match = await this.prisma.aiAgent.findFirst({
+    if (pipelineIds.length === 0) return [];
+    const matches = await this.prisma.aiAgent.findMany({
       where: {
         organizationId,
         isActive: true,
@@ -434,7 +458,7 @@ export class AgentRouterService {
       },
       select: { id: true },
     });
-    return !!match;
+    return matches.map((agent) => agent.id);
   }
 
   private isWithinBusinessHours(org: Organization): boolean {

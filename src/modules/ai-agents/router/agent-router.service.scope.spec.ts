@@ -94,7 +94,7 @@ describe('AgentRouterService — S22 scope extensions', () => {
     deps.state.agents.push(agent);
     const conv = {
       id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
-      isGroup: false, aiEnabled: null, activeAgentId: 'a1',
+      isGroup: false, aiEnabled: true, activeAgentId: 'a1',
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
     expect(r.handle).toBe(true);

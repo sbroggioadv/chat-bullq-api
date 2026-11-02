@@ -91,7 +91,7 @@ describe('AgentRouterService — S23 selectAgent (cross-brand fix + catálogo di
 
   const conv = {
     id: 'c1', organizationId: 'org-1', channelId: 'ch-brand-b',
-    activeAgentId: null, aiEnabled: null,
+    activeAgentId: null, aiEnabled: true,
   };
 
   beforeEach(() => {

@@ -27,7 +27,7 @@ describe('AgentRouterService — autoatendimento', () => {
   });
   const scope = () => {
     cards.push({ conversationId: 'c1', status: 'OPEN', pipelineId: 'p1' });
-    agents.push({ organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] });
+    agents.push({ id: 'scoped', organizationId: 'org-1', isActive: true, deletedAt: null, pipelineScope: ['p1'] });
   };
   it('bloqueia conversa sem ativação ou pipeline', async () => {
     expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'AUTOATENDIMENTO_OFF' });
@@ -37,12 +37,12 @@ describe('AgentRouterService — autoatendimento', () => {
     expect(await service.shouldHandle(conversation)).toEqual({ handle: true });
   });
   it('atende conversa com agente ativo', async () => {
-    conversation.activeAgentId = 'a1';
+    conversation.activeAgentId = 'a1'; conversation.aiEnabled = true;
     expect(await service.shouldHandle(conversation)).toEqual({ handle: true });
   });
   it('atende card aberto com pipeline no escopo', async () => {
     scope();
-    expect(await service.shouldHandle(conversation)).toEqual({ handle: true });
+    expect(await service.shouldHandle(conversation)).toEqual({ handle: true, scopedAgentIds: ['scoped'] });
   });
   it('organização desligada bloqueia mesmo com pipeline no escopo', async () => {
     scope(); org.aiEnabled = false;
@@ -66,4 +66,28 @@ describe('AgentRouterService — autoatendimento', () => {
     cards[0].status = 'OPEN'; cards[0].pipelineId = 'p2';
     expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'AUTOATENDIMENTO_OFF' });
   });
+  it('agente ativo sozinho não habilita a conversa', async () => {
+    conversation.activeAgentId = 'a1';
+    expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'AUTOATENDIMENTO_OFF' });
+  });
+  it('escopo exige vínculo AUTONOMOUS do agente escopado', async () => {
+    scope();
+    prisma.aiAgentChannel.findFirst.mockImplementation(async ({ where }: any) =>
+      where.agent?.id ? null : { id: 'other-link' });
+    expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'no-agent-for-channel' });
+  });
+  it('seleciona agente escopado em vez do outro agente do canal, inclusive com agente anterior', async () => {
+    scope(); conversation.activeAgentId = 'outro';
+    prisma.aiAgent.findUnique = jest.fn().mockResolvedValue({ id: 'outro', name: 'Outro' });
+    prisma.aiAgentChannel.findFirst.mockImplementation(async ({ where }: any) =>
+      where.agent?.id?.in?.includes('scoped') ? { agent: { id: 'scoped', name: 'Escopado' } } : { agent: { id: 'outro', name: 'Outro' } });
+    expect((await service.shouldHandle(conversation)).handle).toBe(true);
+    expect((await service.selectAgent(conversation, 'oi'))?.agentId).toBe('scoped');
+  });
+  it('grupo permitido e mencionado atende com organização desligada', async () => {
+    org.aiEnabled = false; conversation.isGroup = true; conversation.aiAllowedInGroup = true;
+    (service as any).groupMentionDetector.findMatchingAgent = jest.fn().mockResolvedValue({ id: 'a1' });
+    expect(await service.shouldHandle(conversation, { content: 'oi' })).toEqual({ handle: true });
+  });
+
 });
