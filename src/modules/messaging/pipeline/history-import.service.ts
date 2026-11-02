@@ -187,10 +187,14 @@ export class HistoryImportService {
       return this.insertMessages(tx, conversationId, messages);
     });
 
-    // SPEC-017: depois do commit, enfileira o espelhamento da mídia do CDN da
-    // Meta das recebidas recém-criadas. enqueueImported nunca lança.
+    // SPEC-017: depois do commit, dispara o espelhamento da mídia do CDN da
+    // Meta das mensagens recém-criadas SEM esperar: Redis lento ou fora do ar
+    // não pode atrasar nem travar a importação. enqueueImported já loga e
+    // devolve 0 em falha; o catch só impede uma rejeição solta.
     if (channel.type === ChannelType.INSTAGRAM && createdExternalIds.length) {
-      await this.mediaMirror?.enqueueImported(channel.id, conversationId, createdExternalIds);
+      this.mediaMirror
+        ?.enqueueImported(channel.id, conversationId, createdExternalIds)
+        .catch(() => undefined);
     }
     return result;
   }

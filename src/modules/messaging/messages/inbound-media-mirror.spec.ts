@@ -543,6 +543,7 @@ describe('Caminho importação: sync adapter → HistoryImportService → fila',
     const importer = new HistoryImportService({ $transaction: jest.fn((fn: any) => fn(tx)) } as any, {} as any, h.service);
 
     const res = await importer.importMessages(igChannel, 'conv', messages);
+    await new Promise((r) => setImmediate(r)); // o enfileiramento roda solto, depois do commit
 
     expect(res).toEqual({ imported: 1, skipped: 0 });
     expect(h.prisma.message.findMany).toHaveBeenCalledWith(
