@@ -11,6 +11,9 @@ describe('HistoryImportService conversation resolution', () => {
       message: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn() },
       conversation: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'new' }) },
       conversationAuditLog: { create: jest.fn() },
+      // importMessages revalida o destino numa transação (extra fundida → original).
+      $queryRaw: jest.fn().mockResolvedValue([{ metadata: {}, status: 'OPEN' }]),
+      $transaction: jest.fn((fn: any) => fn(prisma)),
     };
     service = new HistoryImportService(prisma, {} as any);
   });

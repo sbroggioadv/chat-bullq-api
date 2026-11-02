@@ -27,6 +27,7 @@ import { SegmentReadService } from '../../segments/segment-read.service';
 import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.registry';
 import { MediaResolverService } from './media-resolver.service';
 import { JarvisDeskRunner } from '../../jarvis-desk/jarvis-desk.runner';
+import { mergedOriginalId } from '../conversations/merged-conversation';
 
 @Injectable()
 export class MessagesService {
@@ -65,6 +66,17 @@ export class MessagesService {
       throw new NotFoundException('Conversation not found');
     }
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
+    // Extra fundida pela limpeza de duplicadas: envio vai pela original.
+    // (Conversa só arquivada pelo usuário continua aceitando envio.)
+    const mergedInto = mergedOriginalId(conversation.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'send_blocked_merged_conversation', conversationId: conversation.id, mergedInto });
+      throw new UnprocessableEntityException({
+        message: 'Esta conversa foi unida a outra. Envie pela conversa original.',
+        code: 'conversation_merged',
+        mergedInto,
+      });
+    }
 
     const isJarvis = conversation.channel.type === ChannelType.JARVIS;
 

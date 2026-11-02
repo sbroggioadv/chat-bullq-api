@@ -6,7 +6,7 @@ describe('fronteira do processamento do chatbot', () => {
     const engine = { processMessage: jest.fn() };
     const result = await new ChatbotProcessor(engine as any, prisma as any, {} as any).process({ data: { conversationId: 'a', channelId: 'canal-b', organizationId: 'b' } } as any);
     expect(result).toEqual({ skipped: true, reason: 'conversation_not_found' });
-    expect(prisma.conversation.findFirst).toHaveBeenCalledWith({ where: { id: 'a', channelId: 'canal-b', organizationId: 'b' }, select: { id: true } });
+    expect(prisma.conversation.findFirst).toHaveBeenCalledWith({ where: { id: 'a', channelId: 'canal-b', organizationId: 'b' }, select: { id: true, metadata: true } });
     expect(engine.processMessage).not.toHaveBeenCalled();
   });
   it('recusa departamento de outro espaço antes de enviar ou transferir', async () => {

@@ -10,6 +10,7 @@ import { PrismaService } from '../../../../database/prisma.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 import { containsMetaTalk, findForbiddenUrlHosts } from '../../runner/text-guards';
+import { mergedOriginalId } from '../../../messaging/conversations/merged-conversation';
 
 /**
  * Sends a TEXT message to the contact on behalf of the agent. The message
@@ -85,10 +86,25 @@ export class ReplyToConversationTool implements AiTool {
       this.prisma.conversation.findUnique({
         where: { id: ctx.conversationId },
         select: {
+          metadata: true,
           organization: { select: { allowedUrlDomains: true } },
         },
       }),
     ]);
+
+    // Extra fundida pela limpeza de duplicadas: não envia nem grava nela.
+    const mergedInto = mergedOriginalId(conversation?.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'ai_reply_blocked_merged_conversation', conversationId: ctx.conversationId, mergedInto, runId: ctx.runId });
+      return {
+        output: {
+          ok: false,
+          error: 'conversation_merged',
+          message:
+            'Esta conversa foi unida a outra conversa do mesmo cliente e não aceita mais mensagens. NÃO tente responder de novo aqui; encerre este atendimento sem enviar nada.',
+        },
+      };
+    }
 
     // Guard contra URL inventada (hallucination). Org configura
     // `allowedUrlDomains` com lista de hosts permitidos (ex: ["bravy.co",

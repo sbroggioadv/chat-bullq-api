@@ -6,6 +6,7 @@ import { PrismaService } from '../../../database/prisma.service';
 import { ChannelAdapterRegistry } from '../channel-adapter.registry';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { HistoryImportService } from '../../messaging/pipeline/history-import.service';
+import { MergedConversationError } from '../../messaging/conversations/merged-conversation';
 import { HistorySyncPort } from '../ports/history-sync.port';
 import {
   HistorySyncFilters,
@@ -101,26 +102,41 @@ export class ChannelSyncProcessor extends WorkerHost {
         if (cancelled) break;
 
         try {
-          const importResult = await this.importer.importConversation(channel, conv);
+          let importResult = await this.importer.importConversation(channel, conv);
           convImported++;
           if (!seenContactIds.has(importResult.contactId)) {
             seenContactIds.add(importResult.contactId);
             if (importResult.isNew) contactsImported++;
           }
 
-          const msgResult = await this.importConversationMessages(
-            channel,
-            adapter,
-            conv.externalConversationId,
-            importResult.conversationId,
-            filters,
-          );
-          msgImported += msgResult;
+          let msgResult: { count: number; conversationId: string };
+          try {
+            msgResult = await this.importConversationMessages(
+              channel,
+              adapter,
+              conv.externalConversationId,
+              importResult.conversationId,
+              filters,
+            );
+          } catch (err) {
+            if (!(err instanceof MergedConversationError)) throw err;
+            // Extra fundida cuja original não serve: re-resolve uma vez (a
+            // busca do importador exclui a extra arquivada).
+            importResult = await this.importer.importConversation(channel, conv);
+            msgResult = await this.importConversationMessages(
+              channel,
+              adapter,
+              conv.externalConversationId,
+              importResult.conversationId,
+              filters,
+            );
+          }
+          msgImported += msgResult.count;
 
-          if (msgResult > 0) {
+          if (msgResult.count > 0) {
             await this.importer.notifyConversationImported(
               channel.organizationId,
-              importResult.conversationId,
+              msgResult.conversationId,
             );
           }
 
@@ -209,7 +225,7 @@ export class ChannelSyncProcessor extends WorkerHost {
     externalConversationId: string,
     conversationId: string,
     filters: HistorySyncFilters,
-  ): Promise<number> {
+  ): Promise<{ count: number; conversationId: string }> {
     let cursor: string | undefined;
     let imported = 0;
     do {
@@ -223,6 +239,9 @@ export class ChannelSyncProcessor extends WorkerHost {
         conversationId,
         result.messages,
       );
+      // Se a conversa virou extra fundida no meio da paginação, o importador
+      // desviou para a original: as próximas páginas vão direto para ela.
+      conversationId = res.conversationId;
       // Count both newly-inserted and skipped (already-existing) messages.
       // Without `+ res.skipped`, re-syncs or races with inbound webhook
       // produce undercount (QA-S17-010): if 62/63 messages exist, reports 1.
@@ -234,7 +253,7 @@ export class ChannelSyncProcessor extends WorkerHost {
       if (imported >= MAX_MESSAGES_PER_CONVERSATION) break;
       await this.sleep(REQUEST_DELAY_MS);
     } while (cursor);
-    return imported;
+    return { count: imported, conversationId };
   }
 
   private async isCancelled(syncJobId: string): Promise<boolean> {

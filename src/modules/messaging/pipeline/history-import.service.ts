@@ -6,8 +6,10 @@ import {
   MessageContentType as PrismaContentType,
   MessageDirection,
   MessageStatus,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
+import { writableConversation } from '../conversations/merged-conversation';
 import {
   NormalizedHistoricalConversation,
   NormalizedHistoricalMessage,
@@ -23,6 +25,8 @@ export interface ConversationImportResult {
 export interface MessagesImportResult {
   imported: number;
   skipped: number;
+  /** Conversa que recebeu a página (a original, se a pedida era extra fundida). */
+  conversationId: string;
 }
 
 // Entre várias candidatas, vence a de mensagem mais recente, com desempate fixo.
@@ -162,10 +166,34 @@ export class HistoryImportService {
     conversationId: string,
     messages: NormalizedHistoricalMessage[],
   ): Promise<MessagesImportResult> {
-    if (messages.length === 0) return { imported: 0, skipped: 0 };
+    if (messages.length === 0) return { imported: 0, skipped: 0, conversationId };
 
+    // Destino revalidado DENTRO da transação de cada página: se a conversa
+    // virou extra fundida pela limpeza de duplicadas, o histórico vai para a
+    // original. O chamador passa a usar o id devolvido nas páginas seguintes.
+    return this.prisma.$transaction(async (tx) => {
+      const target = await writableConversation(tx, conversationId, {
+        organizationId: channel.organizationId,
+        channelId: channel.id,
+      });
+      if (target.redirectedFrom) {
+        this.logger.warn({
+          msg: 'import_redirected_from_merged_conversation',
+          from: target.redirectedFrom,
+          to: target.id,
+        });
+      }
+      return this.insertMessages(tx, target.id, messages);
+    });
+  }
+
+  private async insertMessages(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    messages: NormalizedHistoricalMessage[],
+  ): Promise<MessagesImportResult> {
     const externalIds = messages.map((m) => m.externalMessageId).filter(Boolean);
-    const existing = await this.prisma.message.findMany({
+    const existing = await tx.message.findMany({
       where: {
         conversationId,
         externalId: { in: externalIds },
@@ -179,10 +207,10 @@ export class HistoryImportService {
     );
 
     if (toCreate.length === 0) {
-      return { imported: 0, skipped: messages.length };
+      return { imported: 0, skipped: messages.length, conversationId };
     }
 
-    await this.prisma.message.createMany({
+    await tx.message.createMany({
       data: toCreate.map((m) => ({
         conversationId,
         direction: m.direction,
@@ -210,13 +238,13 @@ export class HistoryImportService {
       new Date(0),
     );
     if (latestTimestamp.getTime() > 0) {
-      await this.prisma.conversation.updateMany({
+      await tx.conversation.updateMany({
         where: { id: conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: latestTimestamp } }] },
         data: { lastMessageAt: latestTimestamp },
       });
     }
 
-    return { imported: toCreate.length, skipped: messages.length - toCreate.length };
+    return { imported: toCreate.length, skipped: messages.length - toCreate.length, conversationId };
   }
 
   async notifyConversationImported(

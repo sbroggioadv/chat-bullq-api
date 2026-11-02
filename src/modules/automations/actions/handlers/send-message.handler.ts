@@ -11,6 +11,7 @@ import {
   ActionExecutionResult,
   ActionHandler,
 } from '../action.types';
+import { mergedOriginalId } from '../../../messaging/conversations/merged-conversation';
 
 interface SendMessageParams {
   // Plain text only in PR2. Templates with vars come later if there's
@@ -78,6 +79,16 @@ export class SendMessageHandler implements ActionHandler {
         ok: false,
         errorCode: 'invalid_ref',
         errorMessage: 'conversation not found',
+      };
+    }
+    // Extra fundida pela limpeza de duplicadas: não envia nem grava nela.
+    const mergedInto = mergedOriginalId(conversation.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'send_message_skipped_merged_conversation', conversationId: conversation.id, mergedInto });
+      return {
+        ok: false,
+        errorCode: 'conversation_merged',
+        errorMessage: `conversation was merged into ${mergedInto}`,
       };
     }
 

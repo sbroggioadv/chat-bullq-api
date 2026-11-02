@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../../../../database/prisma.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
+import { mergedOriginalId } from '../../../messaging/conversations/merged-conversation';
 
 /**
  * ORCHESTRATOR-only. Silently hands the conversation over to a WORKER agent:
@@ -109,7 +110,7 @@ export class DelegateToAgentTool implements AiTool {
       };
     }
 
-    const [fromAgent, contactChannel] = await Promise.all([
+    const [fromAgent, contactChannel, conversation] = await Promise.all([
       this.prisma.aiAgent.findUnique({
         where: { id: ctx.agentId },
         select: { name: true },
@@ -118,7 +119,25 @@ export class DelegateToAgentTool implements AiTool {
         where: { contactId: ctx.contactId, channelId: ctx.channelId },
         select: { externalId: true },
       }),
+      this.prisma.conversation.findUnique({
+        where: { id: ctx.conversationId },
+        select: { metadata: true },
+      }),
     ]);
+
+    // Extra fundida pela limpeza de duplicadas: não delega nem envia nela.
+    const mergedInto = mergedOriginalId(conversation?.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'ai_delegate_blocked_merged_conversation', conversationId: ctx.conversationId, mergedInto, runId: ctx.runId });
+      return {
+        output: {
+          ok: false,
+          error: 'conversation_merged',
+          message:
+            'Esta conversa foi unida a outra conversa do mesmo cliente e não aceita mais mensagens nem delegação. Encerre este atendimento sem enviar nada.',
+        },
+      };
+    }
 
     if (!contactChannel?.externalId) {
       return {

@@ -16,6 +16,10 @@ import { TranscriptionService } from '../messages/transcription.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
 import {
+  MergedConversationError,
+  writableConversation,
+} from '../conversations/merged-conversation';
+import {
   AutomationTrigger,
   ChannelType,
   MessageDirection,
@@ -169,7 +173,7 @@ export class InboundMessageProcessor extends WorkerHost {
         }
       }
 
-      const { conversationId, status } = await this.conversationResolver.resolve(
+      let { conversationId, status } = await this.conversationResolver.resolve(
         organizationId,
         channelId,
         contactId,
@@ -186,8 +190,16 @@ export class InboundMessageProcessor extends WorkerHost {
       // doesn't exist in the DB. `isNew` lets us emit only on the FIRST
       // creation — webhook re-deliveries that hit the (conv,external)
       // unique find existing rows and skip the emit.
-      const { message: savedMessage, isNew } = await this.prisma.$transaction(
+      // O destino é revalidado DENTRO da TX: se a conversa resolvida virou
+      // extra fundida pela limpeza de duplicadas, a mensagem vai para a
+      // original e nunca cai escondida na extra arquivada.
+      const persist = (candidateId: string) => this.prisma.$transaction(
         async (tx) => {
+          const target = await writableConversation(tx, candidateId, {
+            organizationId,
+            channelId,
+          });
+          const conversationId = target.id;
           const result = await this.upsertMessage(
             tx,
             conversationId,
@@ -232,9 +244,36 @@ export class InboundMessageProcessor extends WorkerHost {
               },
             );
           }
-          return result;
+          return { ...result, target };
         },
       );
+
+      let persisted: Awaited<ReturnType<typeof persist>>;
+      try {
+        persisted = await persist(conversationId);
+      } catch (err) {
+        if (!(err instanceof MergedConversationError)) throw err;
+        // Extra fundida cuja original não serve: re-resolve uma vez (a busca
+        // exclui arquivadas, então a extra não volta).
+        ({ conversationId, status } = await this.conversationResolver.resolve(
+          organizationId,
+          channelId,
+          contactId,
+          message.isGroup,
+        ));
+        persisted = await persist(conversationId);
+      }
+      const { message: savedMessage, target } = persisted;
+      if (target.redirectedFrom) {
+        this.logger.warn({
+          msg: 'inbound_redirected_from_merged_conversation',
+          from: target.redirectedFrom,
+          to: target.id,
+          messageId: savedMessage.id,
+        });
+        conversationId = target.id;
+        status = target.status ?? status;
+      }
 
       this.realtimeGateway.emitToChannel(channelId, 'message:new', {
         message: savedMessage,

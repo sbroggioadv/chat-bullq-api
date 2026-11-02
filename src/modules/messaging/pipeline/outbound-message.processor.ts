@@ -7,6 +7,7 @@ import { ChannelAdapterRegistry } from '../../channel-hub/channel-adapter.regist
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { NormalizedOutboundMessage } from '../../channel-hub/ports/types';
 import { IdempotencyService } from './idempotency.service';
+import { mergedOriginalId } from '../conversations/merged-conversation';
 
 interface OutboundJobData {
   messageId: string;
@@ -37,7 +38,7 @@ export class OutboundMessageProcessor extends WorkerHost {
 
     const outbound = await this.prisma.message.findUniqueOrThrow({
       where: { id: messageId },
-      select: { conversation: { select: { id: true, organizationId: true } } },
+      select: { conversation: { select: { id: true, organizationId: true, metadata: true } } },
     });
     if (channel.organizationId !== outbound.conversation.organizationId) {
       await this.prisma.message.update({
@@ -47,6 +48,18 @@ export class OutboundMessageProcessor extends WorkerHost {
       this.emitStatusUpdate(outbound.conversation.id, messageId, MessageStatus.FAILED);
       this.logger.warn(`Outbound blocked: msg=${messageId} channel=${channelId} conversation=${outbound.conversation.id}`);
       return { success: false, reason: 'cross_org_channel' };
+    }
+    // Job antigo de extra fundida pela limpeza: não entrega. Conclui o job
+    // (sem throw → sem retry) e marca a mensagem como falha com o motivo.
+    const mergedInto = mergedOriginalId(outbound.conversation.metadata);
+    if (mergedInto) {
+      await this.prisma.message.update({
+        where: { id: messageId },
+        data: { status: MessageStatus.FAILED, failedReason: 'conversation_merged' },
+      });
+      this.emitStatusUpdate(outbound.conversation.id, messageId, MessageStatus.FAILED);
+      this.logger.warn({ msg: 'outbound_skipped_merged_conversation', messageId, conversationId: outbound.conversation.id, mergedInto });
+      return { success: false, reason: 'conversation_merged' };
     }
 
     const adapter = this.adapterRegistry.getOutbound(channel.type);

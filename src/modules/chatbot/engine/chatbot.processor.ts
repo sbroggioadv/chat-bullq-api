@@ -5,6 +5,7 @@ import { Job, Queue } from 'bullmq';
 import { ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { ChatbotEngineService } from './chatbot-engine.service';
+import { mergedOriginalId } from '../../messaging/conversations/merged-conversation';
 
 interface ChatbotJobData {
   conversationId: string;
@@ -34,9 +35,15 @@ export class ChatbotProcessor extends WorkerHost {
     }
     const conversation = await this.prisma.conversation.findFirst({
       where: { id: conversationId, channelId, organizationId },
-      select: { id: true },
+      select: { id: true, metadata: true },
     });
     if (!conversation) return { skipped: true, reason: 'conversation_not_found' };
+    // Extra fundida pela limpeza: o bot não responde nem grava nela.
+    const mergedInto = mergedOriginalId(conversation.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'chatbot_skipped_merged_conversation', conversationId, mergedInto });
+      return { skipped: true, reason: 'conversation_merged' };
+    }
 
     const result = await this.engine.processMessage(
       conversationId,
