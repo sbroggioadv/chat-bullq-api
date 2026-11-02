@@ -17,6 +17,14 @@ const OPEN_STATES = [
   ConversationStatus.WAITING,
 ] as const;
 
+// Conversa arquivada nunca recebe mensagem nova: fica fora da escolha. Entre
+// várias abertas, vence a de mensagem mais recente, com desempate fixo.
+const MOST_RECENT_FIRST = [
+  { lastMessageAt: { sort: 'desc' as const, nulls: 'last' as const } },
+  { createdAt: 'desc' as const },
+  { id: 'desc' as const },
+];
+
 @Injectable()
 export class ConversationResolverService {
   private readonly logger = new Logger(ConversationResolverService.name);
@@ -49,6 +57,7 @@ export class ConversationResolverService {
             channelId,
             contactId,
             status: ConversationStatus.CLOSED,
+            isArchived: false,
           },
           orderBy: { closedAt: 'desc' },
         });
@@ -126,8 +135,9 @@ export class ConversationResolverService {
         channelId,
         contactId,
         status: { in: Array.from(OPEN_STATES) },
+        isArchived: false,
       },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: MOST_RECENT_FIRST,
     });
   }
 

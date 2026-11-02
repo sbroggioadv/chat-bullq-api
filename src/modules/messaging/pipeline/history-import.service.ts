@@ -25,6 +25,14 @@ export interface MessagesImportResult {
   skipped: number;
 }
 
+// Conversa arquivada nunca recebe histórico importado: fica fora da escolha.
+// Entre várias candidatas, vence a de mensagem mais recente, com desempate fixo.
+const MOST_RECENT_FIRST = [
+  { lastMessageAt: { sort: 'desc' as const, nulls: 'last' as const } },
+  { createdAt: 'desc' as const },
+  { id: 'desc' as const },
+];
+
 @Injectable()
 export class HistoryImportService {
   private readonly logger = new Logger(HistoryImportService.name);
@@ -46,11 +54,13 @@ export class HistoryImportService {
         where: {
           organizationId: channel.organizationId,
           channelId: channel.id,
+          isArchived: false,
           metadata: {
             path: ['externalConversationId'],
             equals: normalized.externalConversationId,
           },
         },
+        orderBy: MOST_RECENT_FIRST,
       });
       if (byThread) {
         if (
@@ -82,7 +92,9 @@ export class HistoryImportService {
                 ConversationStatus.WAITING,
               ],
             },
+            isArchived: false,
           },
+          orderBy: MOST_RECENT_FIRST,
         });
 
     if (existing) {
