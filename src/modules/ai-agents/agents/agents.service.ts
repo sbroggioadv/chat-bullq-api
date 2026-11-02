@@ -42,26 +42,6 @@ export class AgentsService {
       },
     });
 
-    // Auto-link a TODOS os canais ativos da org com mode AUTONOMOUS.
-    // Justificativa: criar agent sem canal = agent inerte (não responde
-    // ninguém). 99% dos casos JP quer o agent ativo em tudo, e
-    // específicos podem ser desligados depois manualmente. Default
-    // útil > default vazio.
-    const channels = await this.prisma.channel.findMany({
-      where: { organizationId, isActive: true, deletedAt: null },
-      select: { id: true },
-    });
-    if (channels.length > 0) {
-      await this.prisma.aiAgentChannel.createMany({
-        data: channels.map((c) => ({
-          agentId: agent.id,
-          channelId: c.id,
-          mode: 'AUTONOMOUS' as const,
-          trigger: 'ALWAYS' as const,
-        })),
-        skipDuplicates: true,
-      });
-    }
     return agent;
   }
 

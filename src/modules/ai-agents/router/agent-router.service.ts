@@ -285,13 +285,6 @@ export class AgentRouterService {
     handle: boolean;
     reason?: string;
   }> {
-    // Hierarquia de override (mais específico ganha):
-    //   conv.aiEnabled (true/false) — força resposta da conversa específica
-    //   channel.aiEnabled (true/false) — força no canal inteiro
-    //   org.aiEnabled (true/false) — global
-    // Qualquer "false" mais específico bloqueia mesmo se mais genérico está ON.
-    // "true" mais específico libera mesmo se mais genérico está OFF.
-
     // S22.2 — Panic mode é a PRIMEIRA coisa. Override absoluto: ignora scope,
     // conv override, channel override, tudo. Kill switch de emergência.
     const orgPanic = await this.prisma.organization.findUnique({
@@ -345,33 +338,13 @@ export class AgentRouterService {
       return { handle: true };
     }
 
-    // S22 — Pipeline scope: se a conversa tem cards ativos em pipelines
-    // scopados a algum agente, verifica se há match antes de prosseguir.
-    // Conv com activeAgentId já definido bypassa (conversa em andamento).
-    if (!conversation.activeAgentId) {
-      const activeCards = await this.prisma.card.findMany({
-        where: { conversationId: conversation.id, status: 'OPEN' },
-        select: { pipelineId: true },
-      });
-      const activePipelineIds = Array.from(
-        new Set(activeCards.map((c: any) => c.pipelineId).filter(Boolean) as string[]),
+    if (convOverride !== true && !conversation.activeAgentId) {
+      const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
+        conversation.organizationId,
+        conversation.id,
       );
-      if (activePipelineIds.length > 0) {
-        const matches = await this.prisma.aiAgent.findMany({
-          where: {
-            organizationId: conversation.organizationId,
-            isActive: true,
-            deletedAt: null,
-            pipelineScope: { hasSome: activePipelineIds },
-          },
-          select: { id: true },
-        });
-        if (matches.length > 0) {
-          // Há agente com pipeline scope matching — pode prosseguir
-          // (o selectAgent/route vai escolher qual agente atua)
-        }
-        // Se há pipelines ativos mas nenhum agente com scope compatível,
-        // deixa prosseguir normalmente (fallback pro orchestrator genérico)
+      if (!hasScopedAgent) {
+        return { handle: false, reason: 'AUTOATENDIMENTO_OFF' };
       }
     }
 
@@ -387,30 +360,16 @@ export class AgentRouterService {
     ]);
     if (!org) return { handle: false, reason: 'org-not-found' };
 
+    if (!org.aiEnabled) {
+      return { handle: false, reason: 'org.aiEnabled=false' };
+    }
+
     const channelOverride = channel?.aiEnabled;
     if (convOverride !== true && channelOverride === false) {
       return { handle: false, reason: 'channel.aiEnabled=force-off' };
     }
 
     if (convOverride !== true && channelOverride !== true) {
-      // Sem override "ON" em conv nem channel → regras globais valem.
-      if (!org.aiEnabled) {
-        // S22.1 — scope explícito sobrevive ao kill switch geral.
-        // Se o operador foi explicitamente scopar um agente a um pipeline,
-        // esse é um sinal de intenção clara: o agente deve atuar nesse
-        // contexto mesmo com a IA da org "desligada". O `org.aiEnabled=false`
-        // passa a calar SÓ agentes genéricos (sem pipelineScope). Pra kill
-        // switch absoluto: setar `agent.isActive = false` ou desabilitar
-        // `aiAllowedInGroup` por grupo.
-        const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
-          conversation.organizationId,
-          conversation.id,
-        );
-        if (!hasScopedAgent) {
-          return { handle: false, reason: 'org.aiEnabled=false' };
-        }
-        // Caso contrário, continua — o route() vai escolher o agente scopado.
-      }
       if (!this.isWithinBusinessHours(org)) {
         return { handle: false, reason: 'outside-business-hours' };
       }
@@ -454,12 +413,6 @@ export class AgentRouterService {
     return { handle: true };
   }
 
-  /**
-   * S22.1 — Checa se a conversa tem cards ativos em pipelines scopados por
-   * algum agente. Usado pra deixar agentes scopados sobreviverem ao
-   * `org.aiEnabled=false` (kill switch geral). A intenção explícita do
-   * operador (scopar um agente a um pipeline) vale mais que o switch global.
-   */
   private async hasPipelineScopedAgentForConversation(
     organizationId: string,
     conversationId: string,
