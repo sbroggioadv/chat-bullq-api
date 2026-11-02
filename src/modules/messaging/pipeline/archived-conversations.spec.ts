@@ -76,10 +76,10 @@ function compare(a: Row, b: Row, orderBy: any[]): number {
   return 0; // sem ordem: devolve na ordem física (arbitrária no banco)
 }
 
-function select(rows: Row[], { where, orderBy, take }: any) {
+function select(rows: Row[], { where, orderBy, skip = 0, take }: any) {
   const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
   const sorted = [...rows].filter((r) => matches(r, where)).sort((a, b) => compare(a, b, order));
-  return take === undefined ? sorted : sorted.slice(0, take);
+  return take === undefined ? sorted.slice(skip) : sorted.slice(skip, skip + take);
 }
 
 function prismaWith(rows: Row[]) {

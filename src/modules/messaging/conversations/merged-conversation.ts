@@ -36,17 +36,33 @@ export function assertNotMergedExtra(conversation: { id: string; metadata?: unkn
 }
 
 /**
- * Quantas candidatas as seleções automáticas (resolvedor, importador) leem
- * para pular extras fundidas pela marca — mesmo as que alguém desarquivou.
- * A marca é JSON; o filtro fica no código (sem depender da semântica de nulo
- * de filtro JSON do Prisma). Mais de 10 extras fundidas abertas para o mesmo
- * contato não ocorre; se ocorrer, cai no caminho de "nenhuma aberta".
+ * Tamanho da página com que as seleções automáticas (resolvedor, importador)
+ * leem candidatas para pular extras fundidas pela marca — mesmo as que alguém
+ * desarquivou. A marca é JSON; o filtro fica no código (sem depender da
+ * semântica de nulo de filtro JSON do Prisma).
  */
 export const MERGED_SCAN_LIMIT = 10;
 
 /** Primeira candidata (na ordem recebida) que NÃO é extra fundida. */
 export function firstNotMerged<T extends { metadata?: unknown }>(rows: T[]): T | null {
   return rows.find((r) => !mergedOriginalId(r.metadata)) ?? null;
+}
+
+/**
+ * Primeira candidata NÃO fundida, paginando na MESMA ordenação determinística
+ * (skip) em páginas de MERGED_SCAN_LIMIT até achar ou esgotar. Nunca perde a
+ * original atrás de N extras fundidas. Sem extra fundida na 1ª página (o caso
+ * comum), é UMA consulta só.
+ */
+export async function findFirstNotMerged<T extends { metadata?: unknown }>(
+  page: (args: { skip: number; take: number }) => Promise<T[]>,
+): Promise<T | null> {
+  for (let skip = 0; ; skip += MERGED_SCAN_LIMIT) {
+    const rows = await page({ skip, take: MERGED_SCAN_LIMIT });
+    const hit = firstNotMerged(rows);
+    if (hit) return hit;
+    if (rows.length < MERGED_SCAN_LIMIT) return null;
+  }
 }
 
 /** O destino de uma escrita é extra fundida: nada foi gravado; o chamador re-resolve. */

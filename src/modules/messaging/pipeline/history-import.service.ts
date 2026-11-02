@@ -9,7 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
-import { MERGED_SCAN_LIMIT, firstNotMerged, throwIfMergedExtra } from '../conversations/merged-conversation';
+import { findFirstNotMerged, throwIfMergedExtra } from '../conversations/merged-conversation';
 import {
   NormalizedHistoricalConversation,
   NormalizedHistoricalMessage,
@@ -60,8 +60,8 @@ export class HistoryImportService {
     // 1) Match by provider thread id when present (Gmail: one thread = one conversation).
     if (normalized.externalConversationId) {
       // Extra fundida (pela marca, mesmo desarquivada) nunca é escolhida.
-      const byThread = firstNotMerged(
-        await this.prisma.conversation.findMany({
+      const byThread = await findFirstNotMerged(({ skip, take }) =>
+        this.prisma.conversation.findMany({
           where: {
             organizationId: channel.organizationId,
             channelId: channel.id,
@@ -72,7 +72,8 @@ export class HistoryImportService {
             },
           },
           orderBy: MOST_RECENT_FIRST,
-          take: MERGED_SCAN_LIMIT,
+          skip,
+          take,
         }),
       );
       if (byThread) {
@@ -92,8 +93,8 @@ export class HistoryImportService {
     // Gmail threads must remain distinct; other channels reuse an open conversation.
     const existing = channel.type === ChannelType.GMAIL && normalized.externalConversationId
       ? null
-      : firstNotMerged(
-          await this.prisma.conversation.findMany({
+      : await findFirstNotMerged(({ skip, take }) =>
+          this.prisma.conversation.findMany({
             where: {
               organizationId: channel.organizationId,
               channelId: channel.id,
@@ -109,7 +110,8 @@ export class HistoryImportService {
               isArchived: false,
             },
             orderBy: MOST_RECENT_FIRST,
-            take: MERGED_SCAN_LIMIT,
+            skip,
+            take,
           }),
         );
 

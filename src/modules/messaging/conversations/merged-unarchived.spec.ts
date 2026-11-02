@@ -40,10 +40,10 @@ function fakeConversations(rows: Row[]) {
     }
     return 0;
   };
-  const select = ({ where, orderBy, take }: any) => {
+  const select = ({ where, orderBy, skip = 0, take }: any) => {
     const by = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
     const out = rows.filter((r) => ok(r, where)).sort((a, b) => order(a, b, by));
-    return take === undefined ? out : out.slice(0, take);
+    return take === undefined ? out.slice(skip) : out.slice(skip, skip + take);
   };
   // findFirst também, para o controle negativo (código antigo) mostrar a
   // escolha errada em vez de um TypeError estrutural.
@@ -62,11 +62,15 @@ describe('desarquivar extra fundida é recusado', () => {
     return { service, prisma };
   }
 
-  it('extra fundida → 422 conversation_merged, sem gravar', async () => {
+  it('extra fundida → 422 com code conversation_merged, sem gravar nem auditar', async () => {
     const { service, prisma } = setup(row({ id: 'extra', isArchived: true, metadata: FUNDIDA }));
 
-    await expect(service.setArchived('extra', 'org', false, 'u')).rejects.toBeInstanceOf(UnprocessableEntityException);
+    const err = await service.setArchived('extra', 'org', false, 'u').catch((e) => e);
+
+    expect(err).toBeInstanceOf(UnprocessableEntityException);
+    expect((err as UnprocessableEntityException).getResponse()).toMatchObject({ code: 'conversation_merged', mergedInto: 'original' });
     expect(prisma.conversation.update).not.toHaveBeenCalled();
+    expect(prisma.conversationAuditLog.create).not.toHaveBeenCalled();
   });
 
   it('arquivar extra fundida (de novo) continua permitido', async () => {
@@ -125,6 +129,58 @@ describe('extra fundida JÁ desarquivada fica fora das seleções automáticas',
 
     expect(r).toMatchObject({ conversationId: 'original', isNew: false });
     expect(prisma.conversation.create).not.toHaveBeenCalled();
+  });
+
+  // Original atrás de N extras fundidas (todas mais recentes): a seleção
+  // pagina na mesma ordem e nunca cria conversa nova à toa.
+  const fundidasAntes = (n: number) => [
+    ...Array.from({ length: n }, (_, i) => row({ id: `extra-${String(i).padStart(2, '0')}`, metadata: { ...FUNDIDA, externalConversationId: 'jid' }, lastMessageAt: minAgo(1 + i) })),
+    // A limpeza grava o externalConversationId da extra na original.
+    row({ id: 'original', lastMessageAt: minAgo(500), metadata: { externalConversationId: 'jid' } }),
+  ];
+
+  it.each([10, 24])('resolvedor: original na posição %d+1 (atrás de extras fundidas) é achada, sem criar conversa', async (n) => {
+    const conversation = { ...fakeConversations(fundidasAntes(n)), create: jest.fn() };
+    const resolver = new ConversationResolverService({ conversation } as any, { withLock: (_k: string, fn: () => unknown) => fn() } as any);
+
+    await expect(resolver.resolve('org', 'ch', 'contact')).resolves.toMatchObject({ conversationId: 'original', isNew: false });
+    expect(conversation.create).not.toHaveBeenCalled();
+    expect(conversation.findMany).toHaveBeenCalledTimes(Math.floor(n / 10) + 1);
+  });
+
+  it.each([10, 24])('importador (contato e thread): original na posição %d+1 é achada, sem criar conversa', async (n) => {
+    const conversation = { ...fakeConversations(fundidasAntes(n)), update: jest.fn(), create: jest.fn() };
+    const prisma = {
+      contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'cc', contactId: 'contact', profileName: 'N', contact: { organizationId: 'org' } }), update: jest.fn() },
+      conversation,
+    };
+    const importer = new HistoryImportService(prisma as any, {} as any);
+    const canal = { id: 'ch', organizationId: 'org', type: ChannelType.WHATSAPP_ZAPPFY } as any;
+
+    const porContato = await importer.importConversation(canal, { externalContactId: 'e', contactName: 'N' } as any);
+    const porThread = await importer.importConversation(canal, { externalContactId: 'e', contactName: 'N', externalConversationId: 'jid' } as any);
+
+    expect(porContato).toMatchObject({ conversationId: 'original', isNew: false });
+    expect(porThread).toMatchObject({ conversationId: 'original', isNew: false });
+    expect(conversation.create).not.toHaveBeenCalled();
+  });
+
+  it('sem extra fundida → UMA consulta só (resolvedor e importador)', async () => {
+    const rows = Array.from({ length: 11 }, (_, i) => row({ id: `c-${i}`, lastMessageAt: minAgo(1 + i) }));
+    const conversation = { ...fakeConversations(rows), create: jest.fn(), update: jest.fn() };
+    const resolver = new ConversationResolverService({ conversation } as any, { withLock: (_k: string, fn: () => unknown) => fn() } as any);
+
+    await expect(resolver.resolve('org', 'ch', 'contact')).resolves.toMatchObject({ conversationId: 'c-0' });
+    expect(conversation.findMany).toHaveBeenCalledTimes(1);
+
+    conversation.findMany.mockClear();
+    const importer = new HistoryImportService({
+      contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'cc', contactId: 'contact', profileName: 'N', contact: { organizationId: 'org' } }), update: jest.fn() },
+      conversation,
+    } as any, {} as any);
+    await expect(importer.importConversation({ id: 'ch', organizationId: 'org', type: ChannelType.WHATSAPP_ZAPPFY } as any, { externalContactId: 'e', contactName: 'N' } as any))
+      .resolves.toMatchObject({ conversationId: 'c-0' });
+    expect(conversation.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('watchdog cron: extra fundida desarquivada com última mensagem do cliente não é enfileirada', async () => {

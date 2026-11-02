@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { IdempotencyService } from './idempotency.service';
-import { MERGED_SCAN_LIMIT, firstNotMerged } from '../conversations/merged-conversation';
+import { findFirstNotMerged } from '../conversations/merged-conversation';
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -53,8 +53,9 @@ export class ConversationResolverService {
         if (existing) return this.touchOpen(existing, isGroup);
 
         // Extra fundida (pela marca, mesmo desarquivada) nunca é reaberta.
-        const lastClosed = firstNotMerged(
-          await this.prisma.conversation.findMany({
+        // Paginação estável: desempate por id depois de closedAt.
+        const lastClosed = await findFirstNotMerged(({ skip, take }) =>
+          this.prisma.conversation.findMany({
             where: {
               organizationId,
               channelId,
@@ -62,8 +63,9 @@ export class ConversationResolverService {
               status: ConversationStatus.CLOSED,
               isArchived: false,
             },
-            orderBy: { closedAt: 'desc' },
-            take: MERGED_SCAN_LIMIT,
+            orderBy: [{ closedAt: 'desc' }, { id: 'desc' }],
+            skip,
+            take,
           }),
         );
 
@@ -135,8 +137,8 @@ export class ConversationResolverService {
     contactId: string,
   ) {
     // Extra fundida (pela marca, mesmo desarquivada) nunca é escolhida.
-    return firstNotMerged(
-      await this.prisma.conversation.findMany({
+    return findFirstNotMerged(({ skip, take }) =>
+      this.prisma.conversation.findMany({
         where: {
           organizationId,
           channelId,
@@ -145,7 +147,8 @@ export class ConversationResolverService {
           isArchived: false,
         },
         orderBy: MOST_RECENT_FIRST,
-        take: MERGED_SCAN_LIMIT,
+        skip,
+        take,
       }),
     );
   }
