@@ -284,12 +284,10 @@ export class InboundMessageProcessor extends WorkerHost {
 
       // SPEC-017: mídia do CDN da Meta expira. A mensagem já está gravada;
       // o espelhamento vai para a fila sem esperar e não atrasa nem derruba
-      // este job. enqueueForMessage já loga e devolve false em qualquer falha;
-      // o catch só impede uma rejeição solta se esse contrato mudar.
-      if (
-        message.channelType === ChannelType.INSTAGRAM &&
-        direction === MessageDirection.INBOUND
-      ) {
+      // este job. Vale para recebida e eco; o que o BullQ enviou já tem URL
+      // nossa e é ignorado lá dentro. enqueueForMessage já loga e devolve
+      // false em qualquer falha; o catch só impede uma rejeição solta.
+      if (message.channelType === ChannelType.INSTAGRAM) {
         this.mediaMirror
           ?.enqueueForMessage(savedMessage, channelId)
           .catch(() => undefined);

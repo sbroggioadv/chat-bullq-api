@@ -407,13 +407,13 @@ describe('InboundMediaMirrorService.enqueueForMessage', () => {
     expect(INBOUND_MEDIA_MIRROR_QUEUE).toBe('inbound-media-mirror');
   });
 
-  it('não enfileira saída, URL nossa, host fora da lista nem documento; fila quebrada não lança', async () => {
+  it('não enfileira enviada pelo BullQ (URL nossa), URL nossa, host fora da lista nem documento; fila quebrada não lança', async () => {
     const h = harness();
     const broken = harness();
     broken.queue.add.mockRejectedValue(new Error('redis down'));
 
     const results = await Promise.all([
-      h.service.enqueueForMessage(storyMention({ direction: 'OUTBOUND' }), 'ch1'),
+      h.service.enqueueForMessage(storyMention({ direction: 'OUTBOUND', content: { mediaUrl: OURS }, metadata: {} }), 'ch1'),
       h.service.enqueueForMessage(storyMention({ content: { mediaUrl: OURS }, metadata: {} }), 'ch1'),
       h.service.enqueueForMessage(storyMention({ content: { mediaUrl: 'https://evil.example.com/a' }, metadata: {} }), 'ch1'),
       h.service.enqueueForMessage(storyMention({ type: 'DOCUMENT', metadata: {} }), 'ch1'),
@@ -547,7 +547,7 @@ describe('Caminho importação: sync adapter → HistoryImportService → fila',
 
     expect(res).toEqual({ imported: 1, skipped: 0 });
     expect(h.prisma.message.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { conversationId: 'conv', externalId: { in: ['m_hist_img'] }, direction: 'INBOUND' } }),
+      expect.objectContaining({ where: { conversationId: 'conv', externalId: { in: ['m_hist_img'] } } }),
     );
     expect(h.queue.add).toHaveBeenCalledWith('mirror', { messageId: 'msg-9', channelId: 'ch1' }, expect.anything());
     expect(order).toEqual(['createMany', 'queue.add']);

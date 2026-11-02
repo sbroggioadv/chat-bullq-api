@@ -104,12 +104,14 @@ export class InboundMediaMirrorService {
   ) {}
 
   /**
-   * Enfileira o espelhamento de uma mensagem recebida já gravada. Nunca lança:
-   * qualquer falha é logada e a mensagem segue como está.
+   * Enfileira o espelhamento de uma mensagem do Instagram já gravada, nas duas
+   * direções: recebida e eco (enviada pelo app do Instagram, também em CDN da
+   * Meta). Mensagem enviada pelo BullQ já tem URL nossa e cai fora pela regra
+   * de "URL já é nossa". Nunca lança: qualquer falha é logada e a mensagem
+   * segue como está.
    */
   async enqueueForMessage(message: MirrorableMessage, channelId: string): Promise<boolean> {
     try {
-      if (message.direction !== MessageDirection.INBOUND) return false;
       const targets = collectMirrorTargets(message);
       if (!targets.mediaUrl && !targets.storyUrl) return false;
       await this.queue.add(
@@ -136,7 +138,8 @@ export class InboundMediaMirrorService {
 
   /**
    * Caminho da importação de histórico: as linhas foram gravadas em lote
-   * (createMany), então relemos as recebidas pelo externalId. Nunca lança.
+   * (createMany), então relemos as criadas (recebidas e ecos) pelo externalId.
+   * Nunca lança.
    */
   async enqueueImported(
     channelId: string,
@@ -146,11 +149,7 @@ export class InboundMediaMirrorService {
     if (!externalIds.length) return 0;
     try {
       const rows = await this.prisma.message.findMany({
-        where: {
-          conversationId,
-          externalId: { in: externalIds },
-          direction: MessageDirection.INBOUND,
-        },
+        where: { conversationId, externalId: { in: externalIds } },
         select: { id: true, direction: true, type: true, content: true, metadata: true },
       });
       let enqueued = 0;

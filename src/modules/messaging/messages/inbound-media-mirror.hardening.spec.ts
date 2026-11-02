@@ -180,6 +180,99 @@ describe('Achado 2: prazo único somando todos os saltos', () => {
   });
 });
 
+// ─── Achado 7 — eco e mensagens enviadas ──────────────────────────────────
+
+describe('Achado 7: eco do Instagram é espelhado; enviada pelo BullQ não', () => {
+  it('eco (OUTBOUND) com mídia no CDN da Meta é enfileirado', async () => {
+    const h = harness();
+
+    const queued = await h.service.enqueueForMessage(row({ direction: 'OUTBOUND' }), 'ch1');
+
+    expect(queued).toBe(true);
+    expect(h.queue.add).toHaveBeenCalledWith('mirror', { messageId: 'msg-1', channelId: 'ch1' }, expect.anything());
+  });
+
+  it('enviada pelo BullQ (URL já nossa) não é enfileirada', async () => {
+    const h = harness();
+
+    const queued = await h.service.enqueueForMessage(
+      row({ direction: 'OUTBOUND', content: { mediaUrl: OURS } }),
+      'ch1',
+    );
+
+    expect(queued).toBe(false);
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it('eco com host fora da lista continua fora', async () => {
+    const h = harness();
+
+    const queued = await h.service.enqueueForMessage(
+      row({ direction: 'OUTBOUND', content: { mediaUrl: 'https://evil.example.com/a.jpg' } }),
+      'ch1',
+    );
+
+    expect(queued).toBe(false);
+  });
+
+  it('webhook de eco (is_echo) do Instagram chega ao enfileiramento', async () => {
+    const { InboundMessageProcessor } = await import('../pipeline/inbound-message.processor');
+    const { InstagramMessageMapper } = await import('../../channel-hub/adapters/instagram/instagram.message-mapper');
+    const mirror = { enqueueForMessage: jest.fn(async () => true) };
+    const prisma: any = {
+      channel: { findUnique: jest.fn(async () => null) },
+      contact: { findUnique: jest.fn(async () => ({ name: 'x', avatarUrl: 'y' })) },
+      conversation: { findUnique: jest.fn(async () => ({ metadata: {} })), update: jest.fn() },
+      message: {
+        findUnique: jest.fn(async () => null),
+        create: jest.fn(async ({ data }: any) => ({ id: 'msg-echo', ...data })),
+      },
+      $transaction: jest.fn((fn: any) => fn(prisma)),
+    };
+    const processor = new InboundMessageProcessor(
+      prisma,
+      { claimProcessing: jest.fn(async () => true), markProcessed: jest.fn(), releaseClaim: jest.fn() } as any,
+      { resolve: jest.fn(async () => ({ contactId: 'contact', isNew: false })) } as any,
+      { resolve: jest.fn(async () => ({ conversationId: 'conv', status: 'OPEN' })) } as any,
+      { emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
+      {} as any, {} as any, { markProcessed: jest.fn(), markFailed: jest.fn() } as any,
+      {} as any, {} as any, {} as any, { enqueue: jest.fn() } as any,
+      { scheduleCheck: jest.fn(async () => undefined), cancelCheck: jest.fn(async () => undefined) } as any,
+      { add: jest.fn() } as any,
+      mirror as any,
+    );
+    const echo = new InstagramMessageMapper().normalizeInbound({
+      sender: { id: 'our_ig' },
+      recipient: { id: 'contact_ig' },
+      timestamp: 1762000000000,
+      message: { mid: 'm_echo', is_echo: true, attachments: [{ type: 'image', payload: { url: CDN_MEDIA } }] },
+    })!;
+
+    await processor.process({ name: 'process-inbound', data: { channelId: 'ch1', organizationId: 'org', message: echo } } as any);
+
+    expect(mirror.enqueueForMessage).toHaveBeenCalledTimes(1);
+    const [saved] = mirror.enqueueForMessage.mock.calls[0] as any[];
+    expect(saved.direction).toBe('OUTBOUND');
+    expect(saved.content.mediaUrl).toBe(CDN_MEDIA);
+  });
+
+  it('importação enfileira eco histórico com mídia do CDN da Meta', async () => {
+    const h = harness({ message: row({ id: 'msg-out', direction: 'OUTBOUND' }) });
+    const tx: any = {
+      conversation: { findUnique: jest.fn(async () => ({ metadata: {} })), updateMany: jest.fn() },
+      message: { findMany: jest.fn(async () => []), createMany: jest.fn(async () => ({ count: 1 })) },
+    };
+    const importer = new HistoryImportService({ $transaction: jest.fn((fn: any) => fn(tx)) } as any, {} as any, h.service);
+
+    await importer.importMessages({ id: 'ch1', type: 'INSTAGRAM' } as unknown as Channel, 'conv', [
+      { externalMessageId: 'm_out', externalConversationId: 'c', externalContactId: 'x', direction: 'OUTBOUND', timestamp: new Date('2026-10-30T10:00:00Z'), type: 'IMAGE', content: { mediaUrl: CDN_MEDIA } } as any,
+    ]);
+    await new Promise((r) => setImmediate(r));
+
+    expect(h.queue.add).toHaveBeenCalledWith('mirror', { messageId: 'msg-out', channelId: 'ch1' }, expect.anything());
+  });
+});
+
 // ─── Achado 3 — IPv6 especial, por DNS simulado ────────────────────────────
 
 describe('Achado 3: o lookup recusa toda faixa especial (DNS simulado)', () => {
