@@ -12,6 +12,7 @@ import { MessagesService } from '../messages/messages.service';
 import { ReplyToConversationTool } from '../../ai-agents/tools/builtin/reply-to-conversation.tool';
 import { DelegateToAgentTool } from '../../ai-agents/tools/builtin/delegate-to-agent.tool';
 import { OutboundMessageProcessor } from '../pipeline/outbound-message.processor';
+import { CalendarService } from '../../calendar/calendar.service';
 
 // Extra FUNDIDA pela limpeza (metadata.cleanup_merged_into) não envia nem
 // grava mensagem de saída. Conversa só ARQUIVADA pelo usuário continua
@@ -219,6 +220,37 @@ describe('ferramentas da IA', () => {
     expect(r.output).toMatchObject({ ok: false, error: 'conversation_merged' });
     expect(prisma.$transaction).not.toHaveBeenCalled();
     expect(q.add).not.toHaveBeenCalled();
+  });
+});
+
+describe('calendário (createEventFromConversation)', () => {
+  it('extra fundida → 422 antes de criar o evento externo e a mensagem local', async () => {
+    const prisma = {
+      conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'extra', channelId: 'ch', metadata: FUNDIDA }), update: jest.fn() },
+      message: { create: jest.fn() },
+    };
+    const service = new CalendarService(prisma as any, { assertChannelAccess: jest.fn() } as any, {} as any);
+    const createEvent = jest.spyOn(service, 'createEvent' as any).mockResolvedValue({ id: 'ev' } as any);
+
+    const r = service.createEventFromConversation('org', 'ALL', { conversationId: 'extra', summary: 'Reunião', startIso: '2026-11-03T10:00:00Z', endIso: '2026-11-03T11:00:00Z' });
+
+    await expect(r).rejects.toBeInstanceOf(UnprocessableEntityException);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('conversa sem a marca (inclusive arquivada à mão) → cria o evento e a mensagem local', async () => {
+    const prisma = {
+      conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'conv', channelId: 'ch', metadata: {} }), update: jest.fn() },
+      message: { create: jest.fn().mockResolvedValue({ id: 'msg' }) },
+    };
+    const service = new CalendarService(prisma as any, { assertChannelAccess: jest.fn() } as any, {} as any);
+    jest.spyOn(service, 'createEvent' as any).mockResolvedValue({ id: 'ev', calendarId: 'cal', summary: 'Reunião' } as any);
+
+    await service.createEventFromConversation('org', 'ALL', { conversationId: 'conv', summary: 'Reunião', startIso: '2026-11-03T10:00:00Z', endIso: '2026-11-03T11:00:00Z' });
+
+    expect(prisma.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ conversationId: 'conv' }) }));
   });
 });
 

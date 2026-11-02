@@ -4,7 +4,9 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
+import { mergedOriginalId } from '../messaging/conversations/merged-conversation';
 import {
   Channel,
   ChannelType,
@@ -514,10 +516,21 @@ export class CalendarService {
         organizationId,
         deletedAt: null,
       },
-      select: { id: true, channelId: true },
+      select: { id: true, channelId: true, metadata: true },
     });
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
+    // Extra fundida pela limpeza de duplicadas: recusa ANTES de criar o
+    // evento externo e a mensagem local (agendar pela conversa original).
+    const mergedInto = mergedOriginalId(conversation.metadata);
+    if (mergedInto) {
+      this.logger.warn({ msg: 'calendar_blocked_merged_conversation', conversationId: conversation.id, mergedInto });
+      throw new UnprocessableEntityException({
+        message: 'Esta conversa foi unida a outra. Agende pela conversa original.',
+        code: 'conversation_merged',
+        mergedInto,
+      });
+    }
 
     const created = await this.createEvent(organizationId, access, {
       channelId: input.channelId,
