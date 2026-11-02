@@ -265,7 +265,7 @@ export class ConversationsController {
   @Post(':id/ai/set-agent')
   @ApiOperation({
     summary:
-      'Pin a specific AI agent to this conversation and immediately engage it. Sets activeAgentId + aiEnabled=true + fires the runner. Use case: human picks Lívia/André via UI when delegating manually.',
+      'Pin a specific AI agent and set aiEnabled=true. The agent runs only if the gate permits it, including organization and panic checks. Use case: manual delegation via UI.',
   })
   setActiveAgent(
     @Param('id') id: string,

@@ -409,7 +409,8 @@ export class ConversationsService {
    * engage it. Use case: human says "vou te passar pra Lívia" via manual
    * message — the system can't infer that intent from text, so the operator
    * picks the agent in the UI and we (a) flip activeAgentId, (b) clear any
-   * paused state (force AI on for this conversation), (c) fire the runner.
+   * paused state (force AI on for this conversation), and (c) run the agent
+   * only if the gate permits it, including organization and panic checks.
    */
   async setActiveAgent(
     id: string,
