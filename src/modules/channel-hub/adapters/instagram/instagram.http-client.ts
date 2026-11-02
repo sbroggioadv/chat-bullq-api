@@ -81,14 +81,6 @@ export class InstagramHttpClient {
     };
     if (cursor) params.after = cursor;
 
-    const safeError = (err: any): string => {
-      const status = Number(err?.response?.status ?? err?.status);
-      const meta = err?.response?.data?.error;
-      const numeric = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '-';
-      const identifier = (value: unknown) => typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value) ? value : '-';
-      return `HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'}, code=${numeric(meta?.code)}, subcode=${numeric(meta?.error_subcode)}, type=${identifier(meta?.type)}, fbtrace_id=${identifier(meta?.fbtrace_id)}`;
-    };
-
     try {
       const { data } = await client.get('/me/conversations', { params });
       const items: any[] = data?.data ?? [];
