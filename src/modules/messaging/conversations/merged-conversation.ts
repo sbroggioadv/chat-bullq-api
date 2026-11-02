@@ -1,3 +1,5 @@
+import { UnprocessableEntityException } from '@nestjs/common';
+
 /**
  * Marca que a limpeza de duplicadas grava na conversa EXTRA ao fundi-la na
  * original (scripts/ops/2026-11-02-limpar-duplicadas/02-aplicar.sql): o valor
@@ -13,6 +15,24 @@ export function mergedOriginalId(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
   const value = (metadata as Record<string, unknown>)[MERGED_INTO_KEY];
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Recusa (422 `conversation_merged`, sem efeito colateral) ações que
+ * reativariam atendimento numa extra fundida: ligar/fixar/acionar IA, reabrir,
+ * mudar de estado (exceto encerrar) e atribuir. Conversa só arquivada pelo
+ * usuário NÃO é afetada — a regra depende só da marca da fusão.
+ */
+export function assertNotMergedExtra(conversation: { id: string; metadata?: unknown }, action: string): void {
+  const mergedInto = mergedOriginalId(conversation.metadata);
+  if (!mergedInto) return;
+  throw new UnprocessableEntityException({
+    message: 'Esta conversa foi unida a outra. Use a conversa original.',
+    code: 'conversation_merged',
+    action,
+    conversationId: conversation.id,
+    mergedInto,
+  });
 }
 
 /** O destino de uma escrita é extra fundida: nada foi gravado; o chamador re-resolve. */

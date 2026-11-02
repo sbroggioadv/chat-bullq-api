@@ -3,6 +3,7 @@ import { AutomationTrigger, ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { RatingsService } from '../../ratings/ratings.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
+import { assertNotMergedExtra } from './merged-conversation';
 
 type Transition = {
   from: ConversationStatus;
@@ -44,6 +45,8 @@ export class ConversationFsmService {
     const conversation = await this.prisma.conversation.findUniqueOrThrow({
       where: { id: conversationId },
     });
+    // Extra fundida: só pode ser encerrada; reabrir/promover é recusado.
+    if (to !== ConversationStatus.CLOSED) assertNotMergedExtra(conversation, `transition:${to}`);
 
     const from = conversation.status;
 
@@ -116,6 +119,8 @@ export class ConversationFsmService {
     const conversation = await this.prisma.conversation.findUniqueOrThrow({
       where: { id: conversationId },
     });
+    // Extra fundida: atribuir reativaria atendimento (e promove PENDING→OPEN).
+    assertNotMergedExtra(conversation, 'assign');
 
     const updates: Record<string, any> = { assignedToId: agentId };
     const willAlsoChangeStatus =

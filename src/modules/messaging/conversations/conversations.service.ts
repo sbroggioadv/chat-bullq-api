@@ -21,6 +21,7 @@ import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.servic
 import { SegmentReadService } from '../../segments/segment-read.service';
 import { ProjectsService } from '../../projects/projects.service';
 import { deriveGroupJid } from '../../segments/group-jid.util';
+import { assertNotMergedExtra } from './merged-conversation';
 
 const SYNC_MESSAGE_PAGE_SIZE = 50;
 const SYNC_MAX_PAGES = 4;
@@ -290,7 +291,9 @@ export class ConversationsService {
     actorId: string,
     access: ChannelAccess = 'ALL',
   ) {
-    await this.findOne(id, organizationId, access);
+    const current = await this.findOne(id, organizationId, access);
+    // Extra fundida: forçar a IA ligada é recusado (desligar/limpar continua).
+    if (enabled === true) assertNotMergedExtra(current, 'toggleAi:on');
 
     // Tri-state:
     //   null  = limpa override, conversa volta a seguir regras globais
@@ -353,6 +356,8 @@ export class ConversationsService {
     access: ChannelAccess = 'ALL',
   ): Promise<{ engaged: boolean; reason?: string }> {
     const conversation = await this.findOne(id, organizationId, access);
+    // Extra fundida: não aciona a IA.
+    assertNotMergedExtra(conversation, 'engageAi');
 
     const decision = await this.agentRouter.shouldHandle(
       conversation as Conversation,
@@ -420,6 +425,8 @@ export class ConversationsService {
     access: ChannelAccess = 'ALL',
   ): Promise<{ engaged: boolean; reason?: string; agentName?: string }> {
     const conversation = await this.findOne(id, organizationId, access);
+    // Extra fundida: não fixa agente, não liga IA, não roda o runner.
+    assertNotMergedExtra(conversation, 'setActiveAgent');
 
     const agent = await this.prisma.aiAgent.findFirst({
       where: { id: agentId, organizationId, isActive: true, deletedAt: null },
