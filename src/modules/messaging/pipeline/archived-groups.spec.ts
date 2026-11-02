@@ -14,10 +14,10 @@ describe('grupo arquivado — inbound ao vivo', () => {
     const arquivada = { id: 'grupo-arquivado', organizationId: 'org', channelId: 'ch', contactId: 'grupo', status: ConversationStatus.OPEN, isArchived: true, isGroup: true };
     const prisma = {
       conversation: {
-        findFirst: jest.fn(async ({ where }: any) => {
+        findMany: jest.fn(async ({ where }: any) => {
           const statusOk = where.status?.in ? where.status.in.includes(arquivada.status) : where.status === arquivada.status;
           const archivedOk = where.isArchived === undefined || where.isArchived === arquivada.isArchived;
-          return statusOk && archivedOk && where.contactId === arquivada.contactId ? arquivada : null;
+          return statusOk && archivedOk && where.contactId === arquivada.contactId ? [arquivada] : [];
         }),
         create: jest.fn().mockResolvedValue({ id: 'grupo-novo' }),
         update: jest.fn(),

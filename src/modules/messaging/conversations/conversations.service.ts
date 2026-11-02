@@ -581,7 +581,9 @@ export class ConversationsService {
     actorId: string,
     access: ChannelAccess = 'ALL',
   ) {
-    await this.findOne(id, organizationId, access);
+    const current = await this.findOne(id, organizationId, access);
+    // Extra fundida não volta à caixa: desarquivar é recusado (arquivar segue).
+    if (!archived) assertNotMergedExtra(current, 'unarchive');
     const updated = await this.prisma.conversation.update({
       where: { id },
       data: archived

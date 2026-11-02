@@ -9,7 +9,7 @@ import {
   Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
-import { throwIfMergedExtra } from '../conversations/merged-conversation';
+import { MERGED_SCAN_LIMIT, firstNotMerged, throwIfMergedExtra } from '../conversations/merged-conversation';
 import {
   NormalizedHistoricalConversation,
   NormalizedHistoricalMessage,
@@ -59,18 +59,22 @@ export class HistoryImportService {
 
     // 1) Match by provider thread id when present (Gmail: one thread = one conversation).
     if (normalized.externalConversationId) {
-      const byThread = await this.prisma.conversation.findFirst({
-        where: {
-          organizationId: channel.organizationId,
-          channelId: channel.id,
-          ...(THREAD_LOOKUP_SKIPS_ARCHIVED.has(channel.type) ? { isArchived: false } : {}),
-          metadata: {
-            path: ['externalConversationId'],
-            equals: normalized.externalConversationId,
+      // Extra fundida (pela marca, mesmo desarquivada) nunca é escolhida.
+      const byThread = firstNotMerged(
+        await this.prisma.conversation.findMany({
+          where: {
+            organizationId: channel.organizationId,
+            channelId: channel.id,
+            ...(THREAD_LOOKUP_SKIPS_ARCHIVED.has(channel.type) ? { isArchived: false } : {}),
+            metadata: {
+              path: ['externalConversationId'],
+              equals: normalized.externalConversationId,
+            },
           },
-        },
-        orderBy: MOST_RECENT_FIRST,
-      });
+          orderBy: MOST_RECENT_FIRST,
+          take: MERGED_SCAN_LIMIT,
+        }),
+      );
       if (byThread) {
         if (
           normalized.lastMessageAt &&
@@ -88,23 +92,26 @@ export class HistoryImportService {
     // Gmail threads must remain distinct; other channels reuse an open conversation.
     const existing = channel.type === ChannelType.GMAIL && normalized.externalConversationId
       ? null
-      : await this.prisma.conversation.findFirst({
-          where: {
-            organizationId: channel.organizationId,
-            channelId: channel.id,
-            contactId,
-            status: {
-              in: [
-                ConversationStatus.PENDING,
-                ConversationStatus.OPEN,
-                ConversationStatus.BOT,
-                ConversationStatus.WAITING,
-              ],
+      : firstNotMerged(
+          await this.prisma.conversation.findMany({
+            where: {
+              organizationId: channel.organizationId,
+              channelId: channel.id,
+              contactId,
+              status: {
+                in: [
+                  ConversationStatus.PENDING,
+                  ConversationStatus.OPEN,
+                  ConversationStatus.BOT,
+                  ConversationStatus.WAITING,
+                ],
+              },
+              isArchived: false,
             },
-            isArchived: false,
-          },
-          orderBy: MOST_RECENT_FIRST,
-        });
+            orderBy: MOST_RECENT_FIRST,
+            take: MERGED_SCAN_LIMIT,
+          }),
+        );
 
     if (existing) {
       const data: Record<string, any> = {};

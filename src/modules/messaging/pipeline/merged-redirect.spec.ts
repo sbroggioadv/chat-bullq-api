@@ -53,6 +53,11 @@ function world(initial: Conv[]) {
         const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
         return [...rows.values()].filter((c) => match(c, where)).sort((a, b) => cmp(a, b, order))[0] ?? null;
       }),
+      findMany: jest.fn(async ({ where, orderBy, take }: any) => {
+        const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
+        const sorted = [...rows.values()].filter((c) => match(c, where)).sort((a, b) => cmp(a, b, order));
+        return take === undefined ? sorted : sorted.slice(0, take);
+      }),
       findUnique: jest.fn(async ({ where }: any) => rows.get(where.id) ?? null),
       create: jest.fn(async ({ data }: any) => {
         const c = conv({ id: `nova-${rows.size + 1}`, ...data, createdAt: NOW, lastMessageAt: null });

@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../../../database/prisma.service';
 import { WatchdogService } from './watchdog.service';
 import { WatchdogConfigService } from './watchdog-config.service';
+import { mergedOriginalId } from '../../messaging/conversations/merged-conversation';
 import {
   WATCHDOG_QUEUE,
   WATCHDOG_FALLBACK_JOB,
@@ -105,12 +106,15 @@ export class WatchdogCronService implements OnModuleInit {
         watchdogJobId: true,
         status: true,
         lastMessageAt: true,
+        metadata: true,
       },
       take: 500, // hard cap por execução — protege contra explosão
     });
 
     let enqueued = 0;
     for (const conv of candidates) {
+      // Extra fundida (pela marca, mesmo desarquivada) não é vigiada.
+      if (mergedOriginalId(conv.metadata)) continue;
       // Confirma que a última msg é INBOUND. Se for OUTBOUND, já
       // respondemos — esse caso o cron não trata.
       const lastMsg = await this.prisma.message.findFirst({

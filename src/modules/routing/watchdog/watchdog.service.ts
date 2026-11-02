@@ -4,6 +4,7 @@ import type { Queue } from 'bullmq';
 import { ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { WatchdogConfigService } from './watchdog-config.service';
+import { mergedOriginalId } from '../../messaging/conversations/merged-conversation';
 import {
   WATCHDOG_QUEUE,
   WATCHDOG_CHECK_JOB,
@@ -55,8 +56,9 @@ export class WatchdogService {
     });
 
     if (!conversation) return;
-    // Arquivada não é vigiada: nem agenda job nem grava nela.
-    if (conversation.isArchived) return;
+    // Arquivada (ou extra fundida pela marca, mesmo desarquivada) não é
+    // vigiada: nem agenda job nem grava nela.
+    if (conversation.isArchived || mergedOriginalId(conversation.metadata)) return;
     if (!conversation.organization.watchdogEnabled) return;
     const jarvis = await this.prisma.channel.findUnique({
       where: { id: conversation.channelId },

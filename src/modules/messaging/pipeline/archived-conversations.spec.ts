@@ -76,17 +76,17 @@ function compare(a: Row, b: Row, orderBy: any[]): number {
   return 0; // sem ordem: devolve na ordem física (arbitrária no banco)
 }
 
-function fakeFindFirst(rows: Row[]) {
-  return jest.fn(async ({ where, orderBy }: any) => {
-    const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
-    return [...rows].filter((r) => matches(r, where)).sort((a, b) => compare(a, b, order))[0] ?? null;
-  });
+function select(rows: Row[], { where, orderBy, take }: any) {
+  const order = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
+  const sorted = [...rows].filter((r) => matches(r, where)).sort((a, b) => compare(a, b, order));
+  return take === undefined ? sorted : sorted.slice(0, take);
 }
 
 function prismaWith(rows: Row[]) {
   return {
     conversation: {
-      findFirst: fakeFindFirst(rows),
+      findFirst: jest.fn(async (args: any) => select(rows, args)[0] ?? null),
+      findMany: jest.fn(async (args: any) => select(rows, args)),
       update: jest.fn().mockResolvedValue({}),
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       create: jest.fn().mockResolvedValue({ id: 'nova' }),

@@ -13,6 +13,7 @@ import { AgentRouterService } from '../../ai-agents/router/agent-router.service'
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { WatchdogConfigService } from './watchdog-config.service';
 import { WatchdogCronService } from './watchdog-cron.service';
+import { mergedOriginalId } from '../../messaging/conversations/merged-conversation';
 import {
   WATCHDOG_QUEUE,
   WATCHDOG_CHECK_JOB,
@@ -81,7 +82,10 @@ export class WatchdogTimerProcessor extends WorkerHost {
     // Job agendado antes do arquivamento: descarta sem tocar a conversa —
     // qualquer update mexeria em updatedAt/estado de uma conversa que não
     // deve mais ser atendida.
-    if (conversation.isArchived) return this.discardArchived(conversationId);
+    // Extra fundida conta como arquivada pela marca, mesmo se desarquivada.
+    if (conversation.isArchived || mergedOriginalId(conversation.metadata)) {
+      return this.discardArchived(conversationId);
+    }
     if (!conversation.organization.watchdogEnabled) {
       await this.clearJobId(conversationId);
       return { skipped: true, reason: 'watchdog_disabled' };
@@ -195,7 +199,9 @@ export class WatchdogTimerProcessor extends WorkerHost {
     });
     if (!fresh) return { skipped: true, reason: 'conversation_vanished' };
     // Arquivada durante o processamento: não chama roteador nem IA.
-    if (fresh.isArchived) return this.discardArchived(conversationId);
+    if (fresh.isArchived || mergedOriginalId(fresh.metadata)) {
+      return this.discardArchived(conversationId);
+    }
 
     const decision = await this.agentRouter.shouldHandle(fresh);
     if (!decision.handle) {

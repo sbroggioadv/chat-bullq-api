@@ -21,7 +21,7 @@ describe('vínculo de contato preexistente entre organizações', () => {
     expect(prisma.conversation.create).not.toHaveBeenCalled();
   });
   it('importação aceita contato da mesma organização', async () => {
-    const prisma: any = { contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'link', contactId: 'contact-b', contact: { organizationId: 'org-b' } }) }, conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'conv-b' }) } };
+    const prisma: any = { contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'link', contactId: 'contact-b', contact: { organizationId: 'org-b' } }) }, conversation: { findMany: jest.fn().mockResolvedValue([{ id: 'conv-b' }]) } };
     const service = new HistoryImportService(prisma, {} as any);
     await expect(service.importConversation({ id: 'channel-b', organizationId: 'org-b' } as any, { externalContactId: 'synthetic' } as any)).resolves.toMatchObject({ contactId: 'contact-b', conversationId: 'conv-b' });
   });

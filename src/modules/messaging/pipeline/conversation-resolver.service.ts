@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConversationStatus } from '@prisma/client';
 import { PrismaService } from '../../../database/prisma.service';
 import { IdempotencyService } from './idempotency.service';
+import { MERGED_SCAN_LIMIT, firstNotMerged } from '../conversations/merged-conversation';
 
 export interface ResolvedConversation {
   conversationId: string;
@@ -51,16 +52,20 @@ export class ConversationResolverService {
         const existing = await this.findOpen(organizationId, channelId, contactId);
         if (existing) return this.touchOpen(existing, isGroup);
 
-        const lastClosed = await this.prisma.conversation.findFirst({
-          where: {
-            organizationId,
-            channelId,
-            contactId,
-            status: ConversationStatus.CLOSED,
-            isArchived: false,
-          },
-          orderBy: { closedAt: 'desc' },
-        });
+        // Extra fundida (pela marca, mesmo desarquivada) nunca é reaberta.
+        const lastClosed = firstNotMerged(
+          await this.prisma.conversation.findMany({
+            where: {
+              organizationId,
+              channelId,
+              contactId,
+              status: ConversationStatus.CLOSED,
+              isArchived: false,
+            },
+            orderBy: { closedAt: 'desc' },
+            take: MERGED_SCAN_LIMIT,
+          }),
+        );
 
         if (lastClosed) {
           const closedAt = lastClosed.closedAt || lastClosed.updatedAt;
@@ -129,16 +134,20 @@ export class ConversationResolverService {
     channelId: string,
     contactId: string,
   ) {
-    return this.prisma.conversation.findFirst({
-      where: {
-        organizationId,
-        channelId,
-        contactId,
-        status: { in: Array.from(OPEN_STATES) },
-        isArchived: false,
-      },
-      orderBy: MOST_RECENT_FIRST,
-    });
+    // Extra fundida (pela marca, mesmo desarquivada) nunca é escolhida.
+    return firstNotMerged(
+      await this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          channelId,
+          contactId,
+          status: { in: Array.from(OPEN_STATES) },
+          isArchived: false,
+        },
+        orderBy: MOST_RECENT_FIRST,
+        take: MERGED_SCAN_LIMIT,
+      }),
+    );
   }
 
   private async touchOpen(
