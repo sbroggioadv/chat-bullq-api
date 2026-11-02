@@ -74,9 +74,12 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
     const start = Date.now();
     try {
       const batchSize = Math.max(1, Number(process.env.CONTACT_AVATAR_CRON_BATCH) || 100);
+      const configuredShare = Number(process.env.CONTACT_AVATAR_CRON_CDN_SHARE);
+      const share = process.env.CONTACT_AVATAR_CRON_CDN_SHARE !== undefined && Number.isFinite(configuredShare) ? Math.min(1, Math.max(0, configuredShare)) : 0.2;
+      const externalQuota = Math.min(batchSize, Math.max(1, Math.floor(batchSize * share)));
       const configuredPause = Number(process.env.CONTACT_AVATAR_CRON_PAUSE_MS);
       const pauseMs = process.env.CONTACT_AVATAR_CRON_PAUSE_MS !== undefined && Number.isFinite(configuredPause) && configuredPause >= 0 ? configuredPause : 750;
-      const targets = await this.prisma.contactChannel.findMany({
+      const missingTargets = await this.prisma.contactChannel.findMany({
         where: {
           contact: { deletedAt: null, avatarUrl: null },
           ...(this.cursor ? { id: { gt: this.cursor } } : {}),
@@ -92,21 +95,20 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
         take: batchSize,
       });
 
-      const missingCount = targets.length;
-      if (missingCount < batchSize) {
-        const externalTargets = await this.prisma.contactChannel.findMany({
-          where: {
-            contact: { deletedAt: null, avatarUrl: { not: null }, NOT: { avatarUrl: { contains: '/api/v1/uploads/' } } },
-            ...(this.externalCursor ? { id: { gt: this.externalCursor } } : {}),
-            channel: { type: 'WHATSAPP_ZAPPFY', deletedAt: null, isActive: true },
-            externalId: { not: '' },
-          },
-          include: { channel: true },
-          orderBy: { id: 'asc' },
-          take: batchSize - missingCount,
-        });
-        targets.push(...externalTargets);
-      }
+      const externalTake = batchSize - Math.min(missingTargets.length, batchSize - externalQuota);
+      const externalTargets = await this.prisma.contactChannel.findMany({
+        where: {
+          contact: { deletedAt: null, avatarUrl: { not: null }, NOT: { avatarUrl: { contains: '/api/v1/uploads/' } } },
+          ...(this.externalCursor ? { id: { gt: this.externalCursor } } : {}),
+          channel: { type: 'WHATSAPP_ZAPPFY', deletedAt: null, isActive: true },
+          externalId: { not: '' },
+        },
+        include: { channel: true },
+        orderBy: { id: 'asc' },
+        take: externalTake,
+      });
+      const missingCount = Math.min(missingTargets.length, batchSize - externalTargets.length);
+      const targets = [...missingTargets.slice(0, missingCount), ...externalTargets];
 
       let enriched = 0;
       let rehosted = 0;
@@ -139,9 +141,9 @@ export class ContactAvatarCronService implements OnModuleInit, OnModuleDestroy {
         else this.externalCursor = cc.id;
       }
       if (!rateLimited || scanned > missingCount) {
-        if (missingCount < batchSize) this.cursor = null;
+        if (missingCount === missingTargets.length && missingTargets.length < batchSize) this.cursor = null;
       }
-      if (!rateLimited && missingCount < batchSize && targets.length < batchSize) this.externalCursor = null;
+      if (!rateLimited && externalTargets.length < externalTake) this.externalCursor = null;
 
       this.logger.log({
         msg: 'contact_avatar_cron_done',
