@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Client } from 'pg';
@@ -230,6 +231,59 @@ suite('Espelhamento — SQL em Postgres real', () => {
 
     expect(executed.map((e) => e.rowCount)).toEqual([1]);
     expect((await read('archived')).content).toEqual({ mediaUrl: OURS });
+  });
+
+  describe('Rodada 3 (A): falha antiga não bloqueia URL nova', () => {
+    const ref = (url: string) => createHash('sha256').update(url).digest('hex').slice(0, 16);
+
+    it('(i) URL trocou durante o download: o 404 da URL antiga não marca a nova', async () => {
+      // No banco a mídia já é outra URL; o worker leu a antiga (que dá 404).
+      await seed('url-changed', JSON.stringify({ mediaUrl: CDN }), '{}');
+      const { service, executed } = serviceReading(snapshot('url-changed', { content: { mediaUrl: CDN_404 }, metadata: {} }));
+
+      const err = await run(service, 'url-changed');
+      const after = await read('url-changed');
+
+      expect(err?.message).toBe('http_status:404');
+      expect(executed.map((e) => e.rowCount)).toEqual([0]);
+      expect(after.metadata).toEqual({});
+      expect(after.content).toEqual({ mediaUrl: CDN });
+    });
+
+    it('(ii) falha registrada de outra URL: o job novo tenta e espelha a URL atual', async () => {
+      const metadata = { mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404, urlRef: ref(CDN_404) } } };
+      await seed('url-new', JSON.stringify({ mediaUrl: CDN }), JSON.stringify(metadata));
+      const { service } = serviceReading(snapshot('url-new', { content: { mediaUrl: CDN }, metadata }));
+
+      await run(service, 'url-new');
+      const after = await read('url-new');
+
+      expect(after.content).toEqual({ mediaUrl: OURS });
+      expect(after.metadata.originalMediaUrl).toBe(CDN);
+    });
+
+    it('(iii) falha registrada da mesma URL: o job não tenta nem escreve', async () => {
+      const metadata = { mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404, urlRef: ref(CDN) } } };
+      await seed('url-same', JSON.stringify({ mediaUrl: CDN }), JSON.stringify(metadata));
+      const { service, executed } = serviceReading(snapshot('url-same', { content: { mediaUrl: CDN }, metadata }));
+
+      const res = await run(service, 'url-same');
+
+      expect(res).toEqual({ status: 'noop' });
+      expect(executed).toEqual([]);
+      expect((await read('url-same')).content).toEqual({ mediaUrl: CDN });
+    });
+
+    it('a falha gravada traz urlRef da URL que falhou e nunca a URL', async () => {
+      await seed('url-ref', JSON.stringify({ mediaUrl: CDN_404 }), '{}');
+      const { service } = serviceReading(snapshot('url-ref', { content: { mediaUrl: CDN_404 }, metadata: {} }));
+
+      await run(service, 'url-ref');
+      const after = await read('url-ref');
+
+      expect(after.metadata.mediaMirror.media.urlRef).toBe(ref(CDN_404));
+      expect(JSON.stringify(after.metadata.mediaMirror)).not.toContain('fbcdn');
+    });
   });
 
   it('registro por campo preserva o registro do outro campo e o resto do metadata', async () => {

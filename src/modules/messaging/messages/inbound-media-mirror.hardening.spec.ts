@@ -1,4 +1,5 @@
 import * as dns from 'dns';
+import { createHash } from 'crypto';
 import { Logger } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 import { Channel } from '@prisma/client';
@@ -70,6 +71,9 @@ const rawSql = (prisma: any) =>
     sql: strings.join('?').replace(/\s+/g, ' '),
     values,
   }));
+
+/** Mesma identidade que o serviço grava: 16 primeiros hex do SHA-256 da URL. */
+const urlRef = (url: string) => createHash('sha256').update(url).digest('hex').slice(0, 16);
 
 const PENDING = Symbol('pending');
 /** Resolve com o valor da promessa ou com PENDING se ela não terminar a tempo. */
@@ -213,7 +217,9 @@ describe('Achado 5: mediaUrl e story.url são tentados e registrados de forma in
 
   it('na retentativa, o campo com desistência registrada não é tentado de novo', async () => {
     const h = harness({
-      message: twoFields({ mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404 } } }),
+      message: twoFields({
+        mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404, urlRef: urlRef(CDN_MEDIA) } },
+      }),
     });
 
     const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
@@ -242,6 +248,57 @@ describe('Achado 5: mediaUrl e story.url são tentados e registrados de forma in
 
     expect(err).toBeInstanceOf(UnrecoverableError);
     expect(recordedFields(h.prisma)).toEqual(['media', 'story']);
+  });
+});
+
+// ─── Rodada 3 (A) — falha antiga não bloqueia URL nova ────────────────────
+
+describe('Rodada 3 (A): a falha registrada vale só para a URL que falhou', () => {
+  const CDN_NEW = 'https://scontent.xx.fbcdn.net/v/new.jpg?oh=TOKEN_NEW';
+  const failureRow = (current: string, failedUrl: string) =>
+    row({
+      content: { mediaUrl: current },
+      metadata: { mediaMirror: { media: { status: 'failed', reason: 'http_status', httpStatus: 404, urlRef: urlRef(failedUrl) } } },
+    });
+
+  it('(i) o registro de falha é compare-and-set na URL que falhou e guarda só o hash dela', async () => {
+    const h = harness({ http: async () => ok({ status: 404 }) });
+
+    await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false }).catch(() => undefined);
+
+    const [record] = rawSql(h.prisma).filter((c: any) => c.sql.includes("'failed'"));
+    expect(record.sql).toContain(`= 'media' AND jsonb_typeof("content") = 'object' AND "content"->>'mediaUrl' = ?`);
+    expect(record.sql).toContain(`'urlRef', ?::text`);
+    expect(record.values).toContain(urlRef(CDN_MEDIA));
+    expect(record.values).toContain(CDN_MEDIA); // só como parâmetro da comparação, nunca gravado
+  });
+
+  it('(ii) novo job com URL diferente da registrada é tentado', async () => {
+    const h = harness({ message: failureRow(CDN_NEW, CDN_MEDIA) });
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(h.http.mock.calls.map((c) => c[0])).toEqual([CDN_NEW]);
+    expect(res).toMatchObject({ status: 'mirrored', fields: ['media'] });
+  });
+
+  it('(iii) job com a mesma URL que falhou continua suprimido', async () => {
+    const h = harness({ message: failureRow(CDN_MEDIA, CDN_MEDIA) });
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'noop' });
+    expect(h.http).not.toHaveBeenCalled();
+  });
+
+  it('registro antigo sem urlRef não bloqueia: o campo é tentado', async () => {
+    const h = harness({
+      message: row({ metadata: { mediaMirror: { media: { status: 'failed', reason: 'http_status' } } } }),
+    });
+
+    await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(h.http).toHaveBeenCalledTimes(1);
   });
 });
 

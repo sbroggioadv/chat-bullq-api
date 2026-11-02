@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue, UnrecoverableError } from 'bullmq';
@@ -69,6 +70,21 @@ interface MirrorFailure {
 
 const failureCode = (f: MirrorFailure): string =>
   f.status ? `${f.reason}:${f.status}` : f.reason;
+
+/**
+ * Identidade segura de uma URL da Meta para o registro de falha: os 16
+ * primeiros hex do SHA-256. Permite saber se a falha registrada é da URL
+ * atual sem guardar a URL (assinada) em outro lugar.
+ */
+export function mirrorUrlRef(url: string): string {
+  return createHash('sha256').update(url).digest('hex').slice(0, 16);
+}
+
+/** A falha registrada para o campo é da URL que ele tem agora? */
+function failedFor(record: unknown, currentUrl: string): boolean {
+  const r = asRecord(record);
+  return r.status === 'failed' && r.urlRef === mirrorUrlRef(currentUrl);
+}
 
 const asRecord = (v: unknown): Record<string, any> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, any>) : {};
@@ -208,15 +224,15 @@ export class InboundMediaMirrorService {
     }
 
     // Cada campo é independente: uma desistência num não impede nem encerra
-    // a tentativa do outro. Campo com desistência já registrada não é tentado
-    // de novo.
+    // a tentativa do outro. A desistência registrada vale só para a URL que
+    // falhou (urlRef): se o campo hoje aponta para outra URL, tenta de novo.
     const targets = collectMirrorTargets(message);
     const recorded = asRecord(asRecord(message.metadata).mediaMirror);
     const work: Array<[MirrorField, string]> = [];
-    if (targets.mediaUrl && asRecord(recorded.media).status !== 'failed') {
+    if (targets.mediaUrl && !failedFor(recorded.media, targets.mediaUrl)) {
       work.push(['media', targets.mediaUrl]);
     }
-    if (targets.storyUrl && asRecord(recorded.story).status !== 'failed') {
+    if (targets.storyUrl && !failedFor(recorded.story, targets.storyUrl)) {
       work.push(['story', targets.storyUrl]);
     }
     if (!work.length) return { status: 'noop' };
@@ -275,8 +291,11 @@ export class InboundMediaMirrorService {
     // Desistência definitiva (permanente, ou transitória na última tentativa)
     // é registrada por campo; transitória antes da última tentativa retenta
     // o job inteiro (os campos já espelhados viram no-op na próxima).
+    const originalOf = new Map(work);
     for (const [field, f] of failures) {
-      if (!f.retryable || opts.isFinalAttempt) await this.recordFailure(message.id, field, f);
+      if (!f.retryable || opts.isFinalAttempt) {
+        await this.recordFailure(message.id, field, originalOf.get(field)!, f);
+      }
     }
     const transient = failures.find(([, f]) => f.retryable);
     if (transient && !opts.isFinalAttempt) throw new Error(failureCode(transient[1]));
@@ -325,9 +344,17 @@ export class InboundMediaMirrorService {
 
   /**
    * Registra a desistência de UM campo em metadata.mediaMirror.<campo>,
-   * preservando o registro do outro campo. Nunca lança.
+   * preservando o registro do outro campo. Compare-and-set: só grava se o
+   * campo ainda aponta para a URL que falhou (se ela mudou durante o
+   * download, a falha antiga não marca a nova). Guarda `urlRef` (hash curto),
+   * nunca a URL. Nunca lança.
    */
-  private async recordFailure(id: string, field: MirrorField, failure: MirrorFailure): Promise<void> {
+  private async recordFailure(
+    id: string,
+    field: MirrorField,
+    original: string,
+    failure: MirrorFailure,
+  ): Promise<void> {
     try {
       await this.prisma.$executeRaw`
         UPDATE "messages"
@@ -341,8 +368,17 @@ export class InboundMediaMirrorService {
                      'status', 'failed',
                      'reason', ${failure.reason}::text,
                      'httpStatus', ${failure.status ?? null}::int,
+                     'urlRef', ${mirrorUrlRef(original)}::text,
                      'at', ${new Date().toISOString()}::text)))
         WHERE "id" = ${id}
+          AND (
+            (${field}::text = 'media'
+              AND jsonb_typeof("content") = 'object'
+              AND "content"->>'mediaUrl' = ${original})
+            OR (${field}::text = 'story'
+              AND jsonb_typeof("metadata") = 'object'
+              AND jsonb_typeof("metadata" #> '{replyTo,story}') = 'object'
+              AND "metadata" #>> '{replyTo,story,url}' = ${original}))
           AND NOT EXISTS (
             SELECT 1 FROM "conversations" c
             WHERE c."id" = "messages"."conversation_id"

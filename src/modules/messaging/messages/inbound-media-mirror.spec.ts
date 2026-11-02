@@ -320,7 +320,7 @@ describe('InboundMediaMirrorService.runJob', () => {
       ['media', 'http_status', 404],
       ['story', 'http_status', 404],
     ]);
-    expect(calls[0].sql).not.toContain('mediaUrl');
+    expect(calls[0].sql).not.toContain('"content" ='); // o registro não troca a mídia (só a compara)
     expect(h.prisma.message.update).not.toHaveBeenCalled();
     expect(h.prisma.message.delete).not.toHaveBeenCalled();
   });
