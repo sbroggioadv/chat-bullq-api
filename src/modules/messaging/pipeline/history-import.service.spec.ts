@@ -8,7 +8,8 @@ describe('HistoryImportService conversation resolution', () => {
   beforeEach(() => {
     prisma = {
       contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'cc', contactId: 'contact', profileName: 'Nome', contact: { organizationId: 'org' } }), update: jest.fn() },
-      conversation: { findFirst: jest.fn(), update: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'new' }) },
+      message: { findMany: jest.fn().mockResolvedValue([]), createMany: jest.fn() },
+      conversation: { findFirst: jest.fn(), update: jest.fn(), updateMany: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'new' }) },
       conversationAuditLog: { create: jest.fn() },
     };
     service = new HistoryImportService(prisma, {} as any);
@@ -37,4 +38,20 @@ describe('HistoryImportService conversation resolution', () => {
     await expect(service.importConversation(channel(ChannelType.WHATSAPP_ZAPPFY), normalized)).resolves.toMatchObject({ conversationId: 'new', isNew: true });
     expect(prisma.conversation.findFirst).toHaveBeenCalledTimes(2);
   });
+  it('never moves a live conversation timestamp backwards across historical pages', async () => {
+    let timestamp = lastMessageAt;
+    prisma.conversation.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'live', lastMessageAt: timestamp, metadata: {} });
+    prisma.conversation.updateMany.mockImplementation(async ({ where, data }: any) => {
+      if (timestamp === null || timestamp < where.OR[1].lastMessageAt.lt) timestamp = data.lastMessageAt;
+      return { count: 0 };
+    });
+    const result = await service.importConversation(channel(ChannelType.WHATSAPP_ZAPPFY), { ...normalized, lastMessageAt: new Date('2026-10-01') });
+    for (const date of ['2026-10-01', '2026-09-01']) {
+      await service.importMessages(channel(ChannelType.WHATSAPP_ZAPPFY), result.conversationId, [{ externalMessageId: date, timestamp: new Date(date), direction: 'INBOUND', type: 'TEXT', content: {} }] as any);
+      expect(timestamp).toEqual(lastMessageAt);
+    }
+    expect(prisma.conversation.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.conversation.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ lastMessageAt: expect.any(Date) }) }));
+  });
+
 });

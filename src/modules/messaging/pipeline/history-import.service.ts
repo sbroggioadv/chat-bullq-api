@@ -191,8 +191,8 @@ export class HistoryImportService {
       new Date(0),
     );
     if (latestTimestamp.getTime() > 0) {
-      await this.prisma.conversation.update({
-        where: { id: conversationId },
+      await this.prisma.conversation.updateMany({
+        where: { id: conversationId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: latestTimestamp } }] },
         data: { lastMessageAt: latestTimestamp },
       });
     }
