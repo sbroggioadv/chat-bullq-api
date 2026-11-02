@@ -51,6 +51,7 @@ export class ZappfyContactEnricherService {
       }
 
       const chat = await this.fetchChat(channel, externalContactId);
+      if (chat === 'rate_limited') return { enriched: false, reason: 'rate_limited' };
       if (!chat) return { enriched: false, reason: 'chat_not_found' };
 
       // Zappfy/uazapi atuais: `image` (full) + `imagePreview` (thumb pps.whatsapp.net).
@@ -145,6 +146,7 @@ export class ZappfyContactEnricherService {
       const chats = response?.chats ?? response?.data ?? response;
       return Array.isArray(chats) ? chats[0] : chats?.[0] ?? null;
     } catch (err: any) {
+      if (err?.response?.status === 429 || err?.status === 429) return 'rate_limited';
       this.logger.warn(
         `Zappfy fetchChat failed for ${chatId}: ${err.message}`,
       );
