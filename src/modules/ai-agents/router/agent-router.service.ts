@@ -67,7 +67,8 @@ export class AgentRouterService {
     latestMessageText: string,
     recentMessages: ClassifierMessage[] = [],
   ): Promise<AgentSelection | null> {
-    // O runner reavalia o escopo, pois o card pode mudar após o gate.
+    // Se o card fechar após o gate, o roteador retorna null e o runner
+    // recorre à escolha padrão de agente.
     if (!conversation.isGroup && conversation.aiEnabled !== true) {
       const scopedIds = await this.pipelineScopedAgentIds(conversation.organizationId, conversation.id);
       if (!scopedIds.length) return null;
