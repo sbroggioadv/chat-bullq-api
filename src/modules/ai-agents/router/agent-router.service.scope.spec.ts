@@ -113,8 +113,8 @@ describe('AgentRouterService — S22 scope extensions', () => {
     expect(r.handle).toBe(true);
   });
 
-  // S22.1 — scope explícito sobrevive ao kill switch geral
-  it('S22.1: org.aiEnabled=false + agente com pipelineScope match → handle=true', async () => {
+  // S22.1 — organização desligada bloqueia inclusive scope explícito
+  it('S22.1: org.aiEnabled=false + agente com pipelineScope match → handle=false', async () => {
     deps.prisma.organization.findUnique
       .mockResolvedValueOnce({ aiPanicMode: false })
       .mockResolvedValueOnce({
@@ -128,7 +128,8 @@ describe('AgentRouterService — S22 scope extensions', () => {
       isGroup: false, aiEnabled: null, activeAgentId: null,
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
-    expect(r.handle).toBe(true);
+    expect(r.handle).toBe(false);
+    expect(r.reason).toBe('org.aiEnabled=false');
   });
 
   it('S22.1: org.aiEnabled=false + agente sem pipelineScope (genérico) → handle=false', async () => {
@@ -173,7 +174,7 @@ describe('AgentRouterService — S22 scope extensions', () => {
     deps.state.agents.push(agent);
     const conv = {
       id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
-      isGroup: false, aiEnabled: null, activeAgentId: null,
+      isGroup: false, aiEnabled: true, activeAgentId: null,
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
     expect(r.handle).toBe(true);
