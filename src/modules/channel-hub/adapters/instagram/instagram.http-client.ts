@@ -168,9 +168,8 @@ export class InstagramHttpClient {
         name = contact.name;
       }
     } catch (err: any) {
-      this.logger.warn(
-        `Instagram getUserProfile via conversations failed for ${igUserId}: ${err.message}`,
-      );
+      const status = Number(err?.response?.status ?? err?.status);
+      this.logger.warn(`Instagram busca de conversa falhou (HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'})`);
     }
 
     try {
@@ -181,16 +180,8 @@ export class InstagramHttpClient {
       name = name || data?.name;
       profile_pic = data?.profile_pic || profile_pic;
     } catch (err: any) {
-      // IG frequently refuses this for non-consenting users — don't throw if we
-      // already have a username/name.
-      const metaCode = err?.response?.data?.error?.code;
-      if (!username && !name) {
-        if (metaCode === undefined) {
-          this.logger.warn(
-            `Instagram getUserProfile direct failed for ${igUserId}: ${err.message}`,
-          );
-        }
-      }
+      const status = Number(err?.response?.status ?? err?.status);
+      this.logger.warn(`Instagram busca direta falhou (HTTP ${Number.isInteger(status) && status >= 100 && status <= 599 ? status : 'indisponível'})`);
     }
 
     if (!username && !name && !profile_pic) return null;
