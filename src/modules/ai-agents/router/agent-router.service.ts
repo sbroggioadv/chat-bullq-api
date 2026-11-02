@@ -338,16 +338,6 @@ export class AgentRouterService {
       return { handle: true };
     }
 
-    if (convOverride !== true && !conversation.activeAgentId) {
-      const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
-        conversation.organizationId,
-        conversation.id,
-      );
-      if (!hasScopedAgent) {
-        return { handle: false, reason: 'AUTOATENDIMENTO_OFF' };
-      }
-    }
-
     // Carrega channel + org pra cascade de checks.
     const [channel, org] = await Promise.all([
       this.prisma.channel.findUnique({
@@ -362,6 +352,16 @@ export class AgentRouterService {
 
     if (!org.aiEnabled) {
       return { handle: false, reason: 'org.aiEnabled=false' };
+    }
+
+    if (convOverride !== true && !conversation.activeAgentId) {
+      const hasScopedAgent = await this.hasPipelineScopedAgentForConversation(
+        conversation.organizationId,
+        conversation.id,
+      );
+      if (!hasScopedAgent) {
+        return { handle: false, reason: 'AUTOATENDIMENTO_OFF' };
+      }
     }
 
     const channelOverride = channel?.aiEnabled;
