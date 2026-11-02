@@ -1,4 +1,7 @@
 import { createHash } from 'crypto';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Client } from 'pg';
@@ -233,6 +236,72 @@ suite('Espelhamento — SQL em Postgres real', () => {
 
     expect(executed.map((e) => e.rowCount)).toEqual([1]);
     expect((await read('archived')).content).toEqual({ mediaUrl: OURS });
+  });
+
+  describe('Rodada 4: resultado incerto do UPDATE não apaga o arquivo', () => {
+    it('(i) UPDATE grava no banco e a resposta se perde: arquivo fica no disco, mensagem válida, retry vira no-op', async () => {
+      // Storage real em disco (pasta temporária) para provar que o arquivo existe.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec017-r4-'));
+      const config = { get: (k: string) => ({ UPLOADS_DIR: dir, APP_URL: 'https://api.bullq.test' })[k] } as any;
+      const uploads = new UploadsService(config, { isReady: () => false } as any);
+      const deleteSpy = jest.spyOn(uploads, 'deleteInboundMedia');
+      await seed('r4-lost', JSON.stringify({ mediaUrl: CDN }), '{}');
+      let snapshotRow: any = snapshot('r4-lost', { content: { mediaUrl: CDN }, metadata: {} });
+      let failNextResponse = true;
+      const prisma: any = {
+        message: { findUnique: jest.fn(async () => snapshotRow) },
+        $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const q = Prisma.sql(strings, ...values);
+          const res = await pg.query(q.text, q.values as any[]); // grava de verdade (autocommit)
+          if (failNextResponse) {
+            failNextResponse = false;
+            throw new Error('Connection terminated unexpectedly'); // resposta perdida
+          }
+          return res.rowCount ?? 0;
+        },
+      };
+      const service = new InboundMediaMirrorService(prisma, uploads, MetaMediaDownloader.withTransport(okImage), { add: jest.fn() } as any);
+
+      const err = await run(service, 'r4-lost');
+      const after = await read('r4-lost');
+      const ours = after.content.mediaUrl as string;
+      const file = path.join(dir, ours.slice('https://api.bullq.test/api/v1/uploads/'.length));
+      snapshotRow = { ...snapshotRow, content: after.content, metadata: after.metadata };
+      const retry = await run(service, 'r4-lost');
+
+      expect(err?.message).toBe('update_uncertain');
+      expect(ours.startsWith('https://api.bullq.test/api/v1/uploads/inbound/ch1/')).toBe(true);
+      expect(after.metadata).toEqual({ originalMediaUrl: CDN });
+      expect(fs.existsSync(file)).toBe(true);
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(retry).toEqual({ status: 'noop' });
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('(ii) 0 linhas definitivas: o arquivo salvo é apagado do disco', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec017-r4-'));
+      const config = { get: (k: string) => ({ UPLOADS_DIR: dir, APP_URL: 'https://api.bullq.test' })[k] } as any;
+      const uploads = new UploadsService(config, { isReady: () => false } as any);
+      const deleteSpy = jest.spyOn(uploads, 'deleteInboundMedia');
+      await seed('r4-zero', JSON.stringify({ mediaUrl: 'https://scontent.cdninstagram.com/v/outra.jpg' }), '{}');
+      const prisma: any = {
+        message: { findUnique: jest.fn(async () => snapshot('r4-zero', { content: { mediaUrl: CDN }, metadata: {} })) },
+        $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const q = Prisma.sql(strings, ...values);
+          return (await pg.query(q.text, q.values as any[])).rowCount ?? 0;
+        },
+      };
+      const service = new InboundMediaMirrorService(prisma, uploads, MetaMediaDownloader.withTransport(okImage), { add: jest.fn() } as any);
+
+      const res = await run(service, 'r4-zero');
+      const deletedUrl = deleteSpy.mock.calls[0]?.[0] as string;
+      const file = path.join(dir, deletedUrl.slice('https://api.bullq.test/api/v1/uploads/'.length));
+
+      expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+      expect(await deleteSpy.mock.results[0].value).toBe(true);
+      expect(fs.existsSync(file)).toBe(false);
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
   });
 
   describe('Rodada 3 (B): 0 linhas não é sucesso', () => {

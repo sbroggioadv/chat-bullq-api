@@ -258,48 +258,69 @@ export class InboundMediaMirrorService {
 
     const done: MirrorField[] = [];
     const conflicts: MirrorField[] = [];
-    const referenced = new Set<string>();
+    // Arquivos que NÃO podem ser apagados: referenciados por um UPDATE que
+    // confirmou a troca, ou cujo UPDATE terminou em exceção (resultado
+    // incerto — o banco pode ter gravado e a resposta se perdido).
+    const keep = new Set<string>();
     const failures: Array<[MirrorField, MirrorFailure]> = [];
+    const fail = (field: MirrorField, host: string | null, f: MirrorFailure, err: unknown) => {
+      failures.push([field, f]);
+      this.logger.warn({
+        msg: 'ig_media_mirror_failed',
+        messageId: message.id,
+        host,
+        field,
+        reason: f.reason,
+        status: f.status,
+        error: err instanceof MediaDownloadError ? undefined : errorName(err),
+        final: opts.isFinalAttempt || !f.retryable,
+      });
+    };
     for (const [field, original] of work) {
       const host = hostOf(original);
+      let ours: string;
       try {
-        const ours = await store(original);
-        const rows =
+        ours = await store(original);
+      } catch (err) {
+        fail(
+          field,
+          host,
+          err instanceof MediaDownloadError
+            ? { reason: err.reason, retryable: err.retryable, status: err.status }
+            : { reason: 'store_failed', retryable: true },
+          err,
+        );
+        continue;
+      }
+      let rows: number;
+      try {
+        rows =
           field === 'media'
             ? await this.swapContentMediaUrl(message.id, original, ours)
             : await this.swapStoryUrl(message.id, original, ours);
-        if (rows === 0) {
-          // Nada trocado: a URL do campo mudou ou a conversa foi fundida
-          // entre a leitura e a escrita. Não é sucesso nem falha de download.
-          conflicts.push(field);
-          this.logger.warn({ msg: 'ig_media_mirror_conflict', messageId: message.id, host, field, reason: 'conflict' });
-          continue;
-        }
-        referenced.add(ours);
-        done.push(field);
-        this.logger.log({ msg: 'ig_media_mirrored', messageId: message.id, host, field, rows });
       } catch (err) {
-        const f: MirrorFailure =
-          err instanceof MediaDownloadError
-            ? { reason: err.reason, retryable: err.retryable, status: err.status }
-            : { reason: 'store_failed', retryable: true };
-        failures.push([field, f]);
-        this.logger.warn({
-          msg: 'ig_media_mirror_failed',
-          messageId: message.id,
-          host,
-          field,
-          reason: f.reason,
-          status: f.status,
-          error: err instanceof MediaDownloadError ? undefined : errorName(err),
-          final: opts.isFinalAttempt || !f.retryable,
-        });
+        // Resultado incerto: o arquivo fica (órfão é inofensivo; link
+        // quebrado não é) e o job retenta; se a troca tiver sido gravada, a
+        // próxima tentativa vê a URL nossa e vira no-op.
+        keep.add(ours);
+        fail(field, host, { reason: 'update_uncertain', retryable: true }, err);
+        continue;
       }
+      if (rows === 0) {
+        // Resultado definitivo de 0 linhas: a URL do campo mudou ou a conversa
+        // foi fundida entre a leitura e a escrita. Nem sucesso nem falha.
+        conflicts.push(field);
+        this.logger.warn({ msg: 'ig_media_mirror_conflict', messageId: message.id, host, field, reason: 'conflict' });
+        continue;
+      }
+      keep.add(ours);
+      done.push(field);
+      this.logger.log({ msg: 'ig_media_mirrored', messageId: message.id, host, field, rows });
     }
 
-    // Arquivo salvo que nenhum campo passou a referenciar (conflito) é apagado
-    // na hora: sem isso ele ficaria órfão na storage.
-    await this.deleteUnreferenced(message.id, storedByOriginal, referenced);
+    // Só o arquivo cujo(s) UPDATE(s) devolveu(ram) 0 linhas DEFINITIVAS é
+    // apagado na hora; sem isso ele ficaria órfão na storage.
+    await this.deleteUnreferenced(message.id, storedByOriginal, keep);
 
     if (!failures.length) {
       if (!done.length && conflicts.length) return { status: 'conflict', conflicts };
@@ -322,20 +343,37 @@ export class InboundMediaMirrorService {
     throw new UnrecoverableError(failureCode(failures[0][1]));
   }
 
-  /** Apaga os arquivos salvos neste job que não ficaram referenciados. Nunca lança. */
+  /**
+   * Apaga os arquivos salvos neste job que não estão em `keep`. Nunca lança:
+   * limpeza que não acontece é avisada com código inequívoco (sem chave nem
+   * URL) e o job segue.
+   */
   private async deleteUnreferenced(
     messageId: string,
     stored: Map<string, Promise<string>>,
-    referenced: Set<string>,
+    keep: Set<string>,
   ): Promise<void> {
     for (const pending of stored.values()) {
       const ours = await pending.catch(() => null);
-      if (!ours || referenced.has(ours)) continue;
+      if (!ours || keep.has(ours)) continue;
       try {
         const deleted = await this.uploads.deleteInboundMedia(ours);
-        this.logger.log({ msg: 'ig_media_mirror_orphan_deleted', messageId, deleted });
+        if (deleted) {
+          this.logger.log({ msg: 'ig_media_mirror_orphan_deleted', messageId });
+        } else {
+          this.logger.warn({
+            msg: 'ig_media_mirror_orphan_delete_failed',
+            messageId,
+            reason: 'orphan_delete_refused',
+          });
+        }
       } catch (err) {
-        this.logger.warn({ msg: 'ig_media_mirror_orphan_delete_failed', messageId, error: errorName(err) });
+        this.logger.warn({
+          msg: 'ig_media_mirror_orphan_delete_failed',
+          messageId,
+          reason: 'orphan_delete_error',
+          error: errorName(err),
+        });
       }
     }
   }

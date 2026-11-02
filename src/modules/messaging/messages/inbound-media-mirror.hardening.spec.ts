@@ -347,6 +347,88 @@ describe('Rodada 3 (B): UPDATE que não pegou linha vira conflito e o arquivo sa
   });
 });
 
+// ─── Rodada 4 — resultado incerto do UPDATE e limpeza recusada ────────────
+
+describe('Rodada 4: só apaga com 0 linhas definitivas; limpeza recusada é aviso', () => {
+  let warnCalls: unknown[][];
+  let logCalls: unknown[][];
+  let warned = '';
+  let logged = '';
+  beforeEach(() => {
+    warnCalls = [];
+    logCalls = [];
+    (Logger.prototype.warn as unknown as jest.Mock).mockImplementation((...a: unknown[]) => warnCalls.push(a));
+    (Logger.prototype.log as unknown as jest.Mock).mockImplementation((...a: unknown[]) => logCalls.push(a));
+  });
+  const flushLogs = () => {
+    warned = JSON.stringify(warnCalls);
+    logged = JSON.stringify(logCalls);
+  };
+
+  it('(A-i) UPDATE lança (gravou e a resposta se perdeu): arquivo NÃO é apagado e o job retenta', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+
+    const err = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false }).catch((e) => e);
+    flushLogs();
+
+    expect(h.uploads.deleteInboundMedia).not.toHaveBeenCalled();
+    expect(err).not.toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toBe('update_uncertain');
+    expect(warned).toContain('"reason":"update_uncertain"');
+    expect(warned).not.toContain('TOKEN_A');
+  });
+
+  it('(A-i) na última tentativa também não apaga; desiste com update_uncertain', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockRejectedValueOnce(new Error('Connection terminated unexpectedly'));
+
+    const err = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: true }).catch((e) => e);
+
+    expect(h.uploads.deleteInboundMedia).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect(err.message).toBe('update_uncertain');
+  });
+
+  it('(A-ii) 0 linhas definitivas continua apagando o arquivo', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockResolvedValueOnce(0);
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+
+    expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+    expect(h.uploads.deleteInboundMedia).toHaveBeenCalledWith(OURS);
+  });
+
+  it('(B) deleteInboundMedia devolvendo false vira aviso orphan_delete_refused, sem chave nem URL, e o job segue', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockResolvedValueOnce(0);
+    (h.uploads.deleteInboundMedia as jest.Mock).mockResolvedValueOnce(false);
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+    flushLogs();
+
+    expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+    expect(warned).toContain('"reason":"orphan_delete_refused"');
+    expect(logged).not.toContain('orphan_deleted');
+    expect(warned + logged).not.toContain('/api/v1/uploads/');
+    expect(warned + logged).not.toContain('abc.jpg');
+  });
+
+  it('(B) exceção ao apagar também é aviso e o job segue', async () => {
+    const h = harness();
+    h.prisma.$executeRaw.mockResolvedValueOnce(0);
+    (h.uploads.deleteInboundMedia as jest.Mock).mockRejectedValueOnce(new Error('S3 down'));
+
+    const res = await h.service.runJob({ messageId: 'msg-1', channelId: 'ch1' }, { isFinalAttempt: false });
+    flushLogs();
+
+    expect(res).toEqual({ status: 'conflict', conflicts: ['media'] });
+    expect(warned).toContain('"reason":"orphan_delete_error"');
+    expect(logged).not.toContain('orphan_deleted');
+  });
+});
+
 // ─── Achado 8 — conversa extra fundida pela limpeza ───────────────────────
 
 describe('Achado 8: extra fundida não recebe escrita; arquivada pelo usuário sim', () => {
