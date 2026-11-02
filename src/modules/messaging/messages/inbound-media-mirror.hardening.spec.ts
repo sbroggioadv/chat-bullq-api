@@ -127,3 +127,55 @@ describe('Achado 1: a importação não espera o enfileiramento', () => {
     expect(outcome).toEqual({ imported: 1, skipped: 0 });
   });
 });
+
+// ─── Achado 2 — prazo único de 20 s para o download inteiro ────────────────
+
+describe('Achado 2: prazo único somando todos os saltos', () => {
+  const T0 = 1_762_000_000_000;
+  const redirect = ok({ status: 302, headers: { location: 'https://scontent.xx.fbcdn.net/next.jpg' } });
+
+  /**
+   * Transporte que gasta `costMs` do relógio por salto. Como o axios real, ele
+   * respeita o prazo recebido: se o salto custaria mais, gasta só o prazo e
+   * falha com ECONNABORTED. Anota o prazo recebido e o tempo gasto.
+   */
+  function slowTransport(costMs: number, responses: MediaHttpResponse[]) {
+    let clock = T0;
+    jest.spyOn(Date, 'now').mockImplementation(() => clock);
+    const given: number[] = [];
+    const spent: number[] = [];
+    const http = jest.fn(async (_url: string, opts: { timeoutMs: number }) => {
+      given.push(opts.timeoutMs);
+      const used = Math.min(costMs, opts.timeoutMs);
+      clock += used;
+      spent.push(used);
+      if (costMs > opts.timeoutMs) {
+        throw Object.assign(new Error('timeout exceeded'), { code: 'ECONNABORTED' });
+      }
+      return responses.shift() ?? ok();
+    });
+    return { http, given, spent };
+  }
+
+  it('cada salto recebe só o tempo restante e a soma dos tempos não passa de 20 s', async () => {
+    const { http, given, spent } = slowTransport(8_000, [redirect, redirect, redirect, ok()]);
+
+    const err = await MetaMediaDownloader.withTransport(http).download(CDN_MEDIA).catch((e) => e);
+
+    expect(given).toEqual([20_000, 12_000, 4_000]);
+    expect(spent.reduce((a, b) => a + b, 0)).toBe(20_000);
+    expect(err.reason).toBe('timeout');
+    expect(err.retryable).toBe(true);
+    expect(http).toHaveBeenCalledTimes(3);
+  });
+
+  it('dentro do prazo, o redirecionamento continua funcionando', async () => {
+    const { http, given, spent } = slowTransport(1_000, [redirect, ok()]);
+
+    const media = await MetaMediaDownloader.withTransport(http).download(CDN_MEDIA);
+
+    expect(media.host).toBe('scontent.xx.fbcdn.net');
+    expect(given).toEqual([20_000, 19_000]);
+    expect(spent.reduce((a, b) => a + b, 0)).toBe(2_000);
+  });
+});

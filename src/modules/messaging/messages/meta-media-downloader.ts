@@ -251,12 +251,17 @@ export class MetaMediaDownloader {
 
   async download(rawUrl: string): Promise<DownloadedMedia> {
     let current = assertAllowedMediaUrl(rawUrl);
+    // Prazo único para o download inteiro, somando todos os saltos: cada
+    // requisição recebe só o tempo que ainda resta.
+    const deadline = Date.now() + this.timeoutMs;
 
     for (let hop = 0; ; hop++) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new MediaDownloadError('timeout', true);
       let res: MediaHttpResponse;
       try {
         res = await this.httpGet(current.toString(), {
-          timeoutMs: this.timeoutMs,
+          timeoutMs: remainingMs,
           maxBytes: this.maxBytes,
         });
       } catch (err) {
