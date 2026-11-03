@@ -128,6 +128,7 @@ export class AgentRouterService {
         latestMessageText,
         recentMessages,
         { threshold, agentCatalog },
+        conversation.organizationId,
       );
     } catch (err) {
       this.logger.warn({

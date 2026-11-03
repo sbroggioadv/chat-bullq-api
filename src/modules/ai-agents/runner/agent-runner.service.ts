@@ -287,6 +287,8 @@ export class AiAgentRunnerService {
 
     let finalAction: AiFinalAction = AiFinalAction.NO_ACTION;
     let iterationCount = 0;
+    let effectiveModelId: string | undefined;
+    let exhaustionMessage: string | undefined;
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
     // Hard cap of 1 successful replyToConversation per run. The system
@@ -322,6 +324,14 @@ export class AiAgentRunnerService {
           organizationId: conversation.organizationId,
         });
 
+        if (response.effectiveProvider && response.effectiveModelId) {
+          effectiveModelId = `${response.effectiveProvider}/${response.effectiveModelId}`;
+        }
+        exhaustionMessage = undefined;
+        if (response.stopReason === 'length' && !this.extractText(response.message.content) && !response.message.toolCalls?.length && finalAction === AiFinalAction.NO_ACTION) {
+          exhaustionMessage = `saída esgotada no teto de ${agent.maxTokens} sem resposta`;
+          this.logger.warn(`Run ${run.id}: ${response.effectiveProvider} ${response.effectiveModelId} teto ${agent.maxTokens}: ${exhaustionMessage}`);
+        }
         aggregateUsage.inputTokens += response.usage.inputTokens;
         aggregateUsage.outputTokens += response.usage.outputTokens;
         aggregateUsage.cacheReadTokens += response.usage.cacheReadTokens;
@@ -463,6 +473,8 @@ export class AiAgentRunnerService {
         where: { id: run.id },
         data: {
           status: AiRunStatus.COMPLETED,
+          ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
+          ...(exhaustionMessage && finalAction === AiFinalAction.NO_ACTION ? { errorMessage: exhaustionMessage } : {}),
           finalAction,
           finishedAt,
           durationMs,
@@ -478,7 +490,7 @@ export class AiAgentRunnerService {
         runId: run.id,
         status: AiRunStatus.COMPLETED,
         finalAction,
-        errorMessage: null,
+        errorMessage: exhaustionMessage && finalAction === AiFinalAction.NO_ACTION ? exhaustionMessage : null,
         finishedAt,
         durationMs,
         inputTokens: aggregateUsage.inputTokens,
@@ -567,6 +579,7 @@ export class AiAgentRunnerService {
         where: { id: run.id },
         data: {
           status: AiRunStatus.FAILED,
+          ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
           errorMessage,
           finishedAt,
           durationMs,

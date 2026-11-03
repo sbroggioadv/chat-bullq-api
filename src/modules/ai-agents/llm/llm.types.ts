@@ -84,4 +84,6 @@ export interface LlmCompletionResponse {
   stopReason: 'stop' | 'tool_calls' | 'length' | 'content_filter' | 'other';
   usage: LlmUsage;
   rawModelId: string;
+  effectiveProvider?: string;
+  effectiveModelId?: string;
 }

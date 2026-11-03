@@ -130,3 +130,13 @@ describe('AiLlmRouterService.completeAttendance', () => {
     );
   });
 });
+
+describe('SPEC-019 modelo efetivo', () => {
+  it('expõe provedor e modelo após override', async () => {
+    const { svc, resolver, fugu } = build({ resolveProvider: jest.fn() });
+    resolver.resolveForLlm.mockResolvedValue({ provider: AiProvider.FUGU, apiKey: 'key', source: 'ORG', modelOverride: 'fugu-ultra' });
+    fugu.complete.mockResolvedValue({ ...OK, rawModelId: 'fugu-ultra' });
+    const result = await svc.complete(REQ);
+    expect(result).toMatchObject({ effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra' });
+  });
+});

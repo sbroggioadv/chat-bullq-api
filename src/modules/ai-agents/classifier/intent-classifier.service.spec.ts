@@ -170,3 +170,15 @@ describe('IntentClassifierService — S23 catálogo dinâmico', () => {
     expect(r.suggestedAgent).toBeNull();
   });
 });
+
+describe('SPEC-019 roteamento por organização', () => {
+  it('envia organização ao roteador e interpreta JSON; falhas viram AMBIGUOUS', async () => {
+    const llm = makeLlm();
+    const svc = new IntentClassifierService(llm as any, new IntentRouterService());
+    llm.complete.mockResolvedValue(llmResponse({ intent: 'SMALL_TALK', confidence: 0.9 }));
+    expect((await (svc.classify as any)('oi', [], {}, 'org-1')).intent).toBe(IntentType.SMALL_TALK);
+    expect(llm.complete).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-1', temperature: 0, maxTokens: 200 }));
+    llm.complete.mockRejectedValue(new Error('sem credencial'));
+    expect((await (svc.classify as any)('oi', [], {}, 'org-1')).intent).toBe(IntentType.AMBIGUOUS);
+  });
+});

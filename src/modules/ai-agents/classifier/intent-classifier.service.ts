@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { LlmService } from '../llm/llm.service';
+import { AiLlmRouterService } from '../providers/ai-llm-router.service';
 import { LlmMessage } from '../llm/llm.types';
 import {
   CLASSIFIER_SYSTEM_PROMPT,
@@ -43,7 +43,7 @@ export class IntentClassifierService {
   private readonly HAIKU_OUTPUT_USD_PER_TOKEN = 5.0 / 1_000_000;
 
   constructor(
-    private readonly llm: LlmService,
+    private readonly llm: AiLlmRouterService,
     private readonly intentRouter: IntentRouterService,
   ) {}
 
@@ -51,6 +51,7 @@ export class IntentClassifierService {
     message: string,
     recentMessages?: ClassifierMessage[],
     config?: Partial<ClassifierConfig>,
+    organizationId?: string,
   ): Promise<ClassificationResult> {
     const t0 = Date.now();
     const model = config?.model ?? this.DEFAULT_MODEL;
@@ -80,6 +81,7 @@ export class IntentClassifierService {
     try {
       const resp = await this.llm.complete({
         modelId: model,
+        organizationId,
         messages,
         temperature: 0,
         maxTokens: 200,

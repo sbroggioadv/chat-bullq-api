@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { LlmModule } from '../llm/llm.module';
+import { AiProvidersModule } from '../providers/providers.module';
 import { IntentClassifierService } from './intent-classifier.service';
 import { IntentRouterService } from './intent-router.service';
 
@@ -12,7 +12,7 @@ import { IntentRouterService } from './intent-router.service';
  * importar e usar sem ciclo de dependência.
  */
 @Module({
-  imports: [ConfigModule, LlmModule],
+  imports: [ConfigModule, AiProvidersModule],
   providers: [IntentClassifierService, IntentRouterService],
   exports: [IntentClassifierService, IntentRouterService],
 })

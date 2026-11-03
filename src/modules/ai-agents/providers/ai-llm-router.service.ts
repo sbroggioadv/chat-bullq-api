@@ -53,7 +53,8 @@ export class AiLlmRouterService {
       );
     }
 
-    return this.dispatch(resolved, req);
+    const response = await this.dispatch(resolved, req);
+    return { ...response, effectiveProvider: resolved.provider, effectiveModelId: response.rawModelId || resolved.modelOverride || req.modelId };
   }
 
   /**
