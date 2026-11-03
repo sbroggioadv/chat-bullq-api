@@ -1,6 +1,6 @@
 import { AiAgentRunnerService } from './agent-runner.service';
 
-async function execute(stopReason: string, content: string, fail = false) {
+async function execute(stopReason: string, content: string, fail = false, prepareFailure = false) {
   const agent = { id: 'a', name: 'Agente', kind: 'ORCHESTRATOR', modelId: 'old', maxTokens: 2048 };
   const svc = Object.create(AiAgentRunnerService.prototype) as any;
   const update = jest.fn().mockResolvedValue({});
@@ -16,9 +16,18 @@ async function execute(stopReason: string, content: string, fail = false) {
   svc.realtime = { emitToConversation: jest.fn() };
   svc.logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
   svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'FUGU', modelId: 'fugu-ultra', complete: fail ? jest.fn().mockRejectedValue(new Error('falha')) : jest.fn().mockResolvedValue({ message: { content }, stopReason, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }, effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra-20260615' }) }), complete: jest.fn().mockResolvedValue({ message: { content }, stopReason, usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 }, effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra' }) };
+  if (prepareFailure) svc.llmRouter.prepare.mockRejectedValue(new Error('falha ao resolver rota'));
   await svc.run({ conversation: { id: 'c', organizationId: 'org', channelId: 'ch', contactId: 'ct' }, triggerMessage: { id: 'm', content: '' } });
-  return { update, create: svc.prisma.aiAgentRun.create, realtime: svc.realtime, logger: svc.logger };
+  return { update, create: svc.prisma.aiAgentRun.create, conversation: svc.prisma.conversation, realtime: svc.realtime, logger: svc.logger };
 }
+
+it('registra falha ao resolver rota e mantém o agente ativo', async () => {
+  const { create, update, conversation, realtime } = await execute('stop', '', false, true);
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ modelId: 'old' }) }));
+  expect(conversation.update).toHaveBeenCalledWith(expect.objectContaining({ data: { activeAgentId: 'a' } }));
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', modelId: 'old', errorMessage: 'falha ao resolver rota' }) }));
+  expect(realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ status: 'FAILED', errorMessage: 'falha ao resolver rota' }));
+});
 
 it('registra modelo efetivo e esgotamento sem resposta', async () => {
   const { update, logger } = await execute('length', '');

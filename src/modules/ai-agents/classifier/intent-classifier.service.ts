@@ -96,13 +96,13 @@ export class IntentClassifierService {
               .map((p) => p.text)
               .join('');
 
-      if (resp.stopReason === 'length' && !raw.trim()) {
+      const parsed = this.parseClassifierJson(raw);
+      if (resp.stopReason === 'length' && !parsed) {
         const reasoning = `saída esgotada no teto de ${maxTokens}`;
         this.logger.warn(JSON.stringify({ msg: 'intent_classifier_exhausted', provider: resp.effectiveProvider ?? 'ANTHROPIC', model: resp.effectiveModelId ?? resp.rawModelId ?? model, maxTokens }));
         return { intent: IntentType.AMBIGUOUS, confidence: 0, reasoning, suggestedAgent: null, skippedOrchestrator: false, modelUsed: resp.effectiveModelId ?? resp.rawModelId ?? model, costUsd: resp.usage.costUsd > 0 ? resp.usage.costUsd : resp.usage.inputTokens * this.HAIKU_INPUT_USD_PER_TOKEN + resp.usage.outputTokens * this.HAIKU_OUTPUT_USD_PER_TOKEN, durationMs: Date.now() - t0 };
       }
 
-      const parsed = this.parseClassifierJson(raw);
       const intent = this.normalizeIntent(parsed?.intent);
       const confidence = this.normalizeConfidence(parsed?.confidence);
       const reasoning =

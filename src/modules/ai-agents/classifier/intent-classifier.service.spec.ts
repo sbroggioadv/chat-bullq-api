@@ -194,3 +194,16 @@ it('sinaliza saída vazia esgotada sem repetir chamada', async () => {
   expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({ msg: 'intent_classifier_exhausted', provider: 'FUGU', model: 'fugu-ultra', maxTokens: 200 });
   expect(llm.complete).toHaveBeenCalledTimes(1);
 });
+
+it('sinaliza JSON truncado no teto como esgotamento', async () => {
+  const llm = makeLlm();
+  const svc = new IntentClassifierService(llm as never, new IntentRouterService());
+  const warn = jest.spyOn((svc as any).logger, 'warn').mockImplementation(() => {});
+  const log = jest.spyOn((svc as any).logger, 'log').mockImplementation(() => {});
+  llm.complete.mockResolvedValue({ ...llmResponse({}), message: { content: '{"intent":"SAL' }, stopReason: 'length', effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra' });
+  const result = await svc.classify('oi', [], {}, 'org-1');
+  expect(result).toMatchObject({ intent: IntentType.AMBIGUOUS, confidence: 0, reasoning: 'saída esgotada no teto de 200', skippedOrchestrator: false });
+  expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({ msg: 'intent_classifier_exhausted' });
+  expect(log).not.toHaveBeenCalled();
+  expect(llm.complete).toHaveBeenCalledTimes(1);
+});

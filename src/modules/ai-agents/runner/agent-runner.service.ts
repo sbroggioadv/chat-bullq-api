@@ -188,8 +188,10 @@ export class AiAgentRunnerService {
         this.catalogSync.getCompactCatalog(conversation.organizationId),
       ]);
 
-    const preparedLlm = await this.llmRouter.prepare(conversation.organizationId, agent.modelId);
-    let effectiveModelId = `${preparedLlm.provider}/${preparedLlm.modelId}`;
+    const route = await this.llmRouter.prepare(conversation.organizationId, agent.modelId)
+      .then((prepared) => ({ ok: true as const, prepared }))
+      .catch((error: unknown) => ({ ok: false as const, error }));
+    let effectiveModelId = route.ok ? `${route.prepared.provider}/${route.prepared.modelId}` : agent.modelId;
 
     const run = await this.prisma.aiAgentRun.create({
       data: {
@@ -310,13 +312,15 @@ export class AiAgentRunnerService {
         data: { activeAgentId: agent.id },
       });
 
+      if (!route.ok) throw route.error;
+
       while (iterationCount < MAX_TOOL_ITERATIONS) {
         iterationCount++;
 
         // S18/W2: router resolves per-org provider + apiKey via routing.
         // organizationId presence triggers org-credential lookup; fallback
         // pra env preserva compat com setup pré-W2.
-        const response = await preparedLlm.complete({
+        const response = await route.prepared.complete({
           modelId: agent.modelId,
           messages,
           tools,
