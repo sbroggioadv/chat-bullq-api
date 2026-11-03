@@ -9,7 +9,6 @@ import type {
   ClassifierMessage,
 } from '../classifier/intent.types';
 import { IntentType } from '../classifier/intent.types';
-import { GroupMentionDetector } from '../scope/group-mention-detector.service';
 
 interface BusinessHoursDay {
   enabled: boolean;
@@ -44,7 +43,6 @@ export class AgentRouterService {
     private readonly prisma: PrismaService,
     private readonly classifier: IntentClassifierService,
     private readonly intentRouter: IntentRouterService,
-    private readonly groupMentionDetector: GroupMentionDetector,
   ) {}
 
   /**
@@ -368,6 +366,7 @@ export class AgentRouterService {
       }
       if (conversation.aiAllowedInGroup === true ||
           (conversation.activeAgentId && convOverride === true)) {
+        if (await this.monthlyCapReached(org)) return { handle: false, reason: 'monthly-token-cap-reached' };
         return { handle: true };
       }
       return { handle: false, reason: 'GROUP_AI_OFF' };
@@ -411,26 +410,24 @@ export class AgentRouterService {
     }
 
     // Cap mensal vale sempre — proteção de orçamento, não dá pra furar.
-    if (org.aiMonthlyTokenCap) {
-      const startOfMonth = new Date();
-      startOfMonth.setDate(1);
-      startOfMonth.setHours(0, 0, 0, 0);
-
-      const used = await this.prisma.aiAgentRun.aggregate({
-        where: {
-          organizationId: org.id,
-          startedAt: { gte: startOfMonth },
-        },
-        _sum: { inputTokens: true, outputTokens: true },
-      });
-      const total =
-        (used._sum.inputTokens ?? 0) + (used._sum.outputTokens ?? 0);
-      if (total >= org.aiMonthlyTokenCap) {
-        return { handle: false, reason: 'monthly-token-cap-reached' };
-      }
+    if (await this.monthlyCapReached(org)) {
+      return { handle: false, reason: 'monthly-token-cap-reached' };
     }
 
     return scopedAgentIds ? { handle: true, scopedAgentIds } : { handle: true };
+  }
+
+  private async monthlyCapReached(org: Organization): Promise<boolean> {
+    if (!org.aiMonthlyTokenCap) return false;
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const used = await this.prisma.aiAgentRun.aggregate({
+      where: { organizationId: org.id, startedAt: { gte: startOfMonth } },
+      _sum: { inputTokens: true, outputTokens: true },
+    });
+    const total = (used._sum.inputTokens ?? 0) + (used._sum.outputTokens ?? 0);
+    return total >= org.aiMonthlyTokenCap;
   }
 
   private async pipelineScopedAgentIds(

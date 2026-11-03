@@ -1,5 +1,4 @@
 import { AgentRouterService } from './agent-router.service';
-import { GroupMentionDetector } from '../scope/group-mention-detector.service';
 import { IntentType } from '../classifier/intent.types';
 
 /**
@@ -100,7 +99,6 @@ describe('AgentRouterService — S23 selectAgent (cross-brand fix + catálogo di
       deps.prisma as any,
       deps.classifier as any,
       {} as any, // intentRouter — não usado pelo selectAgent
-      {} as unknown as GroupMentionDetector,
     );
     delete process.env.AI_CLASSIFIER_DYNAMIC_ENABLED;
   });

@@ -145,7 +145,7 @@ describe('watchdog — timer nunca grava nem reativa a IA em conversa arquivada'
 });
 
 describe('watchdog — agendar e cancelar não gravam em conversa arquivada', () => {
-  type Row = { id: string; isArchived: boolean; watchdogJobId: string | null; stuckAttempts: number; isStuck: boolean };
+  type Row = { id: string; isGroup?: boolean; isArchived: boolean; watchdogJobId: string | null; stuckAttempts: number; isStuck: boolean };
 
   function setup(row: Row, arquivarAntesDeGravar = false) {
     const rows = new Map([[row.id, row]]);
@@ -179,6 +179,13 @@ describe('watchdog — agendar e cancelar não gravam em conversa arquivada', ()
     return { service, queue, job, row };
   }
   const linha = (over: Partial<Row> = {}): Row => ({ id: 'c', isArchived: false, watchdogJobId: null, stuckAttempts: 2, isStuck: true, ...over });
+
+  it('scheduleCheck em grupo não agenda nem grava', async () => {
+    const { service, queue, row } = setup(linha({ isGroup: true }));
+    await service.scheduleCheck('c');
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(row.watchdogJobId).toBeNull();
+  });
 
   it('scheduleCheck em arquivada → não agenda job nem grava watchdogJobId', async () => {
     const { service, queue, row } = setup(linha({ isArchived: true }));
@@ -260,14 +267,14 @@ describe('SPEC-018 — watchdog não age em grupos', () => {
     expect(watchdog.enqueueFromCron).toHaveBeenCalledWith('individual');
   });
   it('timer descarta grupo ligado antes de alterar ou executar', async () => {
-    const row = conversation({ isGroup: true, aiAllowedInGroup: true });
+    const row = conversation({ isGroup: true, aiAllowedInGroup: true, watchdogJobId: 'watchdog-c' });
     const prisma = { conversation: { findFirst: jest.fn().mockResolvedValue(row), findUnique: jest.fn().mockResolvedValue(row), updateMany: jest.fn().mockResolvedValue({ count: 1 }) }, message: { findFirst: jest.fn().mockResolvedValue({ id: 'm', direction: MessageDirection.INBOUND }) } };
     const config = { isWithinBusinessHours: jest.fn().mockReturnValue(true), resolve: jest.fn().mockReturnValue({ maxAttempts: 3 }) };
     const runner = { run: jest.fn() }, router = { shouldHandle: jest.fn().mockResolvedValue({ handle: true }) };
     const processor = new WatchdogTimerProcessor(prisma as any, config as any, {} as any, runner as any, router as any, {} as any, {} as any);
     const result = await processor.process({ name: WATCHDOG_CHECK_JOB, data: { conversationId: 'c', organizationId: 'A', scheduledAtAttempts: 0 } } as any);
     expect(result).toEqual({ skipped: true, reason: 'watchdog_skip_group' });
-    expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
+    expect(prisma.conversation.updateMany).toHaveBeenCalledWith({ where: { id: 'c', isArchived: false }, data: { watchdogJobId: null } });
     expect(router.shouldHandle).not.toHaveBeenCalled();
     expect(runner.run).not.toHaveBeenCalled();
   });

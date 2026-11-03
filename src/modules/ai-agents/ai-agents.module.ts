@@ -17,7 +17,6 @@ import { AgentKnowledgeService } from './knowledge/knowledge.service';
 import { ToolsCatalogService } from './catalog/tools.service';
 import { SkillsCatalogService } from './catalog/skills.service';
 import { AiCatalogController } from './catalog/catalog.controller';
-import { GroupMentionDetector } from './scope/group-mention-detector.service';
 import { AgentCadenceController } from './scope/agent-cadence-controller.service';
 import { AiResponseLogCleanupService } from './scope/ai-response-log-cleanup.service';
 
@@ -62,10 +61,9 @@ import { AiProvidersModule } from './providers/providers.module';
     SkillsCatalogService,
     CatalogSyncService,
     MediaUrlResolverService,
-    GroupMentionDetector,
     AgentCadenceController,
     AiResponseLogCleanupService,
   ],
-  exports: [AiAgentRunnerService, AgentRouterService, GroupMentionDetector, AgentCadenceController],
+  exports: [AiAgentRunnerService, AgentRouterService, AgentCadenceController],
 })
 export class AiAgentsModule {}

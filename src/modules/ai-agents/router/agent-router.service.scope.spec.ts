@@ -1,5 +1,4 @@
 import { AgentRouterService } from './agent-router.service';
-import { GroupMentionDetector } from '../scope/group-mention-detector.service';
 
 const makeDeps = () => {
   const agents: any[] = [];
@@ -34,9 +33,6 @@ const makeDeps = () => {
       },
       aiAgentRun: { aggregate: jest.fn().mockResolvedValue({ _sum: {} }) },
     },
-    detector: {
-      findMatchingAgent: jest.fn(),
-    },
   };
 };
 
@@ -51,7 +47,6 @@ describe('AgentRouterService — S22 scope extensions', () => {
       deps.prisma as any,
       {} as any, // classifier
       {} as any, // catalog
-      deps.detector as unknown as GroupMentionDetector,
     );
   });
 
@@ -66,7 +61,6 @@ describe('AgentRouterService — S22 scope extensions', () => {
   });
 
   it('grupo ligado sem @ nem reply → handle=true', async () => {
-    deps.detector.findMatchingAgent.mockResolvedValueOnce(null);
     deps.state.agents.push({ id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, mentionHandle: 'vendas', pipelineScope: [] });
     const conv = {
       id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
@@ -76,10 +70,9 @@ describe('AgentRouterService — S22 scope extensions', () => {
     expect(r.handle).toBe(true);
   });
 
-  it('grupo whitelist ON + match detector → handle=true', async () => {
+  it('grupo ligado com menção → handle=true', async () => {
     const agent = { id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, mentionHandle: 'vendas', pipelineScope: [] };
     deps.state.agents.push(agent);
-    deps.detector.findMatchingAgent.mockResolvedValueOnce(agent);
     const conv = {
       id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
       isGroup: true, aiAllowedInGroup: true, aiEnabled: null, activeAgentId: null,

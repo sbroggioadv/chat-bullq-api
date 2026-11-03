@@ -55,7 +55,7 @@ export class WatchdogService {
       },
     });
 
-    if (!conversation) return;
+    if (!conversation || conversation.isGroup) return;
     // Arquivada (ou extra fundida pela marca, mesmo desarquivada) não é
     // vigiada: nem agenda job nem grava nela.
     if (conversation.isArchived || mergedOriginalId(conversation.metadata)) return;

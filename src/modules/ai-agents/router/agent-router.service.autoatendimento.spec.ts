@@ -23,7 +23,7 @@ describe('AgentRouterService — autoatendimento', () => {
       aiAgentChannel: { findFirst: jest.fn().mockResolvedValue({ id: 'link' }) },
       aiAgentRun: { aggregate: jest.fn() },
     };
-    service = new AgentRouterService(prisma, {} as any, {} as any, {} as any);
+    service = new AgentRouterService(prisma, {} as any, {} as any);
   });
   const scope = () => {
     cards.push({ conversationId: 'c1', status: 'OPEN', pipelineId: 'p1' });

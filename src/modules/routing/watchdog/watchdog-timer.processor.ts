@@ -88,6 +88,7 @@ export class WatchdogTimerProcessor extends WorkerHost {
     }
     if (conversation.isGroup) {
       this.logger.debug({ msg: 'watchdog_skip_group', conversationId });
+      await this.clearJobId(conversationId);
       return { skipped: true, reason: 'watchdog_skip_group' };
     }
     if (!conversation.organization.watchdogEnabled) {
