@@ -205,4 +205,16 @@ describe('AgentRouterService — S23 selectAgent (cross-brand fix + catálogo di
     expect(deps.classifier.classify).not.toHaveBeenCalled();
     expect(r?.agentId).toBe('w-atual');
   });
+  it.each([
+    [IntentType.AGENT_MATCH, 0.95, 'Especialista', 'w'],
+    [IntentType.SMALL_TALK, 0.95, null, 'o'],
+    [IntentType.AMBIGUOUS, 0.4, null, 'o'],
+  ])('SPEC-020: catálogo dinâmico roteia %s', async (intent, confidence, suggestedAgent, expected) => {
+    process.env.AI_CLASSIFIER_DYNAMIC_ENABLED = 'true';
+    deps.state.links.push(worker('ch-brand-b', 'w', 'Especialista'), orchestrator('ch-brand-b', 'o', 'Orquestrador'));
+    deps.classifier.classify.mockResolvedValue(classification({ intent, confidence, suggestedAgent, skippedOrchestrator: intent === IntentType.AGENT_MATCH }));
+    expect((await svc.selectAgent(conv as any, 'mensagem'))?.agentId).toBe(expected);
+    expect(deps.classifier.classify.mock.calls[0][2].agentCatalog.map((a: any) => a.name)).toContain('Especialista');
+  });
+
 });

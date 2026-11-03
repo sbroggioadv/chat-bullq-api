@@ -1,4 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { GROUP_NO_REPLY_QUEUE, GroupNoReplyService, GroupNoReplyProcessor } from './runner/group-no-reply.service';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../../database/prisma.module';
 import { LlmModule } from './llm/llm.module';
@@ -33,6 +35,7 @@ import { AiProvidersModule } from './providers/providers.module';
 
 @Module({
   imports: [
+    BullModule.registerQueue({ name: GROUP_NO_REPLY_QUEUE }),
     ConfigModule,
     PrismaModule,
     LlmModule,
@@ -52,6 +55,8 @@ import { AiProvidersModule } from './providers/providers.module';
   ],
   controllers: [AgentsController, AiCatalogController],
   providers: [
+    GroupNoReplyService,
+    GroupNoReplyProcessor,
     PromptBuilderService,
     AiAgentRunnerService,
     AgentRouterService,
@@ -64,6 +69,6 @@ import { AiProvidersModule } from './providers/providers.module';
     AgentCadenceController,
     AiResponseLogCleanupService,
   ],
-  exports: [AiAgentRunnerService, AgentRouterService, AgentCadenceController],
+  exports: [GroupNoReplyService, AiAgentRunnerService, AgentRouterService, AgentCadenceController],
 })
 export class AiAgentsModule {}

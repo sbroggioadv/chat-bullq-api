@@ -9,6 +9,7 @@ import {
   Organization,
 } from '@prisma/client';
 import { LlmMessage, LlmContentPart } from '../llm/llm.types';
+import { isConversationalOrchestrator } from './conversational-orchestrator';
 
 export interface PromptContext {
   organization: Organization;
@@ -252,7 +253,18 @@ Como agir:
 - Se uma pergunta é ambígua ou exige info que vc não tem, peça esclarecimento sobre essa especificamente.
 - Se o cliente repetiu uma pergunta antiga ("Pode responder minhas perguntas?"), volta no histórico, encontra as perguntas originais e responde TODAS.
 - A regra "uma ideia por mensagem" continua valendo — mas o conjunto das mensagens cobre TODAS as perguntas pendentes.
-<% if (it.agent.kind === 'ORCHESTRATOR') { %>
+<% if (it.conversationalOrchestrator) { %>
+
+═══ Você é um ORQUESTRADOR CONVERSACIONAL ═══
+- Responda de modo simples e curto, perguntando como pode ajudar. Resolva somente o que suas instruções permitem.
+- Quando o assunto for da área de um especialista, nunca o responda: use \`delegateToAgent\` em qualquer momento da conversa. A transferência é silenciosa, sem mensagem de transição.
+- Use \`transferToHuman\` quando necessário.
+<% if (it.conversation.isGroup) { %>
+- Em grupo, responda só ao que você pode resolver ou ao que for dirigido à organização ou ao assistente. Conversas entre membros devem terminar sem texto e sem ferramenta.
+<% } else { %>
+- Em conversa individual, responda, delegue ou transfira antes de terminar.
+<% } %>
+<% } else if (it.agent.kind === 'ORCHESTRATOR') { %>
 
 ═══ Você é um ORQUESTRADOR ═══
 - Sua função é triar o pedido e encaminhar pro especialista certo. Você NÃO resolve o problema sozinho.
@@ -445,6 +457,7 @@ export class PromptBuilderService {
   buildMessages(ctx: PromptContext): LlmMessage[] {
     const systemText = this.eta.renderString(SYSTEM_TEMPLATE, {
       ...ctx,
+      conversationalOrchestrator: isConversationalOrchestrator(ctx.agent),
       now: this.formatNow(ctx.organization.aiTimezone),
       operationalContextLabel: this.formatRelativeUpdate(
         (ctx.agent as any).operationalContextUpdatedAt,
@@ -476,6 +489,9 @@ export class PromptBuilderService {
       const role: 'user' | 'assistant' =
         m.direction === 'INBOUND' ? 'user' : 'assistant';
       const parts = this.extractContentParts(m, ctx.mediaUrls, role);
+      if (ctx.conversation.isGroup && role === 'user' && m.senderName && parts.length) {
+        parts.unshift({ type: 'text', text: `${m.senderName}:` });
+      }
       if (parts.length === 0) continue;
 
       const last = messages[messages.length - 1];
@@ -514,6 +530,9 @@ export class PromptBuilderService {
         ctx.mediaUrls,
         'user',
       );
+      if (ctx.conversation.isGroup && ctx.triggerMessage.senderName && triggerParts.length) {
+        triggerParts.unshift({ type: 'text', text: `${ctx.triggerMessage.senderName}:` });
+      }
       if (triggerParts.length > 0) {
         const onlyText = triggerParts.every((p) => p.type === 'text');
         messages.push({

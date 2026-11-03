@@ -1,0 +1,51 @@
+import { AiAgentRunnerService } from './agent-runner.service';
+
+async function execute(group: boolean, direct: boolean, content: string, action?: string, depth = 0, exhaustion = false) {
+  const agent = { id: 'a', name: 'Agente', kind: action ? 'WORKER' : 'ORCHESTRATOR', canRespondDirectly: direct, modelId: 'old', maxTokens: 2048 };
+  const svc = Object.create(AiAgentRunnerService.prototype) as any;
+  const update = jest.fn().mockResolvedValue({});
+  svc.prisma = { aiAgent: { findFirst: jest.fn().mockResolvedValue(agent) }, organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, channel: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, contact: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, message: { findMany: jest.fn().mockResolvedValue([]) }, aiAgentMemory: { findUnique: jest.fn().mockResolvedValue(null) }, aiAgentRun: { create: jest.fn().mockResolvedValue({ id: 'run-1' }), update }, aiResponseLog: { create: jest.fn().mockResolvedValue({}) }, conversation: { update: jest.fn().mockResolvedValue({}), findUnique: jest.fn().mockResolvedValue({ id: 'c', organizationId: 'org', channelId: 'ch', contactId: 'ct', activeAgentId: null, isGroup: group }) } };
+  svc.prisma.aiAgentChannel = { findFirst: jest.fn().mockResolvedValue({ agent: { id: 'o', kind: 'ORCHESTRATOR', canRespondDirectly: direct } }) };
+  svc.agentRouter = { selectAgent: jest.fn().mockResolvedValue({ agentId: 'a' }) };
+  svc.cadence = { evaluate: jest.fn().mockResolvedValue({ shouldSend: true, delayMs: 0 }) };
+  svc.catalogSync = { getCompactCatalog: jest.fn().mockResolvedValue([]) };
+  svc.mediaUrlResolver = { resolveMany: jest.fn().mockResolvedValue(new Map()) };
+  svc.promptBuilder = { buildMessages: jest.fn().mockReturnValue([]) };
+  svc.resolveToolsAndSkills = jest.fn().mockResolvedValue({ llmTools: [], customSkillsByName: new Map(), skillInstructions: [] });
+  svc.augmentSystemPromptWithLayers = jest.fn();
+  svc.scheduleAfterRunJobs = jest.fn().mockResolvedValue(undefined);
+  svc.realtime = { emitToConversation: jest.fn() };
+  svc.logger = { warn: jest.fn(), log: jest.fn(), error: jest.fn() };
+  const complete = jest.fn().mockResolvedValue({ message: action ? { content: '', toolCalls: [{ id: 't', name: 'handBackToOrchestrator', arguments: {} }] } : { content }, stopReason: action ? 'tool_calls' : 'stop', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } });
+  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'TEST', modelId: 'test', complete }) };
+  svc.registry = { get: jest.fn().mockReturnValue({ execute: jest.fn().mockResolvedValue({ finalAction: 'REPLIED' }) }) };
+  svc.executeToolCalls = jest.fn().mockResolvedValue([{ toolName: 'handBackToOrchestrator', toolCallId: 't', output: { ok: true }, finalAction: action }]);
+  if (action) complete.mockResolvedValueOnce({ message: { content: '', toolCalls: [{ id: 't', name: 'handBackToOrchestrator', arguments: {} }] }, stopReason: 'tool_calls', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } }).mockResolvedValue({ message: { content: '' }, stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } });
+  if (exhaustion) complete.mockResolvedValueOnce({ message: { content: '' }, stopReason: 'length', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 } });
+  const originalRun = svc.run.bind(svc);
+  svc.run = jest.fn().mockImplementationOnce(originalRun).mockResolvedValue(undefined);
+  await svc.run({ conversation: { id: 'c', organizationId: 'org', channelId: 'ch', contactId: 'ct', isGroup: group }, triggerMessage: { id: 'm', content: '' }, chainDepth: depth });
+  return { svc, update, complete };
+}
+
+it('empurra uma vez só em conversa individual', async () => {
+  expect((await execute(false, true, '')).complete).toHaveBeenCalledTimes(2);
+  expect((await execute(true, true, '')).complete).toHaveBeenCalledTimes(1);
+  expect((await execute(false, false, '')).complete).toHaveBeenCalledTimes(1);
+});
+it('grupo não envia texto solto e registra NO_ACTION', async () => {
+  const { svc, update } = await execute(true, true, 'Uma resposta solta');
+  expect(svc.registry.get).not.toHaveBeenCalled();
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ finalAction: 'NO_ACTION' }) }));
+});
+it('encadeia devolução apenas para conversacional e respeita profundidade', async () => {
+  expect((await execute(false, true, '', 'HANDED_BACK')).svc.run).toHaveBeenCalledTimes(2);
+  expect((await execute(false, false, '', 'HANDED_BACK')).svc.run).toHaveBeenCalledTimes(1);
+  expect((await execute(false, true, '', 'HANDED_BACK', 3)).svc.run).toHaveBeenCalledTimes(1);
+});
+
+it('preserva o registro de esgotamento após o empurrão sem resposta', async () => {
+  const { update, complete } = await execute(false, true, '', undefined, 0, true);
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ finalAction: 'NO_ACTION', errorMessage: expect.stringContaining('teto de 2048') }) }));
+});

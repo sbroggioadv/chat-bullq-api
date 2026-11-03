@@ -35,6 +35,7 @@ import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
+import { isConversationalOrchestrator } from './conversational-orchestrator';
 import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
 
 const MAX_TOOL_ITERATIONS = 8;
@@ -63,6 +64,8 @@ interface RunInput {
    * forth. Set automatically on chained calls, callers shouldn't pass this.
    */
   chainDepth?: number;
+  forcedAgentId?: string;
+  contextNote?: string;
 }
 
 const MAX_CHAIN_DEPTH = 3;
@@ -97,11 +100,13 @@ export class AiAgentRunnerService {
     conversation,
     triggerMessage,
     chainDepth = 0,
+    forcedAgentId,
+    contextNote,
   }: RunInput): Promise<void> {
     // Fase 2: usa o agentRouter (com IntentClassifier) pra escolher o agent.
     // Auto-chains (chainDepth > 0) NÃO classificam de novo — já tem activeAgentId.
     let selection: AgentSelection | null = null;
-    if (chainDepth === 0) {
+    if (chainDepth === 0 && !forcedAgentId) {
       const triggerText = this.extractText(
         (triggerMessage.content as unknown) ?? '',
       );
@@ -111,7 +116,9 @@ export class AiAgentRunnerService {
         [],
       );
     }
-    const agent = selection
+    const agent = forcedAgentId
+      ? await this.prisma.aiAgent.findFirst({ where: { id: forcedAgentId, isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' } })
+      : selection
       ? await this.prisma.aiAgent.findFirst({
           where: { id: selection.agentId, isActive: true, deletedAt: null },
         })
@@ -266,6 +273,13 @@ export class AiAgentRunnerService {
       catalog,
     });
 
+    if (contextNote) {
+      const last = messages[messages.length - 1];
+      if (last?.role === 'user' && typeof last.content === 'string') last.content += `\n${contextNote}`;
+      else if (last?.role === 'user' && Array.isArray(last.content)) last.content.push({ type: 'text', text: contextNote });
+      else messages.push({ role: 'user', content: contextNote });
+    }
+
     // Fase 2.5: augmenta o system message com Security Layer (prepend)
     // e RAG retrieval (append). Mantém o builder como source-of-truth da
     // estrutura principal do prompt — só decora com regras imutáveis e
@@ -295,6 +309,7 @@ export class AiAgentRunnerService {
     let exhaustionMessage: string | undefined;
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
+    let conversationalNudgeUsed = false;
     // Hard cap of 1 successful replyToConversation per run. The system
     // prompt encourages "uma ideia por mensagem" + multi-step consultative
     // selling, but the runner used to fire every reply back-to-back in
@@ -333,7 +348,7 @@ export class AiAgentRunnerService {
         if (response.effectiveProvider && response.effectiveModelId) {
           effectiveModelId = `${response.effectiveProvider}/${response.effectiveModelId}`;
         }
-        exhaustionMessage = undefined;
+        if (!conversationalNudgeUsed) exhaustionMessage = undefined;
         if (response.stopReason === 'length' && !this.extractText(response.message.content) && !response.message.toolCalls?.length && finalAction === AiFinalAction.NO_ACTION) {
           exhaustionMessage = `saída esgotada no teto de ${agent.maxTokens} sem resposta`;
           this.logger.warn(`Run ${run.id}: ${response.effectiveProvider} ${response.effectiveModelId} teto ${agent.maxTokens}: ${exhaustionMessage}`);
@@ -362,7 +377,7 @@ export class AiAgentRunnerService {
           // or a stub too short to be a real reply. Sending such text would
           // look like the agent literally typing "Human: oi" to the user.
           const tooShortForReal = text.length < 4;
-          if (text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+          if (!conversation.isGroup && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
             this.logger.log(
               `Run ${run.id}: model emitted text without replyToConversation, auto-sending as fallback`,
             );
@@ -405,6 +420,8 @@ export class AiAgentRunnerService {
           const neverReplied = !toolsCalled.has('replyToConversation');
           const stillNoAction = finalAction === AiFinalAction.NO_ACTION;
           if (
+            !conversation.isGroup &&
+            !isConversationalOrchestrator(agent) &&
             calledSalesPrep &&
             neverReplied &&
             stillNoAction &&
@@ -419,6 +436,11 @@ export class AiAgentRunnerService {
               content:
                 'Você rodou as tools de preparação (lookupOffering / checkPurchase) mas não chamou replyToConversation. O cliente está esperando. Responda agora com replyToConversation: 1 frase de pitch ligada à dor + preço + link do checkout (vindos do lookupOffering). Não termine este turn sem chamar replyToConversation.',
             });
+            continue;
+          }
+          if (!conversation.isGroup && isConversationalOrchestrator(agent) && finalAction === AiFinalAction.NO_ACTION && !conversationalNudgeUsed && !toolsCalled.has('replyToConversation') && !toolsCalled.has('delegateToAgent') && !toolsCalled.has('transferToHuman')) {
+            conversationalNudgeUsed = true;
+            messages.push({ role: 'user', content: 'Responda com replyToConversation, delegue ou transfira conforme o caso.' });
             continue;
           }
           break;
@@ -551,13 +573,14 @@ export class AiAgentRunnerService {
       // the full history (including the orchestrator's "vou te passar pra X")
       // and starts speaking. Bounded by MAX_CHAIN_DEPTH to avoid recursion.
       if (
-        finalAction === AiFinalAction.DELEGATED &&
+        (finalAction === AiFinalAction.DELEGATED || finalAction === AiFinalAction.HANDED_BACK) &&
         chainDepth < MAX_CHAIN_DEPTH
       ) {
         const refreshed = await this.prisma.conversation.findUnique({
           where: { id: conversation.id },
         });
-        if (refreshed && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) {
+        const handBackAgent = refreshed && finalAction === AiFinalAction.HANDED_BACK ? await this.resolveAgent(refreshed) : null;
+        if (refreshed && ((finalAction === AiFinalAction.DELEGATED && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) || (finalAction === AiFinalAction.HANDED_BACK && !refreshed.activeAgentId && handBackAgent && isConversationalOrchestrator(handBackAgent)))) {
           this.logger.log(
             `Auto-chaining run for new active agent ${refreshed.activeAgentId} on conv ${conversation.id} (depth ${chainDepth + 1})`,
           );

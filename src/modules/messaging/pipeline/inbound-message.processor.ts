@@ -16,6 +16,7 @@ import { AiAgentRunnerService } from '../../ai-agents/runner/agent-runner.servic
 import { TranscriptionService } from '../messages/transcription.service';
 import { OutboxService } from '../../automations/outbox/outbox.service';
 import { WatchdogService } from '../../routing/watchdog/watchdog.service';
+import { GroupNoReplyService } from '../../ai-agents/runner/group-no-reply.service';
 import {
   MergedConversationError,
   throwIfMergedExtra,
@@ -105,6 +106,7 @@ export class InboundMessageProcessor extends WorkerHost {
     // @Optional só para specs que constroem o processor por posição; no
     // MessagingModule o provider está registrado e é sempre injetado.
     @Optional() private readonly mediaMirror?: InboundMediaMirrorService,
+    @Optional() private readonly groupNoReply?: GroupNoReplyService,
   ) {
     super();
   }
@@ -564,6 +566,11 @@ export class InboundMessageProcessor extends WorkerHost {
       return;
     }
 
+    if (conversation.isGroup && this.groupNoReply) {
+      await this.groupNoReply.schedule(conversation, triggerMessage).catch((err) =>
+        this.logger.error(`Group check scheduling failed for message ${triggerMessage.id}: ${err?.message ?? err}`),
+      );
+    }
     this.scheduleAgentRun(conversationId, triggerMessageId);
   }
 
