@@ -545,9 +545,8 @@ export class InboundMessageProcessor extends WorkerHost {
       return;
     }
 
-    // S22 — passa triggerMessage pra shouldHandle pra permitir group gate
-    // (@handle detection + reply nativo). Callers sem mensagem (watchdog)
-    // não passam message — group gate usa fail-closed GROUP_NO_MENTION.
+    // A mensagem permanece disponível ao gate de escopo; grupos ligados
+    // não exigem menção. O watchdog tem bloqueio próprio para grupos.
     const scopeFeatureEnabled = process.env.AI_SCOPE_RESOLVER_ENABLED !== 'false';
     const decision = await this.agentRouter.shouldHandle(
       conversation,

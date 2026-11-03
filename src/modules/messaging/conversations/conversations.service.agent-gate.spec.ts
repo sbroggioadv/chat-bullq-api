@@ -25,4 +25,23 @@ describe('setActiveAgent — gate da organização', () => {
     expect(result).toEqual({ engaged: false, reason, agentName: 'Agente' });
     expect(runner.run).not.toHaveBeenCalled();
   });
+  it.each([true, false])('grupo com organização ligada=%s respeita o gate ao fixar agente', async (enabled) => {
+    const updated = { id: 'c1', organizationId: 'o1', channelId: 'ch1', isGroup: true, aiAllowedInGroup: false, aiEnabled: true, activeAgentId: 'a1' };
+    const prisma: any = {
+      organization: { findUnique: jest.fn().mockResolvedValue({ aiEnabled: enabled, aiPanicMode: false }) },
+      channel: { findUnique: jest.fn().mockResolvedValue({ aiEnabled: null }) },
+      aiAgent: { findFirst: jest.fn().mockResolvedValue({ id: 'a1', name: 'Agente' }) },
+      conversation: { update: jest.fn().mockResolvedValue(updated) }, conversationAuditLog: { create: jest.fn() },
+      message: { findFirst: jest.fn().mockResolvedValue({ id: 'm1' }) },
+    };
+    const router = new AgentRouterService(prisma, {} as any, {} as any, {} as any);
+    const runner = { run: jest.fn().mockResolvedValue({}) };
+    const realtime = { emitToConversation: jest.fn(), emitToChannel: jest.fn(), emitToOrganization: jest.fn() };
+    const service = new ConversationsService({} as any, {} as any, realtime as any, prisma, {} as any, {} as any, {} as any, router, runner as any, {} as any, {} as any);
+    jest.spyOn(service, 'findOne').mockResolvedValue({ ...updated, activeAgentId: null } as any);
+    const result = await service.setActiveAgent('c1', 'o1', 'a1', 'user');
+    expect(result.engaged).toBe(enabled);
+    expect(runner.run).toHaveBeenCalledTimes(enabled ? 1 : 0);
+  });
+
 });

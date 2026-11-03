@@ -320,7 +320,7 @@ export class AgentRouterService {
     reason?: string;
     scopedAgentIds?: string[];
   }> {
-    // Precedência: panic → JARVIS → conversa OFF → grupo → organização desligada → autoatendimento → vínculo no canal.
+    // Precedência: panic → JARVIS → conversa OFF → organização/canal → grupo → autoatendimento → vínculo no canal.
     // S22.2 — Panic mode é a PRIMEIRA coisa. Override absoluto: ignora scope,
     // conv override, channel override, tudo. Kill switch de emergência.
     const orgPanic = await this.prisma.organization.findUnique({
@@ -345,35 +345,6 @@ export class AgentRouterService {
       return { handle: false, reason: 'conversation.aiEnabled=force-off' };
     }
 
-    // S22 — Group gate: em grupos, exige whitelist + @ mention/reply
-    if ((conversation as any).isGroup) {
-      if (!(conversation as any).aiAllowedInGroup) {
-        return { handle: false, reason: 'GROUP_NOT_WHITELISTED' };
-      }
-      if (!message) {
-        // chamado sem mensagem (caller errado) — fail-closed
-        return { handle: false, reason: 'GROUP_NO_MENTION' };
-      }
-      const candidates = await this.prisma.aiAgent.findMany({
-        where: {
-          organizationId: conversation.organizationId,
-          isActive: true,
-          deletedAt: null,
-        },
-        select: { id: true, mentionHandle: true },
-      });
-      const matched = await this.groupMentionDetector.findMatchingAgent(
-        message as any,
-        candidates,
-        conversation.id,
-      );
-      if (!matched) {
-        return { handle: false, reason: 'GROUP_NO_MENTION' };
-      }
-      // Achou agente mencionado — bypassa pipeline scope (mention é mais forte)
-      return { handle: true };
-    }
-
     // Carrega channel + org pra cascade de checks.
     const [channel, org] = await Promise.all([
       this.prisma.channel.findUnique({
@@ -388,6 +359,18 @@ export class AgentRouterService {
 
     if (!org.aiEnabled) {
       return { handle: false, reason: 'org.aiEnabled=false' };
+    }
+
+    // Grupos respeitam o desligamento do canal mesmo com agente fixado.
+    if (conversation.isGroup) {
+      if (channel?.aiEnabled === false) {
+        return { handle: false, reason: 'channel.aiEnabled=force-off' };
+      }
+      if (conversation.aiAllowedInGroup === true ||
+          (conversation.activeAgentId && convOverride === true)) {
+        return { handle: true };
+      }
+      return { handle: false, reason: 'GROUP_AI_OFF' };
     }
 
     let scopedAgentIds: string[] | undefined;

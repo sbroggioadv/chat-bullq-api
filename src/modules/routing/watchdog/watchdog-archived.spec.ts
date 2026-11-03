@@ -248,3 +248,27 @@ describe('watchdog — cron de fallback ignora conversa arquivada', () => {
     expect(result).toEqual({ scanned: 0, enqueued: 0 });
   });
 });
+
+describe('SPEC-018 — watchdog não age em grupos', () => {
+  it('cron exclui grupo ligado e preserva conversa individual inbound', async () => {
+    const rows = [{ id: 'grupo', isGroup: true }, { id: 'individual', isGroup: false }].map(r => ({ ...r, organizationId: 'A', watchdogJobId: null, status: ConversationStatus.PENDING, lastMessageAt: new Date(0) }));
+    const prisma = { conversation: { findMany: jest.fn(async ({ where }: any) => rows.filter(r => where.isGroup === undefined || r.isGroup === where.isGroup)) }, message: { findFirst: jest.fn().mockResolvedValue({ direction: MessageDirection.INBOUND }) } };
+    const watchdog = { enqueueFromCron: jest.fn() };
+    const cron = new WatchdogCronService(prisma as any, watchdog as any, {} as any, {} as any);
+    expect(await cron.scanAndEnqueue()).toEqual({ scanned: 1, enqueued: 1 });
+    expect(watchdog.enqueueFromCron).toHaveBeenCalledTimes(1);
+    expect(watchdog.enqueueFromCron).toHaveBeenCalledWith('individual');
+  });
+  it('timer descarta grupo ligado antes de alterar ou executar', async () => {
+    const row = conversation({ isGroup: true, aiAllowedInGroup: true });
+    const prisma = { conversation: { findFirst: jest.fn().mockResolvedValue(row), findUnique: jest.fn().mockResolvedValue(row), updateMany: jest.fn().mockResolvedValue({ count: 1 }) }, message: { findFirst: jest.fn().mockResolvedValue({ id: 'm', direction: MessageDirection.INBOUND }) } };
+    const config = { isWithinBusinessHours: jest.fn().mockReturnValue(true), resolve: jest.fn().mockReturnValue({ maxAttempts: 3 }) };
+    const runner = { run: jest.fn() }, router = { shouldHandle: jest.fn().mockResolvedValue({ handle: true }) };
+    const processor = new WatchdogTimerProcessor(prisma as any, config as any, {} as any, runner as any, router as any, {} as any, {} as any);
+    const result = await processor.process({ name: WATCHDOG_CHECK_JOB, data: { conversationId: 'c', organizationId: 'A', scheduledAtAttempts: 0 } } as any);
+    expect(result).toEqual({ skipped: true, reason: 'watchdog_skip_group' });
+    expect(prisma.conversation.updateMany).not.toHaveBeenCalled();
+    expect(router.shouldHandle).not.toHaveBeenCalled();
+    expect(runner.run).not.toHaveBeenCalled();
+  });
+});

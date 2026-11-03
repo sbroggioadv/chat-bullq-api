@@ -86,6 +86,7 @@ export class WatchdogCronService implements OnModuleInit {
         // Arquivada = histórico já tratado (ex.: duplicada fundida); o
         // watchdog não reativa atendimento sobre ela.
         isArchived: false,
+        isGroup: false,
         isStuck: false,
         status: {
           in: [

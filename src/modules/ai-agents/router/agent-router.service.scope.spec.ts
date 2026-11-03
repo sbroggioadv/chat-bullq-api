@@ -55,17 +55,17 @@ describe('AgentRouterService — S22 scope extensions', () => {
     );
   });
 
-  it('grupo sem aiAllowedInGroup → handle=false, reason=GROUP_NOT_WHITELISTED', async () => {
+  it('grupo sem aiAllowedInGroup → handle=false, reason=GROUP_AI_OFF', async () => {
     const conv = {
       id: 'c1', organizationId: 'org-1', channelId: 'ch-1',
       isGroup: true, aiAllowedInGroup: false, aiEnabled: null, activeAgentId: null,
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
     expect(r.handle).toBe(false);
-    expect(r.reason).toBe('GROUP_NOT_WHITELISTED');
+    expect(r.reason).toBe('GROUP_AI_OFF');
   });
 
-  it('grupo whitelist ON + sem @ nem reply → handle=false, GROUP_NO_MENTION', async () => {
+  it('grupo ligado sem @ nem reply → handle=true', async () => {
     deps.detector.findMatchingAgent.mockResolvedValueOnce(null);
     deps.state.agents.push({ id: 'a1', organizationId: 'org-1', isActive: true, deletedAt: null, mentionHandle: 'vendas', pipelineScope: [] });
     const conv = {
@@ -73,8 +73,7 @@ describe('AgentRouterService — S22 scope extensions', () => {
       isGroup: true, aiAllowedInGroup: true, aiEnabled: null, activeAgentId: null,
     };
     const r = await svc.shouldHandle(conv as any, { content: { text: 'oi' } } as any);
-    expect(r.handle).toBe(false);
-    expect(r.reason).toBe('GROUP_NO_MENTION');
+    expect(r.handle).toBe(true);
   });
 
   it('grupo whitelist ON + match detector → handle=true', async () => {

@@ -56,9 +56,9 @@ describe('AgentRouterService — autoatendimento', () => {
     scope(); conversation.aiEnabled = false; conversation.activeAgentId = 'a1';
     expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'conversation.aiEnabled=force-off' });
   });
-  it('grupo fora da lista branca é bloqueado', async () => {
+  it('grupo sem ativação é bloqueado', async () => {
     conversation.isGroup = true; conversation.aiAllowedInGroup = false;
-    expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'GROUP_NOT_WHITELISTED' });
+    expect(await service.shouldHandle(conversation)).toEqual({ handle: false, reason: 'GROUP_AI_OFF' });
   });
   it('card fechado ou de pipeline não correspondente não habilita', async () => {
     scope(); cards[0].status = 'WON';
@@ -104,10 +104,9 @@ describe('AgentRouterService — autoatendimento', () => {
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     }));
   });
-  it('grupo permitido e mencionado atende com organização desligada', async () => {
+  it('grupo permitido é bloqueado com organização desligada', async () => {
     org.aiEnabled = false; conversation.isGroup = true; conversation.aiAllowedInGroup = true;
-    (service as any).groupMentionDetector.findMatchingAgent = jest.fn().mockResolvedValue({ id: 'a1' });
-    expect(await service.shouldHandle(conversation, { content: 'oi' })).toEqual({ handle: true });
+    expect(await service.shouldHandle(conversation, { content: 'oi' })).toEqual({ handle: false, reason: 'org.aiEnabled=false' });
   });
 
 });
