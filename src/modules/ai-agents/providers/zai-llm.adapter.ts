@@ -59,7 +59,7 @@ export class ZaiLlmAdapter {
     });
   }
 
-  private normalizeModelId(id: string): string {
+  normalizeModelId(id: string): string {
     if (id.startsWith('zai/')) return id.slice('zai/'.length);
     if (id.startsWith('zhipu/')) return id.slice('zhipu/'.length);
     if (

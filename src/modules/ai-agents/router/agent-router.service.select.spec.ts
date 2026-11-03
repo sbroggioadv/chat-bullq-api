@@ -174,6 +174,7 @@ describe('AgentRouterService — S23 selectAgent (cross-brand fix + catálogo di
 
     await svc.selectAgent(conv as any, 'mensagem qualquer');
     expect(deps.classifier.classify).toHaveBeenCalledTimes(1);
+    expect(deps.classifier.classify.mock.calls[0][3]).toBe(conv.organizationId);
     const cfg = deps.classifier.classify.mock.calls[0][2];
     expect(cfg.agentCatalog.map((a: any) => a.name)).toEqual(['SDR Marca B', 'Suporte Marca B']);
     expect(cfg.agentCatalog[0]).toMatchObject({ department: 'VENDAS', description: 'Vende produto B' });

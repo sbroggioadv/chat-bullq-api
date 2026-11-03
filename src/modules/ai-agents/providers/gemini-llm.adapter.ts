@@ -131,7 +131,7 @@ export class GeminiLlmAdapter {
     };
   }
 
-  private normalizeModelId(id: string): string {
+  normalizeModelId(id: string): string {
     if (id.startsWith('gemini/')) return id.slice('gemini/'.length);
     if (id.startsWith('claude-') || id.startsWith('gpt-')) {
       this.logger.warn(`Got non-Gemini model "${id}" but routing is Gemini; defaulting to gemini-1.5-flash`);

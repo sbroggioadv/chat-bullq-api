@@ -45,16 +45,36 @@ export class AiLlmRouterService {
       return this.anthropic.complete(req);
     }
 
-    const resolved = await this.resolver.resolveForLlm(req.organizationId);
+    const prepared = await this.prepare(req.organizationId, req.modelId);
+    return prepared.complete(req);
+  }
 
-    if (resolved.source === 'NONE') {
-      throw new InternalServerErrorException(
-        `No LLM credential available for org=${req.organizationId} (neither org-level nor env). Configure FUGU_API_KEY / SAKANA_API_KEY or QWEN_API_KEY / DASHSCOPE_API_KEY, or set org credential at /settings/ai-credentials`,
-      );
-    }
-
-    const response = await this.dispatch(resolved, req);
-    return { ...response, effectiveProvider: resolved.provider, effectiveModelId: response.rawModelId || resolved.modelOverride || req.modelId };
+  async prepare(organizationId: string, modelId: string) {
+    const resolved = await this.resolver.resolveForLlm(organizationId);
+    const requestedModel = resolved.modelOverride || modelId;
+    const adapter = {
+      [AiProvider.ANTHROPIC]: this.anthropic,
+      [AiProvider.OPENAI]: this.openai,
+      [AiProvider.GEMINI]: this.gemini,
+      [AiProvider.KIMI]: this.kimi,
+      [AiProvider.ZAI]: this.zai,
+      [AiProvider.FUGU]: this.fugu,
+      [AiProvider.QWEN]: this.qwen,
+    }[resolved.provider];
+    const effectiveModel = adapter?.normalizeModelId?.(requestedModel) ?? requestedModel;
+    return {
+      provider: resolved.provider,
+      modelId: effectiveModel,
+      complete: async (req: LlmCompletionRequest): Promise<LlmCompletionResponse> => {
+        if (resolved.source === 'NONE') {
+          throw new InternalServerErrorException(
+            `No LLM credential available for org=${organizationId} (neither org-level nor env). Configure FUGU_API_KEY / SAKANA_API_KEY or QWEN_API_KEY / DASHSCOPE_API_KEY, or set org credential at /settings/ai-credentials`,
+          );
+        }
+        const response = await this.dispatch(resolved, req);
+        return { ...response, effectiveProvider: resolved.provider, effectiveModelId: response.rawModelId || resolved.modelOverride || req.modelId };
+      },
+    };
   }
 
   /**

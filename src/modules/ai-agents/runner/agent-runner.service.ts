@@ -188,13 +188,16 @@ export class AiAgentRunnerService {
         this.catalogSync.getCompactCatalog(conversation.organizationId),
       ]);
 
+    const preparedLlm = await this.llmRouter.prepare(conversation.organizationId, agent.modelId);
+    let effectiveModelId = `${preparedLlm.provider}/${preparedLlm.modelId}`;
+
     const run = await this.prisma.aiAgentRun.create({
       data: {
         organizationId: conversation.organizationId,
         conversationId: conversation.id,
         agentId: agent.id,
         triggerMessageId: triggerMessage.id,
-        modelId: agent.modelId,
+        modelId: effectiveModelId,
         status: AiRunStatus.RUNNING,
         classifiedIntent: selection?.classifiedIntent ?? null,
         classifierConfidence: selection?.classifierConfidence ?? null,
@@ -209,7 +212,7 @@ export class AiAgentRunnerService {
       conversationId: conversation.id,
       runId: run.id,
       agent: { id: agent.id, name: agent.name, kind: agent.kind },
-      modelId: agent.modelId,
+      modelId: effectiveModelId,
       startedAt: run.startedAt,
       classifiedIntent: selection?.classifiedIntent ?? null,
       classifierConfidence: selection?.classifierConfidence
@@ -287,7 +290,6 @@ export class AiAgentRunnerService {
 
     let finalAction: AiFinalAction = AiFinalAction.NO_ACTION;
     let iterationCount = 0;
-    let effectiveModelId: string | undefined;
     let exhaustionMessage: string | undefined;
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
@@ -314,7 +316,7 @@ export class AiAgentRunnerService {
         // S18/W2: router resolves per-org provider + apiKey via routing.
         // organizationId presence triggers org-credential lookup; fallback
         // pra env preserva compat com setup pré-W2.
-        const response = await this.llmRouter.complete({
+        const response = await preparedLlm.complete({
           modelId: agent.modelId,
           messages,
           tools,
@@ -488,6 +490,7 @@ export class AiAgentRunnerService {
       this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
         conversationId: conversation.id,
         runId: run.id,
+        modelId: effectiveModelId,
         status: AiRunStatus.COMPLETED,
         finalAction,
         errorMessage: exhaustionMessage && finalAction === AiFinalAction.NO_ACTION ? exhaustionMessage : null,
@@ -593,6 +596,7 @@ export class AiAgentRunnerService {
       this.realtime.emitToConversation(conversation.id, 'ai:run:end', {
         conversationId: conversation.id,
         runId: run.id,
+        modelId: effectiveModelId,
         status: AiRunStatus.FAILED,
         finalAction: null,
         errorMessage,

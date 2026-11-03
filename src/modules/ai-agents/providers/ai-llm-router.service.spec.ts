@@ -140,3 +140,28 @@ describe('SPEC-019 modelo efetivo', () => {
     expect(result).toMatchObject({ effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra' });
   });
 });
+
+
+describe('SPEC-019 precedência do modelo retornado', () => {
+  it.each([
+    ['fugu-ultra', 'fugu-ultra-20260615'],
+    [null, 'fugu-ultra'],
+  ])('usa o modelo do adapter com override %s', async (override, model) => {
+    const { svc, resolver, fugu } = build({ resolveProvider: jest.fn() });
+    resolver.resolveForLlm.mockResolvedValue({ provider: AiProvider.FUGU, apiKey: 'key', source: 'ORG', modelOverride: override });
+    fugu.complete.mockResolvedValue({ ...OK, rawModelId: model });
+    expect((await svc.complete(REQ)).effectiveModelId).toBe(model);
+  });
+});
+
+
+it('prepara uma rota com normalização real e mantém a mesma resolução no despacho', async () => {
+  const resolver = { resolveForLlm: jest.fn().mockResolvedValue({ provider: AiProvider.FUGU, source: 'ORG', apiKey: 'key', modelOverride: null }) };
+  const compat = { complete: jest.fn().mockResolvedValue({ ...OK, rawModelId: 'fugu-ultra-20260615' }) };
+  const fugu = new FuguLlmAdapter(compat as never);
+  const svc = new AiLlmRouterService(resolver as never, {} as never, {} as never, {} as never, {} as never, {} as never, fugu, {} as never);
+  const prepared = await svc.prepare('org1', 'google/gemini-2.0-flash-001');
+  expect(prepared).toMatchObject({ provider: 'FUGU', modelId: 'fugu-ultra' });
+  expect((await prepared.complete(REQ)).effectiveModelId).toBe('fugu-ultra-20260615');
+  expect(resolver.resolveForLlm).toHaveBeenCalledTimes(1);
+});

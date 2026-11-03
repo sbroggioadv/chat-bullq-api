@@ -217,7 +217,7 @@ export class LlmService {
    * Aceita IDs com prefix `anthropic/` por retrocompat (formato antigo) e
    * retorna o ID exato que a Anthropic API espera.
    */
-  private normalizeModelId(id: string): string {
+  normalizeModelId(id: string): string {
     if (id.startsWith('anthropic/')) return id.slice('anthropic/'.length);
     return id;
   }

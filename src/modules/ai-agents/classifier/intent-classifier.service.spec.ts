@@ -176,9 +176,21 @@ describe('SPEC-019 roteamento por organização', () => {
     const llm = makeLlm();
     const svc = new IntentClassifierService(llm as any, new IntentRouterService());
     llm.complete.mockResolvedValue(llmResponse({ intent: 'SMALL_TALK', confidence: 0.9 }));
-    expect((await (svc.classify as any)('oi', [], {}, 'org-1')).intent).toBe(IntentType.SMALL_TALK);
+    expect((await svc.classify('oi', [], {}, 'org-1')).intent).toBe(IntentType.SMALL_TALK);
     expect(llm.complete).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-1', temperature: 0, maxTokens: 200 }));
     llm.complete.mockRejectedValue(new Error('sem credencial'));
-    expect((await (svc.classify as any)('oi', [], {}, 'org-1')).intent).toBe(IntentType.AMBIGUOUS);
+    expect((await svc.classify('oi', [], {}, 'org-1')).intent).toBe(IntentType.AMBIGUOUS);
   });
+});
+
+
+it('sinaliza saída vazia esgotada sem repetir chamada', async () => {
+  const llm = makeLlm();
+  const svc = new IntentClassifierService(llm as never, new IntentRouterService());
+  const warn = jest.spyOn((svc as any).logger, 'warn').mockImplementation(() => {});
+  llm.complete.mockResolvedValue({ ...llmResponse({}), message: { content: '  ' }, stopReason: 'length', effectiveProvider: 'FUGU', effectiveModelId: 'fugu-ultra' });
+  const result = await svc.classify('oi', [], {}, 'org-1');
+  expect(result).toMatchObject({ intent: IntentType.AMBIGUOUS, reasoning: 'saída esgotada no teto de 200', skippedOrchestrator: false });
+  expect(JSON.parse(String(warn.mock.calls[0][0]))).toMatchObject({ msg: 'intent_classifier_exhausted', provider: 'FUGU', model: 'fugu-ultra', maxTokens: 200 });
+  expect(llm.complete).toHaveBeenCalledTimes(1);
 });

@@ -55,7 +55,7 @@ export class KimiLlmAdapter {
     });
   }
 
-  private normalizeModelId(id: string): string {
+  normalizeModelId(id: string): string {
     if (id.startsWith('kimi/')) return id.slice('kimi/'.length);
     if (id.startsWith('moonshot/')) return id.slice('moonshot/'.length);
     if (

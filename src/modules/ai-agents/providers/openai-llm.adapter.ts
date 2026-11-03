@@ -49,7 +49,7 @@ export class OpenAiLlmAdapter {
     });
   }
 
-  private normalizeModelId(id: string): string {
+  normalizeModelId(id: string): string {
     if (id.startsWith('openai/')) return id.slice('openai/'.length);
     // Default sensato quando alguém manda model id Anthropic mas roteamento
     // foi pra OpenAI — usa gpt-4o-mini como fallback razoável.
