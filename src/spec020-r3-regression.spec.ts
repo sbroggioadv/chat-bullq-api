@@ -72,7 +72,7 @@ const check = (w: any, forced: string) => w.svc.run({ conversation: w.conv(), tr
 
 describe('R2-A — transição e resposta na checagem', () => {
   it('com transitionMessage o especialista responde', async () => {
-    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r', transitionMessage: 'Vou chamar o especialista.' }), stop, call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
+    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r', transitionMessage: 'Vou chamar o especialista.' }), call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
     await check(w, 'orq');
     expect(w.sent()).toEqual(['Vou chamar o especialista.', 'Resposta do especialista aqui.']);
     expect(w.toolOutputs('replyToConversation')[0]).toEqual(expect.objectContaining({ ok: true }));
@@ -80,12 +80,12 @@ describe('R2-A — transição e resposta na checagem', () => {
     expect(w.store.activeAgentId).toBe('esp'); // delegação dentro da checagem muda o dono (decisão)
   });
   it('controle: delegação silenciosa na checagem → especialista responde', async () => {
-    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r' }), stop, call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
+    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r' }), call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
     await check(w, 'orq');
     expect(w.sent()).toEqual(['Resposta do especialista aqui.']);
   });
   it('controle (toggle): mesma cena fora da checagem → transição E resposta do especialista enviadas', async () => {
-    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r', transitionMessage: 'Vou chamar o especialista.' }), stop, call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
+    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r', transitionMessage: 'Vou chamar o especialista.' }), call('replyToConversation', { text: 'Resposta do especialista aqui.' }), stop]);
     w.svc.agentRouter.selectAgent.mockResolvedValue({ agentId: 'orq' });
     await w.svc.run({ conversation: w.conv(), triggerMessage: w.store.messages[0], waitForChain: true });
     expect(w.sent()).toEqual(['Vou chamar o especialista.', 'Resposta do especialista aqui.']);
@@ -99,10 +99,10 @@ describe('R2-B — devolução durante checagem', () => {
     expect(w.runs()).toEqual(['HANDED_BACK', 'REPLIED']);
     expect(w.sent()).toEqual(['Resposta do orquestrador.']);
     expect(w.store.activeAgentId).toBe('esp');
-    expect(w.complete).toHaveBeenCalledTimes(3);
+    expect(w.complete).toHaveBeenCalledTimes(2);
   });
   it('controle (toggle): fora da checagem a devolução encadeia o orquestrador conversacional, que responde', async () => {
-    const w = world('esp', [call('handBackToOrchestrator', { reason: 'fora do meu assunto' }), stop, call('replyToConversation', { text: 'Resposta do orquestrador.' }), stop]);
+    const w = world('esp', [call('handBackToOrchestrator', { reason: 'fora do meu assunto' }), call('replyToConversation', { text: 'Resposta do orquestrador.' }), stop]);
     w.svc.agentRouter.selectAgent.mockResolvedValue({ agentId: 'esp' });
     await w.svc.run({ conversation: w.conv(), triggerMessage: w.store.messages[0], waitForChain: true });
     expect(w.runs()).toEqual(['HANDED_BACK', 'REPLIED']);

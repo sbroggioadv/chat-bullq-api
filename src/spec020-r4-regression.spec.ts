@@ -73,7 +73,7 @@ const normal = (w: any, routed: string) => { w.svc.agentRouter.selectAgent.mockR
 
 describe('SPEC-020 R4', () => {
   const scene = (transition: boolean, tool: boolean) => [
-    call('delegateToAgent', { agentId: 'esp', reason: 'motivo', ...(transition ? { transitionMessage: 'Vou chamar o especialista.' } : {}) }), stop,
+    call('delegateToAgent', { agentId: 'esp', reason: 'motivo', ...(transition ? { transitionMessage: 'Vou chamar o especialista.' } : {}) }),
     tool ? call('replyToConversation', { text: 'Resposta do especialista aqui.' }) : say('Resposta do especialista aqui.'), stop,
   ];
   it('R3-1: transição e texto solto são enviados na checagem', async () => {
@@ -123,25 +123,25 @@ describe('SPEC-020 R4', () => {
     expect(w.sent()).toEqual([]);
     expect(w.prisma.aiAgentRun.update.mock.calls[0][0].data.errorMessage).toBe('stale_group_check');
   });
-  it('N19: fora da checagem mantém as iterações', async () => {
+  it('N19: fora da checagem em grupo encerra após responder', async () => {
     const w = world('esp', [call('replyToConversation', { text: 'Resposta.' }), stop]);
     await normal(w, 'esp');
-    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.complete).toHaveBeenCalledTimes(1);
   });
 
   it('N17: nota e motivo sobrevivem à delegação inicial', async () => {
-    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r' }), stop, call('handBackToOrchestrator', { reason: 'primeiro motivo' }), stop]);
+    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r' }), call('handBackToOrchestrator', { reason: 'primeiro motivo' }), stop]);
     await check(w, 'orq');
     expect(w.runAgents()).toEqual(['orq', 'esp', 'orq']);
-    expect(w.seen[3].messages).toContain(NOTE);
-    expect(w.seen[3].messages).toContain('O especialista devolveu: primeiro motivo');
+    expect(w.seen[2].messages).toContain(NOTE);
+    expect(w.seen[2].messages).toContain('O especialista devolveu: primeiro motivo');
   });
   it('N17: nota e motivo sobrevivem ao vai e volta', async () => {
-    const w = world('esp', [call('handBackToOrchestrator', { reason: 'motivo A' }), call('delegateToAgent', { agentId: 'esp', reason: 'r' }), stop, call('handBackToOrchestrator', { reason: 'motivo B' }), stop]);
+    const w = world('esp', [call('handBackToOrchestrator', { reason: 'motivo A' }), call('delegateToAgent', { agentId: 'esp', reason: 'r' }), call('handBackToOrchestrator', { reason: 'motivo B' }), stop]);
     await check(w, 'esp');
     expect(w.runAgents()).toEqual(['esp', 'orq', 'esp', 'orq']);
-    expect(w.seen[4].messages).toContain(NOTE);
-    expect(w.seen[4].messages).toContain('O especialista devolveu: motivo B');
+    expect(w.seen[3].messages).toContain(NOTE);
+    expect(w.seen[3].messages).toContain('O especialista devolveu: motivo B');
   });
 
   it('N18: motivo é saneado e limitado por pontos de código', async () => {

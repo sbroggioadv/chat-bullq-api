@@ -108,3 +108,30 @@ describe('F2 delegação após resposta', () => {
     expect(w.prisma.aiAgentHandoff.create).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('F3 resposta de grupo', () => {
+  it('cena 1: responde e não consulta modelo nem altera o dono novamente', async () => {
+    const w = world('orq', [call('replyToConversation', { text: 'Atendemos hoje.' }), { message: { content: '', toolCalls: [{ id: 'list', name: 'listAvailableAgents', arguments: {} }, { id: 'delegate', name: 'delegateToAgent', arguments: { agentId: 'esp', reason: 'antigo' } }] }, stopReason: 'tool_calls', usage }]);
+    await run(w, 'orq');
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.store.activeAgentId).toBe('orq');
+    expect(w.runs()).toEqual(['REPLIED']);
+    expect(w.runAgents()).toEqual(['orq']);
+    expect(w.prisma.aiAgentHandoff.create).not.toHaveBeenCalled();
+  });
+  it('individual permite duas respostas em rodadas sucessivas', async () => {
+    const w = world('orq', [call('replyToConversation', { text: 'Primeira resposta.' }), call('replyToConversation', { text: 'Segunda resposta.' }), stop], [], false);
+    await run(w, 'orq');
+    expect(w.sent()).toEqual(['Primeira resposta.', 'Segunda resposta.']);
+  });
+  it('grupo não executa delegação que acompanha resposta no mesmo lote', async () => {
+    const w = world('orq', [{ message: { content: '', toolCalls: [
+      { id: '1', name: 'replyToConversation', arguments: { text: 'Resposta.' } },
+      { id: '2', name: 'delegateToAgent', arguments: { agentId: 'esp', reason: 'antigo' } },
+    ] }, stopReason: 'tool_calls', usage }, stop]);
+    await run(w, 'orq');
+    expect(w.store.activeAgentId).toBe('orq');
+    expect(w.prisma.aiAgentHandoff.create).not.toHaveBeenCalled();
+    expect(w.runs()).toEqual(['REPLIED']);
+  });
+});

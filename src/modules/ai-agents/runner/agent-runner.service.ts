@@ -324,14 +324,7 @@ export class AiAgentRunnerService {
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
     let conversationalNudgeUsed = false;
-    // Hard cap of 1 successful replyToConversation per run. The system
-    // prompt encourages "uma ideia por mensagem" + multi-step consultative
-    // selling, but the runner used to fire every reply back-to-back in
-    // the same turn — customers saw 2 bubbles with redundant CTAs ("quer
-    // o link?" repeated). We now let the LLM emit one reply, then any
-    // subsequent replyToConversation gets a soft error so the model
-    // tags / hands off / ends. Other tools (tag, handBack, transfer)
-    // still run normally.
+    // Track replies for hand-back chaining and final-action precedence.
     let replyAlreadySuccessful = false;
     let handBackReason = '';
     const toolContext: ToolContext = {
@@ -480,6 +473,7 @@ export class AiAgentRunnerService {
           customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
+          conversation.isGroup,
         );
 
         for (const result of toolResults) {
@@ -516,6 +510,7 @@ export class AiAgentRunnerService {
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
           finalAction === AiFinalAction.CLOSED_CONVERSATION ||
+          (conversation.isGroup && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.ok === true)) ||
           toolResults.some((result) =>
             (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
             (result.output as any)?.ok === true,
@@ -749,6 +744,7 @@ export class AiAgentRunnerService {
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
+    isGroup = false,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -763,10 +759,7 @@ export class AiAgentRunnerService {
       output: unknown;
       finalAction?: string;
     }> = [];
-    // Tracks whether THIS batch already produced a successful reply.
-    // Combined with the cross-iteration flag, it lets us block the very
-    // first dup even when the model emits two replyToConversation calls
-    // in a single tool_use response.
+    // Track group replies across calls in the batch and across iterations.
     let repliedInThisBatch = false;
 
     for (const call of calls) {
@@ -775,13 +768,10 @@ export class AiAgentRunnerService {
       let errorMessage: string | undefined;
       let finalAction: string | undefined;
 
-      // Guard: only one successful replyToConversation per run. The LLM
-      // sometimes "thinks aloud" by emitting 2 replies in sequence —
-      // customer ends up with duplicate CTAs ("posso te mandar o link?"
-      // twice). We let the model see a soft error and gracefully end
-      // the turn (it usually pivots to tagConversation or stops).
+      // Group runs allow only one successful reply. Individual runs may
+      // send more than one message in the same turn.
       if (
-        call.name === 'replyToConversation' &&
+        isGroup && call.name === 'replyToConversation' &&
         (alreadyRepliedFromPriorIteration || repliedInThisBatch)
       ) {
         this.logger.warn(
@@ -914,7 +904,8 @@ export class AiAgentRunnerService {
       ) {
         repliedInThisBatch = true;
       }
-      if ((call.name === 'delegateToAgent' || call.name === 'handBackToOrchestrator') && (output as any)?.ok === true) break;
+      if ((output as any)?.ok === true &&
+        (call.name === 'delegateToAgent' || call.name === 'handBackToOrchestrator' || (isGroup && call.name === 'replyToConversation'))) break;
     }
 
     return results;
