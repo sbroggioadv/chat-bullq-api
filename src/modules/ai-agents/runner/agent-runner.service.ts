@@ -493,7 +493,7 @@ export class AiAgentRunnerService {
           if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
             if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
-              handBackReason = String((result.output as any)?.reason ?? '').trim();
+              handBackReason = Array.from(String((result.output as any)?.reason ?? '').replace(/[\[\]［］【】]/g, '').replace(/\s+/gu, ' ').trim()).slice(0, 300).join('');
             }
           }
           if (
