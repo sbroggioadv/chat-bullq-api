@@ -11,6 +11,8 @@ import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 import { mergedOriginalId } from '../../../messaging/conversations/merged-conversation';
 
+const GROUP_CHECK_MESSAGE_LIMIT = 20;
+
 /**
  * ORCHESTRATOR-only. Silently hands the conversation over to a WORKER agent:
  *   1. flips `conversation.activeAgentId` to the worker;
@@ -146,6 +148,16 @@ export class DelegateToAgentTool implements AiTool {
           error: 'Contact has no external id on this channel',
         },
       };
+    }
+
+    if (ctx.expectedLatestMessageId) {
+      const messages = await this.prisma.message.findMany({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: GROUP_CHECK_MESSAGE_LIMIT, select: { id: true, direction: true, metadata: true, revokedAt: true } });
+      const expectedIndex = messages.findIndex((message) => message.id === ctx.expectedLatestMessageId);
+      const stale = expectedIndex < 0 || messages[expectedIndex].revokedAt || messages.slice(0, expectedIndex).some((message) => {
+        const metadata = message.metadata as { runId?: string } | null;
+        return message.direction !== 'OUTBOUND' || !metadata?.runId || !ctx.checkRunIds?.includes(metadata.runId);
+      });
+      if (stale) return { output: { ok: false, error: 'stale_group_check' } };
     }
 
     // Atomic: flip active agent + log handoff. Only emits a customer-visible

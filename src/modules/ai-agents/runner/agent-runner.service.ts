@@ -504,7 +504,7 @@ export class AiAgentRunnerService {
           }
         }
 
-        if (expectedLatestMessageId && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.error === 'stale_group_check')) {
+        if (expectedLatestMessageId && toolResults.some((result) => (result.toolName === 'replyToConversation' || result.toolName === 'delegateToAgent') && (result.output as any)?.error === 'stale_group_check')) {
           exhaustionMessage = 'stale_group_check';
           break;
         }
