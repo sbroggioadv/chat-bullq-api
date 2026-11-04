@@ -411,6 +411,10 @@ export class AiAgentRunnerService {
                 { text },
                 toolContext,
               );
+              if (expectedLatestMessageId && (result.output as any)?.error === 'stale_group_check') {
+                exhaustionMessage = 'stale_group_check';
+                break;
+              }
               if (result.finalAction) {
                 finalAction = result.finalAction as AiFinalAction;
               }
@@ -498,6 +502,11 @@ export class AiAgentRunnerService {
           }
         }
 
+        if (expectedLatestMessageId && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.error === 'stale_group_check')) {
+          exhaustionMessage = 'stale_group_check';
+          break;
+        }
+
         // Hard short-circuit: handing off / closing the conversation should
         // stop the loop even if the model would have wanted another turn.
         if (
@@ -516,7 +525,7 @@ export class AiAgentRunnerService {
         data: {
           status: AiRunStatus.COMPLETED,
           ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
-          ...(exhaustionMessage && finalAction === AiFinalAction.NO_ACTION ? { errorMessage: exhaustionMessage } : {}),
+          ...(exhaustionMessage && (finalAction === AiFinalAction.NO_ACTION || exhaustionMessage === 'stale_group_check') ? { errorMessage: exhaustionMessage } : {}),
           finalAction,
           finishedAt,
           durationMs,
@@ -587,6 +596,7 @@ export class AiAgentRunnerService {
       // the full history (including the orchestrator's "vou te passar pra X")
       // and starts speaking. Bounded by MAX_CHAIN_DEPTH to avoid recursion.
       if (
+        exhaustionMessage !== 'stale_group_check' &&
         (finalAction === AiFinalAction.DELEGATED || (finalAction === AiFinalAction.HANDED_BACK && !replyAlreadySuccessful)) &&
         chainDepth < MAX_CHAIN_DEPTH
       ) {

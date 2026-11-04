@@ -114,4 +114,19 @@ describe('SPEC-020 R4', () => {
     expect(w.seen[1].messages).toContain(NOTE);
     expect(w.seen[1].messages).toContain('O especialista devolveu: pergunta de pagamento');
   });
+  it.each([true, false])('N19: checagem vencida encerra com uma chamada, ferramenta=%s', async (tool) => {
+    const stale = { id: 'externa', direction: 'OUTBOUND', metadata: {}, revokedAt: null };
+    const action = tool ? call('replyToConversation', { text: 'Resposta.' }) : say('Resposta do especialista.');
+    const w = world('esp', Array.from({ length: 9 }, () => action), [orq, esp], [stale]);
+    await check(w, 'esp');
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual([]);
+    expect(w.prisma.aiAgentRun.update.mock.calls[0][0].data.errorMessage).toBe('stale_group_check');
+  });
+  it('N19: fora da checagem mantém as iterações', async () => {
+    const w = world('esp', [call('replyToConversation', { text: 'Resposta.' }), stop]);
+    await normal(w, 'esp');
+    expect(w.complete).toHaveBeenCalledTimes(2);
+  });
+
 });
