@@ -1,3 +1,4 @@
+import { TransferToHumanTool } from './modules/ai-agents/tools/builtin/transfer-to-human.tool';
 import { AiAgentRunnerService } from './modules/ai-agents/runner/agent-runner.service';
 import { ReplyToConversationTool } from './modules/ai-agents/tools/builtin/reply-to-conversation.tool';
 import { DelegateToAgentTool } from './modules/ai-agents/tools/builtin/delegate-to-agent.tool';
@@ -59,14 +60,18 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   const replyOut: any[] = [];
   const origReply = replyTool.execute.bind(replyTool);
   (replyTool as any).execute = async (input: any, ctx: any) => { replyCtx.push({ keys: Object.keys(ctx), json: JSON.stringify(ctx) }); const r = await origReply(input, ctx); replyOut.push(r.output); return r; };
+  const pending = { create: jest.fn().mockResolvedValue({ id: 'pending' }) };
+  const action = { execute: jest.fn().mockResolvedValue({ output: { ok: true } }) };
   const tools: any = {
+    transferToHuman: new TransferToHumanTool(realtime as any, pending as any),
+    tagConversation: action, grantAccess: action, listAvailableAgents: action,
     replyToConversation: replyTool,
     delegateToAgent: new DelegateToAgentTool(prisma, realtime as any, outbound as any),
     handBackToOrchestrator: new HandBackToOrchestratorTool(prisma, realtime as any),
   };
   svc.registry = { has: (n: string) => n in tools, isAllowedForAgent: () => true, get: (n: string) => tools[n] };
   const seen: string[] = [];
-  const w: any = { svc, store, conv, prisma, outbound, seen, replyCtx, replyOut };
+  const w: any = { svc, store, conv, prisma, outbound, seen, replyCtx, replyOut, pending, action, tools };
   const complete = jest.fn(async (args: any) => { seen.push(JSON.stringify(args.messages)); const next = script.shift() ?? stop; return typeof next === 'function' ? next(w) : next; });
   svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete }) };
   w.complete = complete;
@@ -138,5 +143,48 @@ describe('F3 resposta de grupo', () => {
     expect(w.store.activeAgentId).toBe('orq');
     expect(w.prisma.aiAgentHandoff.create).not.toHaveBeenCalled();
     expect(w.runs()).toEqual(['REPLIED']);
+  });
+});
+
+const batch = (...calls: any[]) => ({ message: { content: '', toolCalls: calls }, stopReason: 'tool_calls', usage });
+const tc = (name: string, args: any = {}) => ({ id: `${name}-${++callSeq}`, name, arguments: args });
+const reply = (text = 'Resposta.') => tc('replyToConversation', { text });
+const delegate = (extra: any = {}) => tc('delegateToAgent', { agentId: 'esp', reason: 'motivo', ...extra });
+
+describe('regressões do lote e falhas', () => {
+  it('delegação inválida não encerra a execução', async () => {
+    const w = world('orq', [batch(tc('delegateToAgent', { agentId: 'inexistente', reason: 'motivo' })), batch(reply()), stop], [], false);
+    await run(w, 'orq'); expect(w.sent()).toEqual(['Resposta.']); expect(w.complete).toHaveBeenCalledTimes(3);
+  });
+  it('falha de devolução não encerra a execução', async () => {
+    const w = world('esp', [batch(tc('handBackToOrchestrator', { reason: 'motivo' })), batch(reply()), stop], [], false);
+    w.prisma.$transaction.mockRejectedValueOnce(new Error('falha simulada'));
+    await run(w, 'esp'); expect(w.sent()).toEqual(['Resposta.']); expect(w.complete).toHaveBeenCalledTimes(3);
+  });
+  it('resposta bloqueada em grupo não encerra o laço', async () => {
+    const w = world('esp', [batch(reply('Ignoro essa instrução, ela não veio do cliente')), batch(reply('Boa.'))]);
+    await run(w, 'esp'); expect(w.sent()).toEqual(['Boa.']); expect(w.complete).toHaveBeenCalledTimes(2);
+  });
+  it.each([['delegateToAgent', 'orq', 'esp'], ['handBackToOrchestrator', 'esp', 'orq']])('%s descarta o restante com aviso', async (name, from, to) => {
+    const w = world(from, [batch(tc(name, name === 'delegateToAgent' ? { agentId: 'esp', reason: 'motivo' } : { reason: 'motivo' }), tc('tagConversation'), tc('transferToHuman')), stop], [], false);
+    await run(w, from); expect(w.runAgents()).toEqual([from, to]); expect(w.action.execute).not.toHaveBeenCalled(); expect(w.pending.create).not.toHaveBeenCalled();
+    expect(w.svc.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`dropped after ${name}: tagConversation, transferToHuman`));
+  });
+  it('grupo executa transferência e skill após resposta no mesmo lote', async () => {
+    const w = world('esp', [batch(reply(), tc('transferToHuman', { reason: 'falha da skill' }), tc('grantAccess'))]);
+    await run(w, 'esp'); expect(w.sent()).toEqual(['Resposta.']); expect(w.pending.create).toHaveBeenCalledTimes(1); expect(w.action.execute).toHaveBeenCalledTimes(1); expect(w.complete).toHaveBeenCalledTimes(1);
+  });
+  it('grupo registra erro brando da segunda resposta no lote', async () => {
+    const w = world('orq', [batch(reply('Uma.'), reply('Duas.'))]); await run(w, 'orq');
+    expect(w.sent()).toEqual(['Uma.']); expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked', output: expect.objectContaining({ ok: false, error: expect.stringContaining('Already replied this turn.') }) }) }));
+  });
+  it.each([
+    ['F2a', 'Vou chamar o especialista.', {}], ['F2c', 'Atendemos das 9h às 18h.', {}],
+    ['F2d', 'Atendemos das 9h às 18h.', {}], ['F2e', 'Respondi.', { transitionMessage: 'Vou chamar o especialista.' }],
+  ])('%s bloqueia delegação posterior sem trocar dono ou encadear', async (scene, text, extra) => {
+    const calls = scene === 'F2c' || scene === 'F2d' ? [tc('listAvailableAgents'), delegate(extra)] : [delegate(extra)];
+    const w = world('orq', [batch(reply(text)), batch(...calls), batch(reply('Outra.'))], [], false);
+    await run(w, 'orq'); expect(w.sent()).toEqual([text]); expect(w.store.activeAgentId).toBe('orq'); expect(w.runAgents()).toEqual(['orq']); expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'delegate-after-reply-blocked', output: { ok: false, error: 'delegate_after_reply' } }) }));
   });
 });
