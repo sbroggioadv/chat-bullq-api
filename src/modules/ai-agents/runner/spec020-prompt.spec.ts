@@ -58,10 +58,11 @@ it('saneia os dois caminhos de nome de remetente, preservando nomes comuns', () 
 
 it('preserva o texto individual da base 3607448 e orienta ações em grupo', () => {
   const { createHash } = require('crypto');
-  const hashes: Record<string, string> = { ORCHESTRATOR: '83e3f9c98c8d98aeb2087ca0ab93e6e2a1ce2ed531228a175c6ae1ee2b015f1d', WORKER: '5eb3d0e1b548ff8f732d92a9590b22dda1a3fdc3d4341d8c690d8921d7dc2018' };
+  const hashes: Record<string, string> = { ORCHESTRATOR: '37fc4e222a4069332dbb1d5a90d9a55fbd36bec42afd8aee699eb0fd552dc7e9', WORKER: '549b0c367171c494e2df07c0619c0febfbd21363e8b2231c7ed4022ed1b40474' };
   for (const kind of Object.keys(hashes)) {
     const individual = context(true, false); individual.agent.kind = kind;
-    expect(createHash('sha256').update(JSON.stringify(new PromptBuilderService().buildMessages(individual))).digest('hex')).toBe(hashes[kind]);
+    const builder = new PromptBuilderService(); jest.spyOn(builder as any, 'formatNow').mockReturnValue('DATA FIXA');
+    expect(createHash('sha256').update(JSON.stringify(builder.buildMessages(individual))).digest('hex')).toBe(hashes[kind]);
     const group = context(true, true); group.agent.kind = kind;
     expect(JSON.stringify(new PromptBuilderService().buildMessages(group))).toContain('faça transferência, etiqueta e skills antes da resposta ou na mesma chamada');
   }

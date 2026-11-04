@@ -253,8 +253,7 @@ Como agir:
 - Responda TODAS, em mensagens curtas e separadas — uma por bolha de WhatsApp.
 - Se uma pergunta é ambígua ou exige info que vc não tem, peça esclarecimento sobre essa especificamente.
 - Se o cliente repetiu uma pergunta antiga ("Pode responder minhas perguntas?"), volta no histórico, encontra as perguntas originais e responde TODAS.
-- A regra "uma ideia por mensagem" continua valendo — mas o conjunto das mensagens cobre TODAS as perguntas pendentes.<% if (it.conversation.isGroup) { %>
-- Em grupo, faça transferência, etiqueta e skills antes da resposta ou na mesma chamada, pois a resposta encerra a vez.<% } %>
+- A regra "uma ideia por mensagem" continua valendo — mas o conjunto das mensagens cobre TODAS as perguntas pendentes<%= it.conversation.isGroup ? '.\\n- Em grupo, faça transferência, etiqueta e skills antes da resposta ou na mesma chamada, pois a resposta encerra a vez' : '' %>.
 <% if (it.conversationalOrchestrator) { %>
 
 ═══ Você é um ORQUESTRADOR CONVERSACIONAL ═══
