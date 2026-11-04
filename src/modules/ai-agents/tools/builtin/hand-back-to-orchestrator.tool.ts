@@ -41,7 +41,7 @@ export class HandBackToOrchestratorTool implements AiTool {
     ctx: ToolContext,
   ): Promise<ToolResult> {
     if (ctx.expectedLatestMessageId) {
-      return { output: { ok: true, message: 'Consulta ao orquestrador solicitada.' }, finalAction: 'HANDED_BACK' };
+      return { output: { ok: true, message: 'Consulta ao orquestrador solicitada.', reason: String(input.reason ?? '').trim() }, finalAction: 'HANDED_BACK' };
     }
     const reason = String(input.reason ?? '').trim();
 

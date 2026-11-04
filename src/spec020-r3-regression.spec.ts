@@ -1,4 +1,4 @@
-/* QA r2 probe (fora da worktree), sobre 1cfbd9c. Ferramentas reais (reply/delegate/handBack) e runner real; prisma, fila e LLM simulados. */
+/* SPEC-020: regressões com ferramentas e runner reais; Prisma, fila e LLM simulados. */
 import { GroupNoReplyService } from './modules/ai-agents/runner/group-no-reply.service';
 import { AiAgentRunnerService } from './modules/ai-agents/runner/agent-runner.service';
 import { PromptBuilderService } from './modules/ai-agents/runner/prompt-builder.service';
@@ -7,10 +7,6 @@ import { DelegateToAgentTool } from './modules/ai-agents/tools/builtin/delegate-
 import { HandBackToOrchestratorTool } from './modules/ai-agents/tools/builtin/hand-back-to-orchestrator.tool';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { InboundMessageProcessor } = require('./modules/messaging/pipeline/inbound-message.processor');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MessagingModule } = require('./modules/messaging/messaging.module');
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { AiAgentsModule } = require('./modules/ai-agents/ai-agents.module');
 
 const usage = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
 const orq = { id: 'orq', name: 'O', kind: 'ORCHESTRATOR', canRespondDirectly: true, modelId: 'x', maxTokens: 2048, temperature: 0 };
@@ -183,4 +179,3 @@ describe('R2-D — nome do remetente em grupo (bordas)', () => {
   it('corte preserva emoji', () => expect(user('x'.repeat(39) + '😀')).toContain('😀]: oi'));
   it('nome só com controles recebe fallback', () => expect(user('\n\t')).toBe('[Membro]: oi'));
 });
-

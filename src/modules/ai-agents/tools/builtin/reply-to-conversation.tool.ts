@@ -12,6 +12,8 @@ import { AiTool, ToolContext, ToolResult } from '../tool.types';
 import { containsMetaTalk, findForbiddenUrlHosts } from '../../runner/text-guards';
 import { mergedOriginalId } from '../../../messaging/conversations/merged-conversation';
 
+const GROUP_CHECK_MESSAGE_LIMIT = 20;
+
 /**
  * Sends a TEXT message to the contact on behalf of the agent. The message
  * goes through the same outbound queue real users use, so provider-specific
@@ -143,7 +145,7 @@ export class ReplyToConversationTool implements AiTool {
     }
 
     if (ctx.expectedLatestMessageId) {
-      const messages = await this.prisma.message.findMany({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      const messages = await this.prisma.message.findMany({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: GROUP_CHECK_MESSAGE_LIMIT, select: { id: true, direction: true, metadata: true, revokedAt: true } });
       const expectedIndex = messages.findIndex((message) => message.id === ctx.expectedLatestMessageId);
       const stale = expectedIndex < 0 || messages[expectedIndex].revokedAt || messages.slice(0, expectedIndex).some((message) => {
         const metadata = message.metadata as { runId?: string } | null;

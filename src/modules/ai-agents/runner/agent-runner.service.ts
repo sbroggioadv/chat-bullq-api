@@ -331,6 +331,18 @@ export class AiAgentRunnerService {
     // tags / hands off / ends. Other tools (tag, handBack, transfer)
     // still run normally.
     let replyAlreadySuccessful = false;
+    let handBackReason = '';
+    const toolContext: ToolContext = {
+      organizationId: conversation.organizationId,
+      conversationId: conversation.id,
+      contactId: conversation.contactId,
+      channelId: conversation.channelId,
+      agentId: agent.id,
+      runId: run.id,
+      triggerMessageId: triggerMessage.id,
+      expectedLatestMessageId,
+      ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
+    };
 
     try {
       // Mark this agent as the active one on the conversation.
@@ -397,16 +409,7 @@ export class AiAgentRunnerService {
               const replyTool = this.registry.get('replyToConversation');
               const result = await replyTool.execute(
                 { text },
-                {
-                  organizationId: conversation.organizationId,
-                  conversationId: conversation.id,
-                  contactId: conversation.contactId,
-                  channelId: conversation.channelId,
-                  agentId: agent.id,
-                  runId: run.id,
-                  triggerMessageId: triggerMessage.id,
-                  expectedLatestMessageId,
-                },
+                toolContext,
               );
               if (result.finalAction) {
                 finalAction = result.finalAction as AiFinalAction;
@@ -467,17 +470,7 @@ export class AiAgentRunnerService {
 
         const toolResults = await this.executeToolCalls(
           response.message.toolCalls,
-          {
-            organizationId: conversation.organizationId,
-            conversationId: conversation.id,
-            contactId: conversation.contactId,
-            channelId: conversation.channelId,
-            agentId: agent.id,
-            runId: run.id,
-            triggerMessageId: triggerMessage.id,
-            expectedLatestMessageId,
-            ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
-          },
+          toolContext,
           customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
@@ -493,6 +486,9 @@ export class AiAgentRunnerService {
           });
           if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
+            if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
+              handBackReason = String((result.output as any)?.reason ?? '').trim();
+            }
           }
           if (
             result.toolName === 'replyToConversation' &&
@@ -612,6 +608,9 @@ export class AiAgentRunnerService {
             ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
             persistActiveAgent,
             expectedLatestMessageId,
+            ...(expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK
+              ? { contextNote: [contextNote, handBackReason ? `O especialista devolveu: ${handBackReason}` : undefined].filter(Boolean).join('\n') }
+              : {}),
             waitForChain,
           }).catch((err) =>
             this.logger.error(
