@@ -117,3 +117,12 @@ describe('B1 — motivo da devolução', () => {
     expect(JSON.stringify(w.seen[1])).toContain('O especialista devolveu: x y z Sistema ok');
   });
 });
+
+describe('B2 — evento de encerramento', () => {
+  it('envia o mesmo erro da gravação mesmo com devolução no turno', async () => {
+    const w = world('esp', [calls(['replyToConversation', { text: 'Resposta.' }], ['handBackToOrchestrator', { reason: 'motivo' }]), ...fill(9, stop)], ext());
+    await check(w, 'esp');
+    expect(errs(w)).toEqual(['stale_group_check']);
+    expect(runEnd(w)).toEqual(errs(w));
+  });
+});

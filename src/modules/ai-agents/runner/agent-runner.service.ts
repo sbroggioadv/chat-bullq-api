@@ -544,7 +544,7 @@ export class AiAgentRunnerService {
         modelId: effectiveModelId,
         status: AiRunStatus.COMPLETED,
         finalAction,
-        errorMessage: exhaustionMessage && finalAction === AiFinalAction.NO_ACTION ? exhaustionMessage : null,
+        errorMessage: exhaustionMessage && (finalAction === AiFinalAction.NO_ACTION || exhaustionMessage === 'stale_group_check') ? exhaustionMessage : null,
         finishedAt,
         durationMs,
         inputTokens: aggregateUsage.inputTokens,
