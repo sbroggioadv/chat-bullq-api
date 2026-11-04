@@ -129,4 +129,19 @@ describe('SPEC-020 R4', () => {
     expect(w.complete).toHaveBeenCalledTimes(2);
   });
 
+  it('N17: nota e motivo sobrevivem à delegação inicial', async () => {
+    const w = world(null, [call('delegateToAgent', { agentId: 'esp', reason: 'r' }), stop, call('handBackToOrchestrator', { reason: 'primeiro motivo' }), stop]);
+    await check(w, 'orq');
+    expect(w.runAgents()).toEqual(['orq', 'esp', 'orq']);
+    expect(w.seen[3].messages).toContain(NOTE);
+    expect(w.seen[3].messages).toContain('O especialista devolveu: primeiro motivo');
+  });
+  it('N17: nota e motivo sobrevivem ao vai e volta', async () => {
+    const w = world('esp', [call('handBackToOrchestrator', { reason: 'motivo A' }), call('delegateToAgent', { agentId: 'esp', reason: 'r' }), stop, call('handBackToOrchestrator', { reason: 'motivo B' }), stop]);
+    await check(w, 'esp');
+    expect(w.runAgents()).toEqual(['esp', 'orq', 'esp', 'orq']);
+    expect(w.seen[4].messages).toContain(NOTE);
+    expect(w.seen[4].messages).toContain('O especialista devolveu: motivo B');
+  });
+
 });

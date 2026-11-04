@@ -66,6 +66,7 @@ interface RunInput {
   chainDepth?: number;
   forcedAgentId?: string;
   contextNote?: string;
+  checkNote?: string;
   persistActiveAgent?: boolean;
   expectedLatestMessageId?: string;
   checkRunIds?: string[];
@@ -106,6 +107,7 @@ export class AiAgentRunnerService {
     chainDepth = 0,
     forcedAgentId,
     contextNote,
+    checkNote,
     persistActiveAgent = true,
     expectedLatestMessageId,
     checkRunIds = [],
@@ -615,11 +617,11 @@ export class AiAgentRunnerService {
             triggerMessage,
             chainDepth: chainDepth + 1,
             ...(expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK ? { forcedAgentId: handBackAgent!.id } : {}),
-            ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
+            ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id], checkNote: checkNote ?? contextNote } : {}),
             persistActiveAgent,
             expectedLatestMessageId,
             ...(expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK
-              ? { contextNote: [contextNote, handBackReason ? `O especialista devolveu: ${handBackReason}` : undefined].filter(Boolean).join('\n') }
+              ? { contextNote: [checkNote ?? contextNote, handBackReason ? `O especialista devolveu: ${handBackReason}` : undefined].filter(Boolean).join('\n') }
               : {}),
             waitForChain,
           }).catch((err) =>
