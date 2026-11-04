@@ -64,6 +64,8 @@ it('preserva o texto individual da base 3607448 e orienta ações em grupo', () 
     const builder = new PromptBuilderService(); jest.spyOn(builder as any, 'formatNow').mockReturnValue('DATA FIXA');
     expect(createHash('sha256').update(JSON.stringify(builder.buildMessages(individual))).digest('hex')).toBe(hashes[kind]);
     const group = context(true, true); group.agent.kind = kind;
-    expect(JSON.stringify(new PromptBuilderService().buildMessages(group))).toContain('faça transferência, etiqueta e skills antes da resposta ou na mesma chamada');
+    const system = new PromptBuilderService().buildMessages(group)[0];
+    const rendered = (system.content as any[])[0].text as string;
+    expect(rendered).toContain('pendentes.\n- Em grupo, a resposta encerra a vez, e isso vale sobre as regras acima: faça transferência, etiqueta e skills antes dela ou na mesma chamada, e responda tudo numa só mensagem.');
   }
 });

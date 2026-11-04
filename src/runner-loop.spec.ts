@@ -132,7 +132,7 @@ describe('F3 resposta de grupo', () => {
     expect(w.sent()).toEqual(['Primeira resposta.']);
     expect(w.complete).toHaveBeenCalledTimes(3);
     expect(w.seen[2]).toContain('Already replied this turn.');
-    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked', output: expect.objectContaining({ ok: false, error: expect.stringContaining('Already replied this turn.') }) }) }));
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked', output: expect.objectContaining({ ok: false, error: 'Already replied this turn. Do NOT call replyToConversation again — wait for the customer to react. End the turn now (you may still tag/handBack/transfer if needed).' }) }) }));
   });
   it('grupo não executa delegação que acompanha resposta no mesmo lote', async () => {
     const w = world('orq', [{ message: { content: '', toolCalls: [
@@ -155,6 +155,13 @@ describe('regressões do lote e falhas', () => {
   it('delegação inválida não encerra a execução', async () => {
     const w = world('orq', [batch(tc('delegateToAgent', { agentId: 'inexistente', reason: 'motivo' })), batch(reply()), stop], [], false);
     await run(w, 'orq'); expect(w.sent()).toEqual(['Resposta.']); expect(w.complete).toHaveBeenCalledTimes(3);
+  });
+  it('falha de delegação não impede resposta no mesmo lote', async () => {
+    const w = world('orq', [batch(tc('delegateToAgent', { agentId: 'inexistente', reason: 'motivo' }), reply())]);
+    await run(w, 'orq');
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ toolName: 'delegateToAgent', output: expect.objectContaining({ ok: false }) }) }));
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.complete).toHaveBeenCalledTimes(1);
   });
   it('falha de devolução não encerra a execução', async () => {
     const w = world('esp', [batch(tc('handBackToOrchestrator', { reason: 'motivo' })), batch(reply()), stop], [], false);
