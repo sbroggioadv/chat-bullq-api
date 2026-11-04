@@ -490,7 +490,10 @@ export class PromptBuilderService {
         m.direction === 'INBOUND' ? 'user' : 'assistant';
       const parts = this.extractContentParts(m, ctx.mediaUrls, role);
       if (ctx.conversation.isGroup && role === 'user' && m.senderName && parts.length) {
-        parts.unshift({ type: 'text', text: `${m.senderName}:` });
+        const prefix = `[${m.senderName.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 40).trim()}]: `;
+        const first = parts[0];
+        if (first.type === 'text') first.text = prefix + first.text;
+        else parts.unshift({ type: 'text', text: prefix });
       }
       if (parts.length === 0) continue;
 
@@ -531,7 +534,10 @@ export class PromptBuilderService {
         'user',
       );
       if (ctx.conversation.isGroup && ctx.triggerMessage.senderName && triggerParts.length) {
-        triggerParts.unshift({ type: 'text', text: `${ctx.triggerMessage.senderName}:` });
+        const prefix = `[${ctx.triggerMessage.senderName.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 40).trim()}]: `;
+        const first = triggerParts[0];
+        if (first.type === 'text') first.text = prefix + first.text;
+        else triggerParts.unshift({ type: 'text', text: prefix });
       }
       if (triggerParts.length > 0) {
         const onlyText = triggerParts.every((p) => p.type === 'text');

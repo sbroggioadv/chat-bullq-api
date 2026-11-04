@@ -1,7 +1,7 @@
 import { AiAgentRunnerService } from './agent-runner.service';
 
-async function execute(group: boolean, direct: boolean, content: string, action?: string, depth = 0, exhaustion = false) {
-  const agent = { id: 'a', name: 'Agente', kind: action ? 'WORKER' : 'ORCHESTRATOR', canRespondDirectly: direct, modelId: 'old', maxTokens: 2048 };
+async function execute(group: boolean, direct: boolean, content: string, action?: string, depth = 0, exhaustion = false, kind?: string) {
+  const agent = { id: 'a', name: 'Agente', kind: kind ?? (action ? 'WORKER' : 'ORCHESTRATOR'), canRespondDirectly: direct, modelId: 'old', maxTokens: 2048 };
   const svc = Object.create(AiAgentRunnerService.prototype) as any;
   const update = jest.fn().mockResolvedValue({});
   svc.prisma = { aiAgent: { findFirst: jest.fn().mockResolvedValue(agent) }, organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, channel: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, contact: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) }, message: { findMany: jest.fn().mockResolvedValue([]) }, aiAgentMemory: { findUnique: jest.fn().mockResolvedValue(null) }, aiAgentRun: { create: jest.fn().mockResolvedValue({ id: 'run-1' }), update }, aiResponseLog: { create: jest.fn().mockResolvedValue({}) }, conversation: { update: jest.fn().mockResolvedValue({}), findUnique: jest.fn().mockResolvedValue({ id: 'c', organizationId: 'org', channelId: 'ch', contactId: 'ct', activeAgentId: null, isGroup: group }) } };
@@ -48,4 +48,15 @@ it('preserva o registro de esgotamento após o empurrão sem resposta', async ()
   const { update, complete } = await execute(false, true, '', undefined, 0, true);
   expect(complete).toHaveBeenCalledTimes(2);
   expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ finalAction: 'NO_ACTION', errorMessage: expect.stringContaining('teto de 2048') }) }));
+});
+
+ it('descarta texto solto só do orquestrador conversacional em grupo e registra aviso', async () => {
+  const { svc } = await execute(true, true, 'Resposta solta');
+  expect(svc.registry.get).not.toHaveBeenCalled();
+  expect(svc.logger.warn).toHaveBeenCalledWith(expect.stringContaining('discarded group text'));
+});
+
+it.each([['WORKER', true], ['ORCHESTRATOR', false]])('envia fallback de %s em grupo', async (kind, direct) => {
+  const { svc } = await execute(true, direct, 'Resposta solta', undefined, 0, false, kind);
+  expect(svc.registry.get).toHaveBeenCalledWith('replyToConversation');
 });

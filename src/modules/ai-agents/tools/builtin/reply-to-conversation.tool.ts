@@ -142,6 +142,11 @@ export class ReplyToConversationTool implements AiTool {
       };
     }
 
+    if (ctx.expectedLatestMessageId) {
+      const latest = await this.prisma.message.findFirst({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      if (!latest || latest.id !== ctx.expectedLatestMessageId || latest.revokedAt) return { output: { ok: false, error: 'stale_group_check' } };
+    }
+
     const message = await this.prisma.message.create({
       data: {
         conversationId: ctx.conversationId,

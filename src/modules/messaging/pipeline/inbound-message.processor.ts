@@ -566,12 +566,12 @@ export class InboundMessageProcessor extends WorkerHost {
       return;
     }
 
+    this.scheduleAgentRun(conversationId, triggerMessageId);
     if (conversation.isGroup && this.groupNoReply) {
-      await this.groupNoReply.schedule(conversation, triggerMessage).catch((err) =>
+      void this.groupNoReply.schedule(conversation, triggerMessage).catch((err) =>
         this.logger.error(`Group check scheduling failed for message ${triggerMessage.id}: ${err?.message ?? err}`),
       );
     }
-    this.scheduleAgentRun(conversationId, triggerMessageId);
   }
 
   /**
@@ -616,6 +616,11 @@ export class InboundMessageProcessor extends WorkerHost {
    *    schedule another debounced run on the latest message
    */
   private async fireAgentRun(conversationId: string): Promise<void> {
+    if (this.groupNoReply) return this.groupNoReply.runGuarded(conversationId, () => this.fireAgentRunGuarded(conversationId));
+    return this.fireAgentRunGuarded(conversationId);
+  }
+
+  private async fireAgentRunGuarded(conversationId: string): Promise<void> {
     if (this.running.has(conversationId)) return;
     this.running.add(conversationId);
     this.followupNeeded.delete(conversationId);
@@ -654,10 +659,7 @@ export class InboundMessageProcessor extends WorkerHost {
         return;
       }
 
-      await this.agentRunner.run({
-        conversation: conv,
-        triggerMessage: latestInbound,
-      });
+      await this.agentRunner.run({ conversation: conv, triggerMessage: latestInbound, ...(conv.isGroup ? { waitForChain: true } : {}) });
 
       // IA respondeu (ou pelo menos o run terminou sem throw) — limpa o
       // timer reativo pra essa conversa e zera contador de tentativas.

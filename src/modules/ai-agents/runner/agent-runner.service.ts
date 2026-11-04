@@ -66,6 +66,9 @@ interface RunInput {
   chainDepth?: number;
   forcedAgentId?: string;
   contextNote?: string;
+  persistActiveAgent?: boolean;
+  expectedLatestMessageId?: string;
+  waitForChain?: boolean;
 }
 
 const MAX_CHAIN_DEPTH = 3;
@@ -102,6 +105,9 @@ export class AiAgentRunnerService {
     chainDepth = 0,
     forcedAgentId,
     contextNote,
+    persistActiveAgent = true,
+    expectedLatestMessageId,
+    waitForChain = false,
   }: RunInput): Promise<void> {
     // Fase 2: usa o agentRouter (com IntentClassifier) pra escolher o agent.
     // Auto-chains (chainDepth > 0) NÃO classificam de novo — já tem activeAgentId.
@@ -117,7 +123,7 @@ export class AiAgentRunnerService {
       );
     }
     const agent = forcedAgentId
-      ? await this.prisma.aiAgent.findFirst({ where: { id: forcedAgentId, isActive: true, deletedAt: null, kind: 'ORCHESTRATOR' } })
+      ? await this.prisma.aiAgent.findFirst({ where: { id: forcedAgentId, organizationId: conversation.organizationId, isActive: true, deletedAt: null, ...(expectedLatestMessageId ? {} : { kind: 'ORCHESTRATOR' }) } })
       : selection
       ? await this.prisma.aiAgent.findFirst({
           where: { id: selection.agentId, isActive: true, deletedAt: null },
@@ -322,7 +328,7 @@ export class AiAgentRunnerService {
 
     try {
       // Mark this agent as the active one on the conversation.
-      await this.prisma.conversation.update({
+      if (persistActiveAgent) await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: { activeAgentId: agent.id },
       });
@@ -377,7 +383,7 @@ export class AiAgentRunnerService {
           // or a stub too short to be a real reply. Sending such text would
           // look like the agent literally typing "Human: oi" to the user.
           const tooShortForReal = text.length < 4;
-          if (!conversation.isGroup && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+          if (!(conversation.isGroup && isConversationalOrchestrator(agent)) && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
             this.logger.log(
               `Run ${run.id}: model emitted text without replyToConversation, auto-sending as fallback`,
             );
@@ -393,6 +399,7 @@ export class AiAgentRunnerService {
                   agentId: agent.id,
                   runId: run.id,
                   triggerMessageId: triggerMessage.id,
+                  expectedLatestMessageId,
                 },
               );
               if (result.finalAction) {
@@ -403,6 +410,8 @@ export class AiAgentRunnerService {
                 `Run ${run.id}: fallback reply failed: ${err?.message ?? err}`,
               );
             }
+          } else if (conversation.isGroup && isConversationalOrchestrator(agent) && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+            this.logger.warn(`Run ${run.id}: discarded group text without replyToConversation`);
           } else if (rawText && (tooShortForReal || !text)) {
             this.logger.warn(
               `Run ${run.id}: skipping fallback — sanitized text was empty or too short ("${rawText.slice(0, 80)}")`,
@@ -460,6 +469,7 @@ export class AiAgentRunnerService {
             agentId: agent.id,
             runId: run.id,
             triggerMessageId: triggerMessage.id,
+            expectedLatestMessageId,
           },
           customSkillsByName,
           replyAlreadySuccessful,
@@ -536,7 +546,7 @@ export class AiAgentRunnerService {
         scopeFeatureEnabled &&
         (finalAction === AiFinalAction.REPLIED ||
           finalAction === AiFinalAction.DELEGATED ||
-          finalAction === AiFinalAction.NO_ACTION) // NO_ACTION pode ter gerado reply via fallback
+          (finalAction === AiFinalAction.NO_ACTION && !conversation.isGroup)) // NO_ACTION pode ter gerado reply via fallback
       ) {
         this.prisma.aiResponseLog.create({
           data: {
@@ -573,7 +583,7 @@ export class AiAgentRunnerService {
       // the full history (including the orchestrator's "vou te passar pra X")
       // and starts speaking. Bounded by MAX_CHAIN_DEPTH to avoid recursion.
       if (
-        (finalAction === AiFinalAction.DELEGATED || finalAction === AiFinalAction.HANDED_BACK) &&
+        (finalAction === AiFinalAction.DELEGATED || (finalAction === AiFinalAction.HANDED_BACK && !replyAlreadySuccessful)) &&
         chainDepth < MAX_CHAIN_DEPTH
       ) {
         const refreshed = await this.prisma.conversation.findUnique({
@@ -582,19 +592,23 @@ export class AiAgentRunnerService {
         const handBackAgent = refreshed && finalAction === AiFinalAction.HANDED_BACK ? await this.resolveAgent(refreshed) : null;
         if (refreshed && ((finalAction === AiFinalAction.DELEGATED && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) || (finalAction === AiFinalAction.HANDED_BACK && !refreshed.activeAgentId && handBackAgent && isConversationalOrchestrator(handBackAgent)))) {
           this.logger.log(
-            `Auto-chaining run for new active agent ${refreshed.activeAgentId} on conv ${conversation.id} (depth ${chainDepth + 1})`,
+            `Auto-chaining run for new active agent ${refreshed.activeAgentId ?? handBackAgent?.id} on conv ${conversation.id} (depth ${chainDepth + 1})`,
           );
           // Fire-and-forget — don't block the caller. The worker runs
           // asynchronously and emits its messages via realtime as usual.
-          this.run({
+          const chained = this.run({
             conversation: refreshed,
             triggerMessage,
             chainDepth: chainDepth + 1,
+            persistActiveAgent,
+            expectedLatestMessageId,
+            waitForChain,
           }).catch((err) =>
             this.logger.error(
               `Auto-chain run failed for conv ${conversation.id}: ${err?.message ?? err}`,
             ),
           );
+          if (expectedLatestMessageId || waitForChain) await chained;
         }
       }
     } catch (err: any) {

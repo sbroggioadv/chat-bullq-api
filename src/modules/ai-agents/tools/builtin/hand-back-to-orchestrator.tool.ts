@@ -40,6 +40,9 @@ export class HandBackToOrchestratorTool implements AiTool {
     input: Record<string, unknown>,
     ctx: ToolContext,
   ): Promise<ToolResult> {
+    if (ctx.expectedLatestMessageId) {
+      return { output: { ok: false, error: 'group_check_cannot_hand_back', message: 'Nesta checagem, mantenha o agente ativo; responda se puder ajudar ou encerre sem ação.' } };
+    }
     const reason = String(input.reason ?? '').trim();
 
     await this.prisma.$transaction([
@@ -84,7 +87,7 @@ export class HandBackToOrchestratorTool implements AiTool {
       output: {
         ok: true,
         message:
-          'Devolvido ao orquestrador. A próxima mensagem do cliente vai cair no fluxo de roteamento.',
+          'Devolvido ao orquestrador. O orquestrador conversacional pode continuar nesta mesma vez.',
       },
       finalAction: 'HANDED_BACK',
     };
