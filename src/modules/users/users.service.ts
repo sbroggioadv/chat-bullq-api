@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ChannelAccess, ChannelAccessService } from '../iam/channel-access/channel-access.service';
 
 const BCRYPT_ROUNDS = 12;
 
@@ -16,7 +17,7 @@ const BCRYPT_ROUNDS = 12;
 export class UsersService {
   private readonly logger = new Logger(UsersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly channelAccess: ChannelAccessService) {}
 
   async updateProfile(userId: string, dto: UpdateProfileDto) {
     const user = await this.prisma.user.update({
@@ -69,14 +70,41 @@ export class UsersService {
     organizationId: string,
     patch: Record<string, unknown>,
   ) {
-    const current = await this.getPreferences(userId, organizationId);
-    const merged = { ...current, ...patch };
+    const { pinnedConversations: _ignored, ...safePatch } = patch;
+    const rows = await this.prisma.$queryRaw<{ preferences: Prisma.JsonValue }[]>`
+      UPDATE user_organizations SET preferences = COALESCE(preferences, '{}'::jsonb) || ${JSON.stringify(safePatch)}::jsonb
+      WHERE user_id = ${userId} AND organization_id = ${organizationId}
+      RETURNING preferences`;
+    if (!rows.length) throw new NotFoundException('Membership not found');
+    return rows[0].preferences;
+  }
 
-    await this.prisma.userOrganization.update({
-      where: { userId_organizationId: { userId, organizationId } },
-      data: { preferences: merged as Prisma.InputJsonValue },
-    });
-
-    return merged;
+  async setPinned(userId: string, organizationId: string, id: string, pin: boolean, access: ChannelAccess) {
+    if (pin) {
+      const conversation = await this.prisma.conversation.findFirst({
+        where: { id, organizationId, deletedAt: null, channel: { deletedAt: null } },
+        select: { channelId: true },
+      });
+      if (!conversation) throw new NotFoundException('Conversation not found');
+      this.channelAccess.assertChannelAccess(access, conversation.channelId);
+    }
+    const item = JSON.stringify({ id, pinnedAt: new Date().toISOString() });
+    const rows = await this.prisma.$queryRaw<{ pinned: Prisma.JsonValue }[]>`
+      UPDATE user_organizations SET preferences = jsonb_set(
+        COALESCE(preferences, '{}'::jsonb), '{pinnedConversations}',
+        CASE WHEN ${pin} THEN
+          CASE WHEN COALESCE(preferences->'pinnedConversations', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', ${id}::text))
+            THEN COALESCE(preferences->'pinnedConversations', '[]'::jsonb)
+            ELSE COALESCE(preferences->'pinnedConversations', '[]'::jsonb) || jsonb_build_array(${item}::jsonb) END
+        ELSE COALESCE((SELECT jsonb_agg(entry) FROM jsonb_array_elements(COALESCE(preferences->'pinnedConversations', '[]'::jsonb)) entry WHERE entry->>'id' <> ${id}), '[]'::jsonb) END, true)
+      WHERE user_id = ${userId} AND organization_id = ${organizationId}
+        AND (NOT ${pin} OR jsonb_array_length(COALESCE(preferences->'pinnedConversations', '[]'::jsonb)) < 20
+          OR COALESCE(preferences->'pinnedConversations', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', ${id}::text)))
+      RETURNING preferences->'pinnedConversations' AS pinned`;
+    if (!rows.length) {
+      await this.getPreferences(userId, organizationId);
+      throw new BadRequestException('pin_limit_reached');
+    }
+    return rows[0].pinned;
   }
 }

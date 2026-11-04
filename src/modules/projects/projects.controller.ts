@@ -85,6 +85,12 @@ export class ProjectsController {
     return this.service.updateForConversation(orgId, conversationId, dto);
   }
 
+  @Delete('by-conversation/:conversationId')
+  removeByConversation(@Param('conversationId') conversationId: string,
+    @CurrentOrg('id') orgId: string, @Query('projectId') projectId?: string) {
+    return this.service.removeForConversation(orgId, conversationId, projectId);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Detalhe do dossiê' })
   getById(@Param('id') id: string, @CurrentOrg('id') orgId: string) {

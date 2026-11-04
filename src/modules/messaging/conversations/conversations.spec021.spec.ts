@@ -20,5 +20,19 @@ describe('SPEC-021 conversation filters', () => {
     invoke('ck12345678901234567890123');
     expect(service.findInbox.mock.calls[0][1].conversationIds).toEqual(['ck12345678901234567890123']);
     expect(() => invoke('bad!')).toThrow();
+    expect(() => invoke(Array(21).fill('ck12345678901234567890123').join(','))).toThrow();
+  });
+  it('does not return requested ids outside accessible channels or organization', async () => {
+    const rows = [
+      { id: 'a', organizationId: 'org', channelId: 'allowed' },
+      { id: 'b', organizationId: 'org', channelId: 'denied' },
+      { id: 'c', organizationId: 'other', channelId: 'allowed' },
+    ];
+    const prisma: any = { conversation: {
+      findMany: jest.fn(async ({ where }: any) => rows.filter(row => row.organizationId === where.organizationId && where.id.in.includes(row.id) && where.channelId.in.includes(row.channelId))),
+      count: jest.fn().mockResolvedValue(1),
+    }, $transaction: (queries: any[]) => Promise.all(queries) };
+    const result = await new ConversationsRepository(prisma).findInbox({ organizationId: 'org', conversationIds: ['a', 'b', 'c'], accessibleChannelIds: ['allowed'] }, 0, 20);
+    expect(result.conversations.map(c => c.id)).toEqual(['a']);
   });
 });

@@ -2,6 +2,9 @@ import {
   Controller,
   Get,
   Patch,
+  Put,
+  Delete,
+  Param,
   Post,
   Body,
   UseGuards,
@@ -14,7 +17,8 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdatePreferencesDto } from './dto/update-preferences.dto';
 import { JwtAuthGuard, OrgGuard } from '../../common/guards';
-import { CurrentUser, CurrentOrg } from '../../common/decorators';
+import { CurrentUser, CurrentOrg, CurrentChannelAccess } from '../../common/decorators';
+import type { ChannelAccess } from '../iam/channel-access/channel-access.service';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -63,5 +67,19 @@ export class UsersController {
     @Body() dto: UpdatePreferencesDto,
   ) {
     return this.service.updatePreferences(userId, orgId, dto.preferences);
+  }
+
+  @Put('me/pinned-conversations/:conversationId')
+  @UseGuards(OrgGuard)
+  pin(@CurrentUser('id') userId: string, @CurrentOrg('id') orgId: string,
+    @Param('conversationId') id: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.setPinned(userId, orgId, id, true, access);
+  }
+
+  @Delete('me/pinned-conversations/:conversationId')
+  @UseGuards(OrgGuard)
+  unpin(@CurrentUser('id') userId: string, @CurrentOrg('id') orgId: string,
+    @Param('conversationId') id: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.setPinned(userId, orgId, id, false, access);
   }
 }

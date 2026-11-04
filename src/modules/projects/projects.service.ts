@@ -221,15 +221,9 @@ export class ProjectsService {
         const legacy = await this.prisma.project.findFirst({
           where: { organizationId, groupJid: jid, deletedAt: null },
           include: DETAIL_INCLUDE,
+          orderBy: { updatedAt: 'desc' },
         });
         if (legacy) {
-          await this.prisma.projectConversation.upsert({
-            where: {
-              uq_project_conversation: { projectId: legacy.id, conversationId },
-            },
-            create: { projectId: legacy.id, conversationId },
-            update: {},
-          });
           return this.toDetail(legacy);
         }
       }
@@ -275,6 +269,49 @@ export class ProjectsService {
     return created;
   }
 
+  async removeForConversation(organizationId: string, conversationId: string, projectId?: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const conv = await tx.conversation.findFirst({
+        where: { id: conversationId, organizationId, deletedAt: null },
+        select: { id: true, isGroup: true, channelId: true, contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
+      });
+      if (!conv) throw new NotFoundException('Conversa não encontrada');
+      const jid = conv.isGroup ? deriveGroupJid(conv) : null;
+      const linked = await tx.projectConversation.findFirst({
+        where: { conversationId, project: { organizationId, deletedAt: null }, ...(projectId ? { projectId } : {}) },
+        orderBy: { createdAt: 'desc' },
+      });
+      const legacy = jid ? await tx.project.findFirst({
+        where: { organizationId, deletedAt: null, groupJid: jid, ...(projectId ? { id: projectId } : {}) },
+        orderBy: { updatedAt: 'desc' },
+      }) : null;
+      const targetId = linked?.projectId ?? legacy?.id;
+      if (!targetId) throw new NotFoundException('Projeto não encontrado para a conversa');
+      const project = await tx.project.findFirst({ where: { id: targetId, organizationId, deletedAt: null } });
+      if (!project) throw new NotFoundException('Projeto não encontrado');
+      let ids = [conversationId];
+      if (jid) {
+        const candidates = await tx.conversation.findMany({
+          where: { organizationId, deletedAt: null, isGroup: true },
+          select: { id: true, channelId: true, contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
+        });
+        ids = candidates.filter(c => deriveGroupJid(c) === jid).map(c => c.id);
+      }
+      const existing = await tx.projectConversation.findMany({ where: { projectId: targetId, conversationId: { in: ids } }, select: { conversationId: true } });
+      const removed = project.groupJid === jid && jid ? ids.length : existing.length;
+      await tx.projectConversation.deleteMany({ where: { projectId: targetId, conversationId: { in: ids } } });
+      if (jid && project.groupJid === jid) await tx.project.update({ where: { id: targetId }, data: { groupJid: null } });
+      const remaining = await tx.project.findFirst({
+        where: { id: targetId, organizationId },
+        select: { groupJid: true, _count: { select: { conversations: true, tasks: true, attachments: true } } },
+      });
+      if (remaining && !remaining.groupJid && !remaining._count.conversations && !remaining._count.tasks && !remaining._count.attachments) {
+        await tx.project.update({ where: { id: targetId }, data: { deletedAt: new Date() } });
+      }
+      return { projectId: targetId, removedConversations: removed };
+    });
+  }
+
   async linkConversation(
     organizationId: string,
     projectId: string,
@@ -308,9 +345,10 @@ export class ProjectsService {
     const projects = await this.prisma.project.findMany({
       where: { organizationId, groupJid: { in: unique }, deletedAt: null },
       include: DETAIL_INCLUDE,
+      orderBy: { updatedAt: 'desc' },
     });
     for (const p of projects) {
-      if (p.groupJid) map.set(p.groupJid, this.toDetail(p));
+      if (p.groupJid && !map.has(p.groupJid)) map.set(p.groupJid, this.toDetail(p));
     }
     return map;
   }
@@ -337,8 +375,27 @@ export class ProjectsService {
 
   async resolveFilter(
     organizationId: string,
-    filter: { hoppeId?: string; responsibleUserId?: string; status?: string },
+    filter: { hoppeId?: string; responsibleUserId?: string; status?: string; kind?: 'ANY' | 'MENTORSHIP' },
   ): Promise<{ representativeIds: string[]; memberChannelIds: string[] }> {
+    if (filter.kind) {
+      const conversations = await this.prisma.conversation.findMany({
+        where: { organizationId, deletedAt: null },
+        select: { id: true, organizationId: true, isGroup: true, channelId: true,
+          contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
+      });
+      const linked = await this.attachByConversationIds(organizationId, conversations.map(c => c.id));
+      const jids = conversations.filter(c => c.isGroup).map(deriveGroupJid).filter((jid): jid is string => !!jid);
+      const legacy = await this.attachByJids(organizationId, jids);
+      const selected = conversations.filter(c => {
+        const jid = c.isGroup ? deriveGroupJid(c) : null;
+        const project = linked.get(c.id) ?? (jid ? legacy.get(jid) : undefined);
+        return !!project && (filter.kind !== 'MENTORSHIP' || project.kind === 'MENTORSHIP')
+          && (!filter.hoppeId || project.hoppeId === filter.hoppeId)
+          && (!filter.responsibleUserId || project.responsibleUserId === filter.responsibleUserId)
+          && (!filter.status || project.status === filter.status);
+      });
+      return { representativeIds: selected.map(c => c.id), memberChannelIds: Array.from(new Set(selected.map(c => c.channelId))) };
+    }
     const where: Prisma.ProjectWhereInput = { organizationId, deletedAt: null };
     if (filter.hoppeId) where.hoppeId = filter.hoppeId;
     if (filter.responsibleUserId) where.responsibleUserId = filter.responsibleUserId;

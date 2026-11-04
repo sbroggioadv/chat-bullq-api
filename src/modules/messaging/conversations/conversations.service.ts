@@ -116,6 +116,7 @@ export class ConversationsService {
       hoppeId?: string;
       responsibleUserId?: string;
       projectStatus?: string;
+      projectKind?: 'ANY' | 'MENTORSHIP';
     },
     page: number,
     limit: number,
@@ -137,21 +138,24 @@ export class ConversationsService {
     let resolvedChannelIds: string[] | undefined;
     let isGroupResolved = false;
     const projectFilter =
-      filters.hoppeId || filters.responsibleUserId || filters.projectStatus
+      filters.hoppeId || filters.responsibleUserId || filters.projectStatus || filters.projectKind
         ? {
             hoppeId: filters.hoppeId,
             responsibleUserId: filters.responsibleUserId,
             status: filters.projectStatus,
+            kind: filters.projectKind,
           }
         : null;
 
     if (filters.segmentId || projectFilter) {
-      const { representativeIds, memberChannelIds } = filters.segmentId
-        ? await this.segmentRead.groupRepresentativeIds(
-            organizationId,
-            filters.segmentId,
-          )
-        : await this.projects.resolveFilter(organizationId, projectFilter!);
+      const segment = filters.segmentId
+        ? await this.segmentRead.groupRepresentativeIds(organizationId, filters.segmentId)
+        : null;
+      const project = projectFilter ? await this.projects.resolveFilter(organizationId, projectFilter) : null;
+      const representativeIds = segment && project
+        ? segment.representativeIds.filter(id => project.representativeIds.includes(id))
+        : (segment ?? project)!.representativeIds;
+      const memberChannelIds = (segment ?? project)!.memberChannelIds;
       conversationIds = filters.conversationIds
         ? representativeIds.filter((id) => filters.conversationIds!.includes(id))
         : representativeIds;
