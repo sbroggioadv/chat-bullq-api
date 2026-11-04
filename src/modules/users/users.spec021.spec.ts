@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { UsersService } from './users.service';
 
 describe('SPEC-021 pinned conversations', () => {
@@ -19,9 +20,9 @@ describe('SPEC-021 pinned conversations', () => {
           return [{ preferences }];
         }
         const pin = values[0];
-        const id = values[1];
+        const id = values[2];
         if (pin && pins.length >= 20 && !pins.some(p => p.id === id)) return [];
-        if (pin && !pins.some(p => p.id === id)) pins.push(JSON.parse(values[2]));
+        if (pin && !pins.some(p => p.id === id)) pins.push(JSON.parse(values[5]));
         if (!pin) pins = pins.filter(p => p.id !== id);
         preferences = { ...preferences, pinnedConversations: pins };
         return [{ pinned: [...pins] }];
@@ -34,7 +35,8 @@ describe('SPEC-021 pinned conversations', () => {
     await service.updatePreferences('u', 'org', { inbox: { scope: 'MINE' }, pinnedConversations: [] });
     expect(preferences.pinnedConversations.map((p: any) => p.id)).toEqual(['one', 'two']);
     expect(preferences.inbox.scope).toBe('MINE');
-    const pinSql = prisma.$queryRaw.mock.calls[0][0].join('?');
+    const [parts, ...values] = prisma.$queryRaw.mock.calls[0];
+    const pinSql = Prisma.sql(parts, ...values).sql;
     expect(pinSql).toContain('UPDATE user_organizations SET preferences = jsonb_set');
     expect(pinSql).toContain('jsonb_array_length');
     expect(pinSql).toContain("@> jsonb_build_array(jsonb_build_object('id'");

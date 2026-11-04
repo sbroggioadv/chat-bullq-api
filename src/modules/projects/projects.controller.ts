@@ -11,6 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ChannelAccess } from '../iam/channel-access/channel-access.service';
 import { ProjectsService } from './projects.service';
 import {
   AddContactDto,
@@ -23,7 +24,7 @@ import {
   UpdateTaskDto,
 } from './dto/project.dto';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
-import { CurrentOrg, CurrentUser } from '../../common/decorators';
+import { CurrentOrg, CurrentUser, CurrentChannelAccess } from '../../common/decorators';
 
 @ApiTags('Projects')
 @ApiBearerAuth()
@@ -87,8 +88,8 @@ export class ProjectsController {
 
   @Delete('by-conversation/:conversationId')
   removeByConversation(@Param('conversationId') conversationId: string,
-    @CurrentOrg('id') orgId: string, @Query('projectId') projectId?: string) {
-    return this.service.removeForConversation(orgId, conversationId, projectId);
+    @CurrentOrg('id') orgId: string, @Query('projectId') projectId?: string, @CurrentChannelAccess() access?: ChannelAccess) {
+    return this.service.removeForConversation(orgId, conversationId, projectId, access);
   }
 
   @Get(':id')

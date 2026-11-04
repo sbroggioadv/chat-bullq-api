@@ -89,17 +89,26 @@ export class UsersService {
       this.channelAccess.assertChannelAccess(access, conversation.channelId);
     }
     const item = JSON.stringify({ id, pinnedAt: new Date().toISOString() });
+    // Compute visibility from the row being updated, so concurrent pins are
+    // serialized by PostgreSQL and no previously visible pin is overwritten.
+    const channels = JSON.stringify(access === 'ALL' ? [] : [...access]);
+    const visiblePins = Prisma.sql`COALESCE((SELECT jsonb_agg(entry ORDER BY ordinal)
+      FROM jsonb_array_elements(COALESCE(preferences->'pinnedConversations', '[]'::jsonb)) WITH ORDINALITY AS pins(entry, ordinal)
+      WHERE EXISTS (SELECT 1 FROM conversations c JOIN channels ch ON ch.id = c.channel_id
+        WHERE c.id = entry->>'id' AND c.organization_id = ${organizationId}
+          AND c.deleted_at IS NULL AND ch.deleted_at IS NULL
+          AND (${access === 'ALL'}::boolean OR ${channels}::jsonb ? c.channel_id))), '[]'::jsonb)`;
     const rows = await this.prisma.$queryRaw<{ pinned: Prisma.JsonValue }[]>`
       UPDATE user_organizations SET preferences = jsonb_set(
         COALESCE(preferences, '{}'::jsonb), '{pinnedConversations}',
         CASE WHEN ${pin} THEN
-          CASE WHEN COALESCE(preferences->'pinnedConversations', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', ${id}::text))
-            THEN COALESCE(preferences->'pinnedConversations', '[]'::jsonb)
-            ELSE COALESCE(preferences->'pinnedConversations', '[]'::jsonb) || jsonb_build_array(${item}::jsonb) END
+          CASE WHEN ${visiblePins} @> jsonb_build_array(jsonb_build_object('id', ${id}::text))
+            THEN ${visiblePins}
+            ELSE ${visiblePins} || jsonb_build_array(${item}::jsonb) END
         ELSE COALESCE((SELECT jsonb_agg(entry) FROM jsonb_array_elements(COALESCE(preferences->'pinnedConversations', '[]'::jsonb)) entry WHERE entry->>'id' <> ${id}), '[]'::jsonb) END, true)
       WHERE user_id = ${userId} AND organization_id = ${organizationId}
-        AND (NOT ${pin} OR jsonb_array_length(COALESCE(preferences->'pinnedConversations', '[]'::jsonb)) < 20
-          OR COALESCE(preferences->'pinnedConversations', '[]'::jsonb) @> jsonb_build_array(jsonb_build_object('id', ${id}::text)))
+        AND (NOT ${pin} OR jsonb_array_length(${visiblePins}) < 20
+          OR ${visiblePins} @> jsonb_build_array(jsonb_build_object('id', ${id}::text)))
       RETURNING preferences->'pinnedConversations' AS pinned`;
     if (!rows.length) {
       await this.getPreferences(userId, organizationId);

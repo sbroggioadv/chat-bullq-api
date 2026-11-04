@@ -10,13 +10,17 @@ const individual = { id: 'individual', organizationId: 'org', isGroup: false, ch
 describe('SPEC-021 project flows', () => {
   it('resolves individuals, group legacy links, and the latest project kind', async () => {
     const conversations = [individual, group('group1', 'ch1', '1@g.us'), group('group2', 'ch2', '1@g.us'), group('other', 'ch1', '2@g.us')];
-    const prisma: any = { conversation: { findMany: jest.fn().mockResolvedValue(conversations) } };
+    const project = (id: string, kind: string, groupJid: string | null = null) => ({ id, groupJid, kind });
+    const prisma: any = {
+      $queryRaw: jest.fn().mockResolvedValue(conversations.filter(c => c.isGroup).map(c => ({ id: c.id, channelId: c.channelId, jid: c.contact.channels[0].externalId }))),
+      projectConversation: { findMany: jest.fn().mockResolvedValue([
+        { conversationId: 'individual', conversation: { channelId: 'ch1' }, project: project('a', 'MENTORSHIP') },
+        { conversationId: 'group1', conversation: { channelId: 'ch1' }, project: project('b', 'PROJECT') },
+      ]) },
+      project: { findMany: jest.fn().mockResolvedValue([project('old', 'MENTORSHIP', '1@g.us')]) },
+    };
     const service = new ProjectsService(prisma, {} as any);
-    jest.spyOn(service, 'attachByConversationIds').mockResolvedValue(new Map([
-      ['individual', { id: 'a', kind: 'MENTORSHIP' } as any],
-      ['group1', { id: 'b', kind: 'PROJECT' } as any],
-    ]));
-    jest.spyOn(service, 'attachByJids').mockResolvedValue(new Map([['1@g.us', { id: 'old', kind: 'MENTORSHIP' } as any]]));
+    jest.spyOn(service, 'toDetail').mockImplementation((p: any) => p);
     expect((await service.resolveFilter('org', { kind: 'ANY' })).representativeIds).toEqual(['individual', 'group1', 'group2']);
     expect((await service.resolveFilter('org', { kind: 'MENTORSHIP' })).representativeIds).toEqual(['individual', 'group2']);
   });
@@ -38,15 +42,16 @@ describe('SPEC-021 project flows', () => {
       },
     };
     const service = new ProjectsService({ ...tx, $transaction: (fn: any) => fn(tx) } as any, {} as any);
-    await expect(service.removeForConversation('org', 'group1', 'p')).resolves.toEqual({ projectId: 'p', removedConversations: 2 });
+    await expect(service.removeForConversation('org', 'group1', 'p', 'ALL')).resolves.toEqual({ projectId: 'p', removedConversations: 2 });
     expect(project.groupJid).toBeNull();
     expect(project.deletedAt).toBeNull();
     expect(links).toEqual([{ projectId: 'p', conversationId: 'other' }, { projectId: 'another', conversationId: 'group1' }]);
     jest.spyOn(service, 'getById').mockImplementation(async (_org, id) => ({ id, exists: true } as any));
     expect(await service.getForConversation('org', 'group1')).toMatchObject({ id: 'another', exists: true });
-    jest.spyOn(service, 'attachByConversationIds').mockImplementation(async () => new Map(links.map(l => [l.conversationId, { id: l.projectId, kind: 'PROJECT' } as any])));
-    jest.spyOn(service, 'attachByJids').mockResolvedValue(new Map());
-    expect((await service.resolveFilter('org', { kind: 'ANY' })).representativeIds).toEqual(['group1', 'other']);
+    tx.projectConversation.findMany.mockImplementation(async () => links.map(l => ({ ...l, conversation: { channelId: 'ch1' }, project: { id: l.projectId, kind: 'PROJECT' } })));
+    tx.project.findMany = jest.fn().mockResolvedValue([]);
+    jest.spyOn(service, 'toDetail').mockImplementation((p: any) => p);
+    expect((await service.resolveFilter('org', { kind: 'ANY' })).representativeIds).toEqual(['other', 'group1']);
     expect((await service.resolveFilter('org', { kind: 'MENTORSHIP' })).representativeIds).toEqual([]);
   });
 
@@ -78,7 +83,7 @@ describe('SPEC-021 project flows', () => {
       },
     };
     const service = new ProjectsService({ $transaction: (fn: any) => fn(tx) } as any, {} as any);
-    await expect(service.removeForConversation('org', 'individual')).resolves.toEqual({ projectId: 'p', removedConversations: 1 });
+    await expect(service.removeForConversation('org', 'individual', undefined, 'ALL')).resolves.toEqual({ projectId: 'p', removedConversations: 1 });
     expect(tx.project.update).toHaveBeenCalledWith({ where: { id: 'p' }, data: { deletedAt: expect.any(Date) } });
   });
 
@@ -89,7 +94,7 @@ describe('SPEC-021 project flows', () => {
       project: { findFirst: jest.fn(async ({ select }: any) => select ? { groupJid: null, _count: { conversations: 0, tasks: 1, attachments: 0 } } : { id: 'p', groupJid: null }), update: jest.fn() },
     };
     const service = new ProjectsService({ $transaction: (fn: any) => fn(tx) } as any, {} as any);
-    await service.removeForConversation('org', 'individual');
+    await service.removeForConversation('org', 'individual', undefined, 'ALL');
     expect(tx.project.update).not.toHaveBeenCalled();
   });
 

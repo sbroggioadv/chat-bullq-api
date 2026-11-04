@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
@@ -224,6 +225,10 @@ export class ProjectsService {
           orderBy: { updatedAt: 'desc' },
         });
         if (legacy) {
+          await this.prisma.projectConversation.upsert({
+            where: { uq_project_conversation: { projectId: legacy.id, conversationId } },
+            create: { projectId: legacy.id, conversationId }, update: {},
+          });
           return this.toDetail(legacy);
         }
       }
@@ -269,13 +274,14 @@ export class ProjectsService {
     return created;
   }
 
-  async removeForConversation(organizationId: string, conversationId: string, projectId?: string) {
+  async removeForConversation(organizationId: string, conversationId: string, projectId?: string, access: 'ALL' | Set<string> = new Set()) {
     return this.prisma.$transaction(async (tx) => {
       const conv = await tx.conversation.findFirst({
         where: { id: conversationId, organizationId, deletedAt: null },
         select: { id: true, isGroup: true, channelId: true, contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
       });
       if (!conv) throw new NotFoundException('Conversa não encontrada');
+      if (access !== 'ALL' && !access.has(conv.channelId)) throw new ForbiddenException('You do not have access to this channel');
       const jid = conv.isGroup ? deriveGroupJid(conv) : null;
       const linked = await tx.projectConversation.findFirst({
         where: { conversationId, project: { organizationId, deletedAt: null }, ...(projectId ? { projectId } : {}) },
@@ -378,23 +384,36 @@ export class ProjectsService {
     filter: { hoppeId?: string; responsibleUserId?: string; status?: string; kind?: 'ANY' | 'MENTORSHIP' },
   ): Promise<{ representativeIds: string[]; memberChannelIds: string[] }> {
     if (filter.kind) {
-      const conversations = await this.prisma.conversation.findMany({
-        where: { organizationId, deletedAt: null },
-        select: { id: true, organizationId: true, isGroup: true, channelId: true,
-          contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
+      const links = await this.prisma.projectConversation.findMany({
+        where: { project: { organizationId, deletedAt: null }, conversation: { organizationId, deletedAt: null } },
+        include: { project: { include: DETAIL_INCLUDE }, conversation: { select: { channelId: true } } },
+        orderBy: { createdAt: 'desc' },
       });
-      const linked = await this.attachByConversationIds(organizationId, conversations.map(c => c.id));
-      const jids = conversations.filter(c => c.isGroup).map(deriveGroupJid).filter((jid): jid is string => !!jid);
-      const legacy = await this.attachByJids(organizationId, jids);
-      const selected = conversations.filter(c => {
-        const jid = c.isGroup ? deriveGroupJid(c) : null;
-        const project = linked.get(c.id) ?? (jid ? legacy.get(jid) : undefined);
-        return !!project && (filter.kind !== 'MENTORSHIP' || project.kind === 'MENTORSHIP')
-          && (!filter.hoppeId || project.hoppeId === filter.hoppeId)
-          && (!filter.responsibleUserId || project.responsibleUserId === filter.responsibleUserId)
-          && (!filter.status || project.status === filter.status);
+      const projects = await this.prisma.project.findMany({
+        where: { organizationId, deletedAt: null, groupJid: { not: null } },
+        include: DETAIL_INCLUDE, orderBy: { updatedAt: 'desc' },
       });
-      return { representativeIds: selected.map(c => c.id), memberChannelIds: Array.from(new Set(selected.map(c => c.channelId))) };
+      const linked = new Map<string, { project: ReturnType<ProjectsService['toDetail']>; channelId: string }>();
+      for (const link of links) if (!linked.has(link.conversationId)) linked.set(link.conversationId, { project: this.toDetail(link.project), channelId: link.conversation.channelId });
+      const legacy = new Map<string, ReturnType<ProjectsService['toDetail']>>();
+      for (const project of projects) if (project.groupJid && !legacy.has(project.groupJid)) legacy.set(project.groupJid, this.toDetail(project));
+      const jids = [...legacy.keys()];
+      const groups = jids.length ? await this.prisma.$queryRaw<{ id: string; channelId: string; jid: string }[]>`
+        SELECT c.id, c.channel_id AS "channelId", cc.external_id AS jid
+        FROM conversations c JOIN contact_channels cc
+          ON cc.contact_id = c.contact_id AND cc.channel_id = c.channel_id
+        WHERE c.organization_id = ${organizationId} AND c.deleted_at IS NULL AND c.is_group = true
+          AND cc.external_id IN (${Prisma.join(jids)})` : [];
+      for (const group of groups) {
+        const project = legacy.get(group.jid);
+        if (project && !linked.has(group.id)) linked.set(group.id, { project, channelId: group.channelId });
+      }
+      const selected = [...linked].filter(([, { project }]) =>
+        (filter.kind !== 'MENTORSHIP' || project.kind === 'MENTORSHIP') &&
+        (!filter.hoppeId || project.hoppeId === filter.hoppeId) &&
+        (!filter.responsibleUserId || project.responsibleUserId === filter.responsibleUserId) &&
+        (!filter.status || project.status === filter.status));
+      return { representativeIds: selected.map(([id]) => id), memberChannelIds: [...new Set(selected.map(([, value]) => value.channelId))] };
     }
     const where: Prisma.ProjectWhereInput = { organizationId, deletedAt: null };
     if (filter.hoppeId) where.hoppeId = filter.hoppeId;
