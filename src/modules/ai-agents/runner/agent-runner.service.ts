@@ -480,7 +480,6 @@ export class AiAgentRunnerService {
           customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
-          conversation.isGroup,
         );
 
         for (const result of toolResults) {
@@ -491,9 +490,7 @@ export class AiAgentRunnerService {
             name: result.toolName,
             content: JSON.stringify(result.output),
           });
-          if (result.toolName === 'delegateToAgent' && (result.output as any)?.ok === true && finalAction === AiFinalAction.REPLIED) {
-            finalAction = AiFinalAction.DELEGATED;
-          } else if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
+          if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
             if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
               handBackReason = sanitizeLabel(String((result.output as any)?.reason ?? ''), 300);
@@ -520,7 +517,7 @@ export class AiAgentRunnerService {
           (conversation.isGroup && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.ok === true)) ||
           toolResults.some((result) =>
             (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
-            (result.output as any)?.ok === true,
+            ((result.output as any)?.ok === true || (result.output as any)?.error === 'delegate_after_reply'),
           )
         ) {
           break;
@@ -751,7 +748,6 @@ export class AiAgentRunnerService {
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
-    isGroup = false,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -809,6 +805,17 @@ export class AiAgentRunnerService {
             error: 'duplicate-reply-blocked',
             durationMs: 0,
           },
+        });
+        this.emitToolCall(ctx.conversationId, ctx.runId, blockedRow);
+        continue;
+      }
+
+      if (call.name === 'delegateToAgent' && (alreadyRepliedFromPriorIteration || repliedInThisBatch)) {
+        this.logger.warn(`Run ${ctx.runId}: blocked delegateToAgent after reply`);
+        const blockedOutput = { ok: false, error: 'delegate_after_reply' };
+        results.push({ toolCallId: call.id, toolName: call.name, output: blockedOutput });
+        const blockedRow = await this.prisma.aiToolCall.create({
+          data: { runId: ctx.runId, toolName: call.name, input: call.arguments as object, output: blockedOutput as object, error: 'delegate-after-reply-blocked', durationMs: 0 },
         });
         this.emitToolCall(ctx.conversationId, ctx.runId, blockedRow);
         continue;
@@ -917,8 +924,11 @@ export class AiAgentRunnerService {
       ) {
         repliedInThisBatch = true;
       }
-      if ((output as any)?.ok === true &&
-        (call.name === 'delegateToAgent' || call.name === 'handBackToOrchestrator' || (isGroup && call.name === 'replyToConversation'))) break;
+      if ((output as any)?.ok === true && (call.name === 'delegateToAgent' || call.name === 'handBackToOrchestrator')) {
+        const dropped = calls.slice(calls.indexOf(call) + 1).map((next) => next.name);
+        if (dropped.length) this.logger.warn(`Run ${ctx.runId}: dropped after ${call.name}: ${dropped.join(', ')}`);
+        break;
+      }
     }
 
     return results;
