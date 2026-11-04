@@ -97,3 +97,14 @@ describe('F1 ação terminal', () => {
     expect(w.complete).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('F2 delegação após resposta', () => {
+  it('cena 4: resposta individual seguida de delegação encadeia o especialista', async () => {
+    const w = world(null, [call('replyToConversation', { text: 'Vou chamar o especialista.' }), call('delegateToAgent', { agentId: 'esp', reason: 'motivo' }), stop], [], false);
+    await run(w, 'orq');
+    expect(w.sent()).toEqual(['Vou chamar o especialista.']);
+    expect(w.runs()[0]).toBe('DELEGATED');
+    expect(w.runAgents()).toEqual(['orq', 'esp']);
+    expect(w.prisma.aiAgentHandoff.create).toHaveBeenCalledTimes(1);
+  });
+});

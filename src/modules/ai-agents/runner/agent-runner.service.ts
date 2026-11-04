@@ -490,7 +490,9 @@ export class AiAgentRunnerService {
             name: result.toolName,
             content: JSON.stringify(result.output),
           });
-          if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
+          if (result.toolName === 'delegateToAgent' && (result.output as any)?.ok === true && finalAction === AiFinalAction.REPLIED) {
+            finalAction = AiFinalAction.DELEGATED;
+          } else if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
             if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
               handBackReason = sanitizeLabel(String((result.output as any)?.reason ?? ''), 300);
