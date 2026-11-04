@@ -68,6 +68,8 @@ const cases: [string, Cfg, string, any, number, string[]][] = [
   ['OWNER com o canal privado concedido: GET', { role: 'OWNER', grants: [], privateChannels: [{ id: 'ch1', grantedTo: true }], legacy: true }, 'GET', undefined, 200, ['projectConversation.upsert']],
   ['AGENT só com outro canal: GET de grupo legado', { role: 'AGENT', grants: ['ch2'], legacy: true }, 'GET', undefined, 403, []],
   ['AGENT sem canal nenhum: GET', { role: 'AGENT', grants: [], legacy: true }, 'GET', undefined, 403, []],
+  ['AGENT sem acesso: tipo inválido continua 403', { role: 'AGENT', grants: ['ch2'], legacy: true }, 'PUT', { metadata: { kind: 'INVALID' } }, 403, []],
+  ['AGENT com acesso: tipo inválido retorna 400 sem escrita', { role: 'AGENT', grants: ['ch1'], legacy: true }, 'PUT', { metadata: { kind: 'INVALID' } }, 400, []],
   ['AGENT só com outro canal: PUT sem projeto', { role: 'AGENT', grants: ['ch2'] }, 'PUT', { name: 'Intruso', metadata: { kind: 'MENTORSHIP' } }, 403, []],
   ['AGENT só com outro canal: PUT em grupo legado', { role: 'AGENT', grants: ['ch2'], legacy: true }, 'PUT', { name: 'Intruso' }, 403, []],
   ['AGENT só com outro canal: PUT em projeto já ligado', { role: 'AGENT', grants: ['ch2'], linked: true }, 'PUT', { name: 'Intruso' }, 403, []],
