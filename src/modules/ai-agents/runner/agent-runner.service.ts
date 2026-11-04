@@ -330,8 +330,8 @@ export class AiAgentRunnerService {
     // the same turn — customers saw 2 bubbles with redundant CTAs ("quer
     // o link?" repeated). We now let the LLM emit one reply, then any
     // subsequent replyToConversation gets a soft error so the model
-    // tags / hands off / ends. Other tools (tag, handBack, transfer)
-    // still run normally.
+    // tags / hands off / ends. In a group, other tools can run in the
+    // same batch; the successful reply ends the loop after that batch.
     let replyAlreadySuccessful = false;
     let handBackReason = '';
     const toolContext: ToolContext = {
@@ -777,8 +777,8 @@ export class AiAgentRunnerService {
       // Guard: only one successful replyToConversation per run. The LLM
       // sometimes "thinks aloud" by emitting 2 replies in sequence —
       // customer ends up with duplicate CTAs ("posso te mandar o link?"
-      // twice). We let the model see a soft error and gracefully end
-      // the turn (it usually pivots to tagConversation or stops).
+      // twice). The soft error is preserved; in groups remaining actions
+      // can only run in this batch because the reply ends the loop.
       if (
         call.name === 'replyToConversation' &&
         (alreadyRepliedFromPriorIteration || repliedInThisBatch)
