@@ -514,7 +514,10 @@ export class AiAgentRunnerService {
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
           finalAction === AiFinalAction.CLOSED_CONVERSATION ||
-          (!!expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK)
+          toolResults.some((result) =>
+            (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
+            (result.output as any)?.ok === true,
+          )
         ) {
           break;
         }
@@ -909,6 +912,7 @@ export class AiAgentRunnerService {
       ) {
         repliedInThisBatch = true;
       }
+      if ((call.name === 'delegateToAgent' || call.name === 'handBackToOrchestrator') && (output as any)?.ok === true) break;
     }
 
     return results;
