@@ -55,3 +55,14 @@ it('saneia os dois caminhos de nome de remetente, preservando nomes comuns', () 
   }
   expect(JSON.stringify(builder.buildMessages(context(true, true)))).toContain('[Pessoa A]:');
 });
+
+it('preserva o texto individual da base 3607448 e orienta ações em grupo', () => {
+  const { createHash } = require('crypto');
+  const hashes: Record<string, string> = { ORCHESTRATOR: '83e3f9c98c8d98aeb2087ca0ab93e6e2a1ce2ed531228a175c6ae1ee2b015f1d', WORKER: '5eb3d0e1b548ff8f732d92a9590b22dda1a3fdc3d4341d8c690d8921d7dc2018' };
+  for (const kind of Object.keys(hashes)) {
+    const individual = context(true, false); individual.agent.kind = kind;
+    expect(createHash('sha256').update(JSON.stringify(new PromptBuilderService().buildMessages(individual))).digest('hex')).toBe(hashes[kind]);
+    const group = context(true, true); group.agent.kind = kind;
+    expect(JSON.stringify(new PromptBuilderService().buildMessages(group))).toContain('faça transferência, etiqueta e skills antes da resposta ou na mesma chamada');
+  }
+});
