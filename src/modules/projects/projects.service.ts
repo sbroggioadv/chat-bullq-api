@@ -38,6 +38,12 @@ function emptyToNull(v: string | undefined): string | null | undefined {
   return t.length ? t : null;
 }
 
+function validateKind(metadata?: Record<string, unknown>) {
+  if (metadata && 'kind' in metadata && metadata.kind !== 'PROJECT' && metadata.kind !== 'MENTORSHIP') {
+    throw new BadRequestException('Tipo de projeto inválido');
+  }
+}
+
 @Injectable()
 export class ProjectsService {
   constructor(
@@ -58,6 +64,7 @@ export class ProjectsService {
       responsibleUserId: responsible ? p.responsibleUserId : null,
       responsible,
       status: p.status ?? 'TODO',
+      kind: (p.metadata as Record<string, unknown> | null)?.kind === 'MENTORSHIP' ? 'MENTORSHIP' : 'PROJECT',
       metadata: (p.metadata as Record<string, unknown>) ?? {},
       exists: true,
       conversationIds: p.conversations.filter((c) => c.conversation.organizationId === p.organizationId).map((c) => c.conversationId),
@@ -146,6 +153,7 @@ export class ProjectsService {
   }
 
   async update(organizationId: string, id: string, dto: UpdateProjectDto) {
+    validateKind(dto.metadata);
     await this.getById(organizationId, id);
     if (dto.responsibleUserId) {
       const member = await this.prisma.userOrganization.findFirst({
@@ -235,6 +243,7 @@ export class ProjectsService {
       responsibleUserId: null,
       responsible: null,
       status: 'TODO',
+      kind: 'PROJECT',
       metadata: {},
       exists: false,
       conversationIds: [] as string[],
@@ -249,6 +258,7 @@ export class ProjectsService {
     conversationId: string,
     dto: UpdateProjectDto,
   ) {
+    validateKind(dto.metadata);
     const current = await this.getForConversation(organizationId, conversationId);
     if (current.exists && current.id) {
       return this.update(organizationId, current.id, dto);

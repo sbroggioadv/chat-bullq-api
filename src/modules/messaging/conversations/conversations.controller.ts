@@ -8,6 +8,7 @@ import {
   Body,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags, ApiOperation, ApiQuery } from '@nestjs/swagger';
 import { OrgRole } from '@prisma/client';
@@ -78,7 +79,12 @@ export class ConversationsController {
     @Query('hoppeId') hoppeId?: string,
     @Query('responsibleUserId') responsibleUserId?: string,
     @Query('projectStatus') projectStatus?: string,
+    @Query('ids') ids?: string,
   ) {
+    const conversationIds = ids === undefined ? undefined : ids.split(',').map((id) => id.trim());
+    if (conversationIds && (conversationIds.length > 20 || conversationIds.some((id) => !/^c[a-z0-9]{24}$/.test(id)))) {
+      throw new BadRequestException('ids inválidos');
+    }
     const archivedScope =
       archived === 'only' || archived === 'any' ? archived : 'exclude';
     // groups param maps to repository's existing `kind` filter:
@@ -107,6 +113,7 @@ export class ConversationsController {
         hoppeId: hoppeId || undefined,
         responsibleUserId: responsibleUserId || undefined,
         projectStatus: projectStatus || undefined,
+        conversationIds,
       },
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),

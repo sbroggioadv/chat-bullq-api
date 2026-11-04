@@ -120,10 +120,12 @@ export class ConversationsRepository {
       // Match conversations that carry ANY of the requested tags. Includes
       // tags applied directly on the conversation OR on its contact —
       // operators tag both ways and expect the inbox to surface either.
-      where.OR = [
-        ...(where.OR ?? []) as any[],
+      where.AND = [
+        ...((where.AND as Prisma.ConversationWhereInput[] | undefined) ?? []),
+        { OR: [
         { tags: { some: { tagId: { in: filters.tagIds } } } },
         { contact: { tags: { some: { tagId: { in: filters.tagIds } } } } },
+        ] },
       ];
     }
     if (filters.assignedToId) where.assignedToId = filters.assignedToId;
