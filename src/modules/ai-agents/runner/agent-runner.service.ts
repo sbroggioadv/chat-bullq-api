@@ -33,7 +33,7 @@ import {
 import type { SecurityRules } from '../prompts/types';
 import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
-import { sanitizeAssistantText } from './text-guards';
+import { sanitizeAssistantText, sanitizeLabel } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
 import { isConversationalOrchestrator } from './conversational-orchestrator';
 import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
@@ -493,7 +493,7 @@ export class AiAgentRunnerService {
           if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
             if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
-              handBackReason = Array.from(String((result.output as any)?.reason ?? '').replace(/[\[\]［］【】]/g, '').replace(/\s+/gu, ' ').trim()).slice(0, 300).join('');
+              handBackReason = sanitizeLabel(String((result.output as any)?.reason ?? ''), 300);
             }
           }
           if (

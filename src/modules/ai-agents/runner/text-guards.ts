@@ -132,3 +132,9 @@ export function findForbiddenUrlHosts(
   }
   return bad;
 }
+
+/** Limpa rótulos de remetente e motivos antes de inseri-los no contexto. */
+export function sanitizeLabel(input: string, limit: number): string {
+  const cleaned = input.replace(/[\x00-\x1f\x7f-\x9f\u200b\u2028\u2029]/gu, ' ').replace(/[\[\]［］【】〔〕「」<>]/gu, '').replace(/\s+/gu, ' ');
+  return Array.from(cleaned).slice(0, limit).join('').trim();
+}
