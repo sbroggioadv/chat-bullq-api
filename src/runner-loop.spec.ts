@@ -176,7 +176,7 @@ describe('regressões do lote e falhas', () => {
   });
   it('grupo registra erro brando da segunda resposta no lote', async () => {
     const w = world('orq', [batch(reply('Uma.'), reply('Duas.'))]); await run(w, 'orq');
-    expect(w.sent()).toEqual(['Uma.']); expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked', output: expect.objectContaining({ ok: false, error: expect.stringContaining('only in this batch') }) }) }));
+    expect(w.sent()).toEqual(['Uma.']); expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked' }) }));
   });
   it.each([
     ['F2a', 'Vou chamar o especialista.', {}], ['F2c', 'Atendemos das 9h às 18h.', {}],

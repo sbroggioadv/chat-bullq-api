@@ -480,7 +480,6 @@ export class AiAgentRunnerService {
           customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
-          conversation.isGroup ? 'Already replied this turn. Do NOT call replyToConversation again — wait for the customer to react. End the turn now (remaining tag/handBack/transfer calls can run only in this batch).' : undefined,
         );
 
         for (const result of toolResults) {
@@ -749,7 +748,6 @@ export class AiAgentRunnerService {
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
-    duplicateReplyMessage = 'Already replied this turn. Do NOT call replyToConversation again — wait for the customer to react. End the turn now (you may still tag/handBack/transfer if needed).',
   ): Promise<
     Array<{
       toolCallId: string;
@@ -790,7 +788,8 @@ export class AiAgentRunnerService {
         );
         const blockedOutput = {
           ok: false,
-          error: duplicateReplyMessage,
+          error:
+            'Already replied this turn. Do NOT call replyToConversation again — wait for the customer to react. End the turn now (you may still tag/handBack/transfer if needed).',
         };
         results.push({
           toolCallId: call.id,
