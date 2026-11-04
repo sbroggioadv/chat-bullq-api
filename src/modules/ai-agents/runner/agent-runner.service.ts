@@ -68,6 +68,7 @@ interface RunInput {
   contextNote?: string;
   persistActiveAgent?: boolean;
   expectedLatestMessageId?: string;
+  checkRunIds?: string[];
   waitForChain?: boolean;
 }
 
@@ -107,6 +108,7 @@ export class AiAgentRunnerService {
     contextNote,
     persistActiveAgent = true,
     expectedLatestMessageId,
+    checkRunIds = [],
     waitForChain = false,
   }: RunInput): Promise<void> {
     // Fase 2: usa o agentRouter (com IntentClassifier) pra escolher o agent.
@@ -122,13 +124,17 @@ export class AiAgentRunnerService {
         [],
       );
     }
-    const agent = forcedAgentId
+    let agent = forcedAgentId
       ? await this.prisma.aiAgent.findFirst({ where: { id: forcedAgentId, organizationId: conversation.organizationId, isActive: true, deletedAt: null, ...(expectedLatestMessageId ? {} : { kind: 'ORCHESTRATOR' }) } })
       : selection
       ? await this.prisma.aiAgent.findFirst({
           where: { id: selection.agentId, isActive: true, deletedAt: null },
         })
       : await this.resolveAgent(conversation);
+    if (!agent && forcedAgentId && expectedLatestMessageId) {
+      const link = await this.prisma.aiAgentChannel.findFirst({ where: { channelId: conversation.channelId, mode: 'AUTONOMOUS', agent: { organizationId: conversation.organizationId, kind: 'ORCHESTRATOR', isActive: true, deletedAt: null } }, include: { agent: true }, orderBy: { createdAt: 'asc' } });
+      agent = link && isConversationalOrchestrator(link.agent) ? link.agent : null;
+    }
     if (!agent) {
       this.logger.debug(
         `No agent resolved for conv ${conversation.id} — skipping run`,
@@ -470,6 +476,7 @@ export class AiAgentRunnerService {
             runId: run.id,
             triggerMessageId: triggerMessage.id,
             expectedLatestMessageId,
+            ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
           },
           customSkillsByName,
           replyAlreadySuccessful,
@@ -499,7 +506,8 @@ export class AiAgentRunnerService {
         // stop the loop even if the model would have wanted another turn.
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
-          finalAction === AiFinalAction.CLOSED_CONVERSATION
+          finalAction === AiFinalAction.CLOSED_CONVERSATION ||
+          (!!expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK)
         ) {
           break;
         }
@@ -589,8 +597,8 @@ export class AiAgentRunnerService {
         const refreshed = await this.prisma.conversation.findUnique({
           where: { id: conversation.id },
         });
-        const handBackAgent = refreshed && finalAction === AiFinalAction.HANDED_BACK ? await this.resolveAgent(refreshed) : null;
-        if (refreshed && ((finalAction === AiFinalAction.DELEGATED && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) || (finalAction === AiFinalAction.HANDED_BACK && !refreshed.activeAgentId && handBackAgent && isConversationalOrchestrator(handBackAgent)))) {
+        const handBackAgent = refreshed && finalAction === AiFinalAction.HANDED_BACK ? await this.resolveAgent(expectedLatestMessageId ? { ...refreshed, activeAgentId: null } : refreshed) : null;
+        if (refreshed && ((finalAction === AiFinalAction.DELEGATED && refreshed.activeAgentId && refreshed.activeAgentId !== agent.id) || (finalAction === AiFinalAction.HANDED_BACK && (!refreshed.activeAgentId || !!expectedLatestMessageId) && handBackAgent && (!expectedLatestMessageId || handBackAgent.id !== agent.id) && isConversationalOrchestrator(handBackAgent)))) {
           this.logger.log(
             `Auto-chaining run for new active agent ${refreshed.activeAgentId ?? handBackAgent?.id} on conv ${conversation.id} (depth ${chainDepth + 1})`,
           );
@@ -600,6 +608,8 @@ export class AiAgentRunnerService {
             conversation: refreshed,
             triggerMessage,
             chainDepth: chainDepth + 1,
+            ...(expectedLatestMessageId && finalAction === AiFinalAction.HANDED_BACK ? { forcedAgentId: handBackAgent!.id } : {}),
+            ...(expectedLatestMessageId ? { checkRunIds: [...checkRunIds, run.id] } : {}),
             persistActiveAgent,
             expectedLatestMessageId,
             waitForChain,

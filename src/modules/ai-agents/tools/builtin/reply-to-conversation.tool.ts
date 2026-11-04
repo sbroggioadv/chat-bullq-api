@@ -143,8 +143,13 @@ export class ReplyToConversationTool implements AiTool {
     }
 
     if (ctx.expectedLatestMessageId) {
-      const latest = await this.prisma.message.findFirst({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
-      if (!latest || latest.id !== ctx.expectedLatestMessageId || latest.revokedAt) return { output: { ok: false, error: 'stale_group_check' } };
+      const messages = await this.prisma.message.findMany({ where: { conversationId: ctx.conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
+      const expectedIndex = messages.findIndex((message) => message.id === ctx.expectedLatestMessageId);
+      const stale = expectedIndex < 0 || messages[expectedIndex].revokedAt || messages.slice(0, expectedIndex).some((message) => {
+        const metadata = message.metadata as { runId?: string } | null;
+        return message.direction !== 'OUTBOUND' || !metadata?.runId || !ctx.checkRunIds?.includes(metadata.runId);
+      });
+      if (stale) return { output: { ok: false, error: 'stale_group_check' } };
     }
 
     const message = await this.prisma.message.create({

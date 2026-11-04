@@ -616,7 +616,14 @@ export class InboundMessageProcessor extends WorkerHost {
    *    schedule another debounced run on the latest message
    */
   private async fireAgentRun(conversationId: string): Promise<void> {
-    if (this.groupNoReply) return this.groupNoReply.runGuarded(conversationId, () => this.fireAgentRunGuarded(conversationId));
+    if (this.groupNoReply) {
+      if (this.running.has(conversationId)) { this.followupNeeded.add(conversationId); return; }
+      this.running.add(conversationId);
+      return this.groupNoReply.runGuarded(conversationId, () => {
+        this.running.delete(conversationId);
+        return this.fireAgentRunGuarded(conversationId);
+      });
+    }
     return this.fireAgentRunGuarded(conversationId);
   }
 

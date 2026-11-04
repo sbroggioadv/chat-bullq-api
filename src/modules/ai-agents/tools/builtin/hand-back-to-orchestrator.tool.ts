@@ -41,7 +41,7 @@ export class HandBackToOrchestratorTool implements AiTool {
     ctx: ToolContext,
   ): Promise<ToolResult> {
     if (ctx.expectedLatestMessageId) {
-      return { output: { ok: false, error: 'group_check_cannot_hand_back', message: 'Nesta checagem, mantenha o agente ativo; responda se puder ajudar ou encerre sem ação.' } };
+      return { output: { ok: true, message: 'Consulta ao orquestrador solicitada.' }, finalAction: 'HANDED_BACK' };
     }
     const reason = String(input.reason ?? '').trim();
 
@@ -87,7 +87,7 @@ export class HandBackToOrchestratorTool implements AiTool {
       output: {
         ok: true,
         message:
-          'Devolvido ao orquestrador. O orquestrador conversacional pode continuar nesta mesma vez.',
+          'Devolvido ao orquestrador.',
       },
       finalAction: 'HANDED_BACK',
     };

@@ -15,6 +15,7 @@ export interface ToolContext {
   /** ID of the inbound message that triggered the run. */
   triggerMessageId?: string;
   expectedLatestMessageId?: string;
+  checkRunIds?: string[];
 }
 
 export interface ToolResult {

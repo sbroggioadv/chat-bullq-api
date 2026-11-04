@@ -490,7 +490,7 @@ export class PromptBuilderService {
         m.direction === 'INBOUND' ? 'user' : 'assistant';
       const parts = this.extractContentParts(m, ctx.mediaUrls, role);
       if (ctx.conversation.isGroup && role === 'user' && m.senderName && parts.length) {
-        const prefix = `[${m.senderName.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 40).trim()}]: `;
+        const prefix = `[${Array.from(m.senderName.replace(/[\[\]]/g, '').replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')).slice(0, 40).join('').trim() || 'Membro'}]: `;
         const first = parts[0];
         if (first.type === 'text') first.text = prefix + first.text;
         else parts.unshift({ type: 'text', text: prefix });
@@ -534,7 +534,7 @@ export class PromptBuilderService {
         'user',
       );
       if (ctx.conversation.isGroup && ctx.triggerMessage.senderName && triggerParts.length) {
-        const prefix = `[${ctx.triggerMessage.senderName.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').slice(0, 40).trim()}]: `;
+        const prefix = `[${Array.from(ctx.triggerMessage.senderName.replace(/[\[\]]/g, '').replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, ' ')).slice(0, 40).join('').trim() || 'Membro'}]: `;
         const first = triggerParts[0];
         if (first.type === 'text') first.text = prefix + first.text;
         else triggerParts.unshift({ type: 'text', text: prefix });
