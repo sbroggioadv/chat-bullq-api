@@ -119,10 +119,13 @@ describe('F3 resposta de grupo', () => {
     expect(w.runAgents()).toEqual(['orq']);
     expect(w.prisma.aiAgentHandoff.create).not.toHaveBeenCalled();
   });
-  it('individual permite duas respostas em rodadas sucessivas', async () => {
+  it('individual bloqueia segunda resposta com erro brando', async () => {
     const w = world('orq', [call('replyToConversation', { text: 'Primeira resposta.' }), call('replyToConversation', { text: 'Segunda resposta.' }), stop], [], false);
     await run(w, 'orq');
-    expect(w.sent()).toEqual(['Primeira resposta.', 'Segunda resposta.']);
+    expect(w.sent()).toEqual(['Primeira resposta.']);
+    expect(w.complete).toHaveBeenCalledTimes(3);
+    expect(w.seen[2]).toContain('Already replied this turn.');
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'duplicate-reply-blocked', output: expect.objectContaining({ ok: false, error: expect.stringContaining('Already replied this turn.') }) }) }));
   });
   it('grupo não executa delegação que acompanha resposta no mesmo lote', async () => {
     const w = world('orq', [{ message: { content: '', toolCalls: [

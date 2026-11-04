@@ -324,7 +324,14 @@ export class AiAgentRunnerService {
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
     let conversationalNudgeUsed = false;
-    // Track replies for hand-back chaining and final-action precedence.
+    // Hard cap of 1 successful replyToConversation per run. The system
+    // prompt encourages "uma ideia por mensagem" + multi-step consultative
+    // selling, but the runner used to fire every reply back-to-back in
+    // the same turn — customers saw 2 bubbles with redundant CTAs ("quer
+    // o link?" repeated). We now let the LLM emit one reply, then any
+    // subsequent replyToConversation gets a soft error so the model
+    // tags / hands off / ends. Other tools (tag, handBack, transfer)
+    // still run normally.
     let replyAlreadySuccessful = false;
     let handBackReason = '';
     const toolContext: ToolContext = {
@@ -759,7 +766,10 @@ export class AiAgentRunnerService {
       output: unknown;
       finalAction?: string;
     }> = [];
-    // Track group replies across calls in the batch and across iterations.
+    // Tracks whether THIS batch already produced a successful reply.
+    // Combined with the cross-iteration flag, it lets us block the very
+    // first dup even when the model emits two replyToConversation calls
+    // in a single tool_use response.
     let repliedInThisBatch = false;
 
     for (const call of calls) {
@@ -768,10 +778,13 @@ export class AiAgentRunnerService {
       let errorMessage: string | undefined;
       let finalAction: string | undefined;
 
-      // Group runs allow only one successful reply. Individual runs may
-      // send more than one message in the same turn.
+      // Guard: only one successful replyToConversation per run. The LLM
+      // sometimes "thinks aloud" by emitting 2 replies in sequence —
+      // customer ends up with duplicate CTAs ("posso te mandar o link?"
+      // twice). We let the model see a soft error and gracefully end
+      // the turn (it usually pivots to tagConversation or stops).
       if (
-        isGroup && call.name === 'replyToConversation' &&
+        call.name === 'replyToConversation' &&
         (alreadyRepliedFromPriorIteration || repliedInThisBatch)
       ) {
         this.logger.warn(
