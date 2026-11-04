@@ -10,7 +10,7 @@ describe('SPEC-021 R2', () => {
     };
     const service = new ProjectsService(prisma, {} as any);
     jest.spyOn(service, 'toDetail').mockReturnValue({} as any);
-    await service.getForConversation('org', 'c');
+    await service.getForConversation('org', 'c', 'ALL');
     expect(upsert).toHaveBeenCalledWith({ where: { uq_project_conversation: { projectId: 'p', conversationId: 'c' } }, create: { projectId: 'p', conversationId: 'c' }, update: {} });
   });
   it('não varre todas as conversas para projectKind', async () => {
@@ -45,11 +45,11 @@ describe('SPEC-021 R2', () => {
     const service = new ProjectsService(prisma, {} as any);
     jest.spyOn(service, 'toDetail').mockReturnValue({ id: 'p', exists: true } as any);
     jest.spyOn(service, 'getById').mockResolvedValue({ id: 'p', exists: true } as any);
-    await service.getForConversation('org', 'c');
+    await service.getForConversation('org', 'c', 'ALL');
     expect(linked).toBe(true);
     await (service.removeForConversation as any).call(service, 'org', 'c', undefined, 'ALL');
     expect(jid).toBeNull();
-    expect((await service.getForConversation('org', 'c')).exists).toBe(false);
+    expect((await service.getForConversation('org', 'c', 'ALL')).exists).toBe(false);
     expect(prisma.projectConversation.upsert).toHaveBeenCalledTimes(1);
   });
   it('nega remoção sem acesso ao canal antes de qualquer escrita', async () => {

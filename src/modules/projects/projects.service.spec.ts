@@ -182,7 +182,7 @@ describe('ProjectsService (dossiê)', () => {
   });
 
   it('conversa sem vínculo não vira projeto automático', async () => {
-    const found = await svc.getForConversation('org1', 'conv-new');
+    const found = await svc.getForConversation('org1', 'conv-new', 'ALL');
     expect(found.exists).toBe(false);
     expect(found.id).toBeNull();
   });
@@ -191,7 +191,7 @@ describe('ProjectsService (dossiê)', () => {
     const saved = await svc.updateForConversation('org1', 'conv1', {
       name: 'Dossiê do chat',
       status: 'WAITING_DOCS',
-    });
+    }, 'ALL');
     expect(saved.exists).toBe(true);
     expect(saved.name).toBe('Dossiê do chat');
     expect(saved.status).toBe('WAITING_DOCS');

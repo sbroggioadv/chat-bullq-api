@@ -12,7 +12,7 @@ describe('project conversation organization boundary', () => {
   it('rejects foreign conversation ids before looking up project links', async () => {
     const prisma = { conversation: { findFirst: jest.fn().mockResolvedValue(null) }, projectConversation: { findFirst: jest.fn().mockResolvedValue(null) } };
     const service = new ProjectsService(prisma as any, {} as any);
-    await expect(service.getForConversation('org-a', 'conv-b')).rejects.toThrow(NotFoundException);
+    await expect(service.getForConversation('org-a', 'conv-b', 'ALL')).rejects.toThrow(NotFoundException);
     expect(prisma.projectConversation.findFirst).not.toHaveBeenCalled();
   });
 
@@ -22,7 +22,7 @@ describe('project conversation organization boundary', () => {
       projectConversation: { findFirst: jest.fn().mockResolvedValue(null) },
     };
     const service = new ProjectsService(prisma as any, {} as any);
-    await expect(service.getForConversation('org-a', 'conv-a')).resolves.toMatchObject({ exists: false });
+    await expect(service.getForConversation('org-a', 'conv-a', 'ALL')).resolves.toMatchObject({ exists: false });
   });
 });
 

@@ -70,8 +70,9 @@ export class ProjectsController {
   getByConversation(
     @Param('conversationId') conversationId: string,
     @CurrentOrg('id') orgId: string,
+    @CurrentChannelAccess() access?: ChannelAccess,
   ) {
-    return this.service.getForConversation(orgId, conversationId);
+    return this.service.getForConversation(orgId, conversationId, access);
   }
 
   @Put('by-conversation/:conversationId')
@@ -82,8 +83,9 @@ export class ProjectsController {
     @Param('conversationId') conversationId: string,
     @CurrentOrg('id') orgId: string,
     @Body() dto: UpdateProjectDto,
+    @CurrentChannelAccess() access?: ChannelAccess,
   ) {
-    return this.service.updateForConversation(orgId, conversationId, dto);
+    return this.service.updateForConversation(orgId, conversationId, dto, access);
   }
 
   @Delete('by-conversation/:conversationId')

@@ -48,7 +48,7 @@ describe('SPEC-021 project flows', () => {
     expect(project.deletedAt).toBeNull();
     expect(links).toEqual([{ projectId: 'p', conversationId: 'other' }, { projectId: 'another', conversationId: 'group1' }]);
     jest.spyOn(service, 'getById').mockImplementation(async (_org, id) => ({ id, exists: true } as any));
-    expect(await service.getForConversation('org', 'group1')).toMatchObject({ id: 'another', exists: true });
+    expect(await service.getForConversation('org', 'group1', 'ALL')).toMatchObject({ id: 'another', exists: true });
     tx.projectConversation.findMany.mockImplementation(async () => links.map(l => ({ ...l, conversation: { channelId: 'ch1' }, project: { id: l.projectId, kind: 'PROJECT' } })));
     tx.project.findMany = jest.fn().mockResolvedValue([]);
     jest.spyOn(service, 'toDetail').mockImplementation((p: any) => p);
@@ -64,8 +64,8 @@ describe('SPEC-021 project flows', () => {
     for (const role of ['AGENT', 'ADMIN', 'OWNER']) {
       expect(guard.canActivate({ getHandler: () => controller.updateByConversation, getClass: () => ProjectsController, switchToHttp: () => ({ getRequest: () => ({ organization: { userRole: role } }) }) } as any)).toBe(true);
     }
-    await controller.updateByConversation('conversation', 'org', { name: 'Synthetic', metadata: { kind: 'MENTORSHIP' } });
-    expect(service.updateForConversation).toHaveBeenCalledWith('org', 'conversation', { name: 'Synthetic', metadata: { kind: 'MENTORSHIP' } });
+    await controller.updateByConversation('conversation', 'org', { name: 'Synthetic', metadata: { kind: 'MENTORSHIP' } }, 'ALL');
+    expect(service.updateForConversation).toHaveBeenCalledWith('org', 'conversation', { name: 'Synthetic', metadata: { kind: 'MENTORSHIP' } }, 'ALL');
   });
 
   it('soft deletes an empty project after unlinking an individual', async () => {

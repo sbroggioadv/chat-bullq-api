@@ -206,7 +206,7 @@ export class ProjectsService {
     return this.getById(organizationId, id);
   }
 
-  async getForConversation(organizationId: string, conversationId: string) {
+  async getForConversation(organizationId: string, conversationId: string, access: 'ALL' | Set<string> = new Set()) {
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, organizationId, deletedAt: null },
       select: {
@@ -218,6 +218,7 @@ export class ProjectsService {
       },
     });
     if (!conv) throw new NotFoundException('Conversa não encontrada');
+    if (access !== 'ALL' && !access.has(conv.channelId)) throw new ForbiddenException('You do not have access to this channel');
     const linked = await this.prisma.projectConversation.findFirst({
       where: {
         conversationId,
@@ -267,9 +268,10 @@ export class ProjectsService {
     organizationId: string,
     conversationId: string,
     dto: UpdateProjectDto,
+    access: 'ALL' | Set<string> = new Set(),
   ) {
     validateKind(dto.metadata);
-    const current = await this.getForConversation(organizationId, conversationId);
+    const current = await this.getForConversation(organizationId, conversationId, access);
     if (current.exists && current.id) {
       return this.update(organizationId, current.id, dto);
     }
