@@ -8,25 +8,26 @@ const suite = url ? describe : describe.skip;
 suite('SPEC-021: concorrência no PostgreSQL descartável', () => {
   let db: PrismaClient;
   let service: UsersService;
-  const ids = Array.from({ length: 22 }, (_, i) => `synthetic-c${i}`);
+  const run = `synthetic-${process.pid}-${Date.now()}`;
+  const ids = Array.from({ length: 22 }, (_, i) => `${run}-c${i}`);
   beforeAll(async () => {
     const target = new URL(url!);
     if (!['127.0.0.1', 'localhost'].includes(target.hostname) || target.pathname !== '/spec021') throw new Error('Use apenas banco local descartável spec021');
     db = new PrismaClient({ datasources: { db: { url } } });
-    await db.organization.create({ data: { id: 'synthetic-org', name: 'Synthetic', slug: 'synthetic-org' } });
-    await db.user.create({ data: { id: 'synthetic-user', name: 'Synthetic', email: 'synthetic@example.test', password: 'synthetic' } });
-    await db.userOrganization.create({ data: { id: 'synthetic-membership', userId: 'synthetic-user', organizationId: 'synthetic-org' } });
-    await db.channel.create({ data: { id: 'synthetic-channel', organizationId: 'synthetic-org', name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
-    await db.contact.create({ data: { id: 'synthetic-contact', organizationId: 'synthetic-org' } });
-    for (const id of ids) await db.conversation.create({ data: { id, organizationId: 'synthetic-org', channelId: 'synthetic-channel', contactId: 'synthetic-contact' } });
+    await db.organization.create({ data: { id: `${run}-org`, name: 'Synthetic', slug: `${run}-org` } });
+    await db.user.create({ data: { id: `${run}-user`, name: 'Synthetic', email: `${run}@example.test`, password: 'synthetic' } });
+    await db.userOrganization.create({ data: { id: `${run}-membership`, userId: `${run}-user`, organizationId: `${run}-org` } });
+    await db.channel.create({ data: { id: `${run}-channel`, organizationId: `${run}-org`, name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
+    await db.contact.create({ data: { id: `${run}-contact`, organizationId: `${run}-org` } });
+    for (const id of ids) await db.conversation.create({ data: { id, organizationId: `${run}-org`, channelId: `${run}-channel`, contactId: `${run}-contact` } });
     service = new UsersService(db as any, new ChannelAccessService(db as any));
   });
   beforeEach(async () => {
-    await db.userOrganization.update({ where: { id: 'synthetic-membership' }, data: { preferences: {} } });
+    await db.userOrganization.update({ where: { id: `${run}-membership` }, data: { preferences: {} } });
   });
   afterAll(async () => { await db?.$disconnect(); });
-  const pin = (id: string) => service.setPinned('synthetic-user', 'synthetic-org', id, true, 'ALL');
-  const prefs = () => service.getPreferences('synthetic-user', 'synthetic-org') as Promise<any>;
+  const pin = (id: string) => service.setPinned(`${run}-user`, `${run}-org`, id, true, 'ALL');
+  const prefs = () => service.getPreferences(`${run}-user`, `${run}-org`) as Promise<any>;
   it('mantém duas fixações concorrentes', async () => {
     await Promise.all([pin(ids[0]), pin(ids[1])]);
     expect((await prefs()).pinnedConversations.map((p: any) => p.id).sort()).toEqual(ids.slice(0, 2).sort());
@@ -38,7 +39,7 @@ suite('SPEC-021: concorrência no PostgreSQL descartável', () => {
   });
   it('PATCH concorrente preserva as fixadas', async () => {
     await pin(ids[0]);
-    await Promise.all([pin(ids[1]), service.updatePreferences('synthetic-user', 'synthetic-org', { inbox: { scope: 'MINE' }, pinnedConversations: [] })]);
+    await Promise.all([pin(ids[1]), service.updatePreferences(`${run}-user`, `${run}-org`, { inbox: { scope: 'MINE' }, pinnedConversations: [] })]);
     const result = await prefs();
     expect(result.inbox).toEqual({ scope: 'MINE' });
     expect(result.pinnedConversations.map((p: any) => p.id).sort()).toEqual(ids.slice(0, 2).sort());
@@ -54,19 +55,19 @@ suite('SPEC-021: concorrência no PostgreSQL descartável', () => {
     await db.conversation.update({ where: { id: ids[0] }, data: { deletedAt: null } });
   });
   it('poda entradas de outra organização e de canal sem acesso', async () => {
-    await db.organization.create({ data: { id: 'synthetic-other-org', name: 'Synthetic', slug: 'synthetic-other-org' } });
-    await db.channel.create({ data: { id: 'synthetic-other-channel', organizationId: 'synthetic-org', name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
-    await db.channel.create({ data: { id: 'synthetic-foreign-channel', organizationId: 'synthetic-other-org', name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
-    await db.contact.create({ data: { id: 'synthetic-foreign-contact', organizationId: 'synthetic-other-org' } });
-    await db.conversation.create({ data: { id: 'synthetic-denied', organizationId: 'synthetic-org', channelId: 'synthetic-other-channel', contactId: 'synthetic-contact' } });
-    await db.conversation.create({ data: { id: 'synthetic-foreign', organizationId: 'synthetic-other-org', channelId: 'synthetic-foreign-channel', contactId: 'synthetic-foreign-contact' } });
-    const pins = [...ids.slice(0, 18), 'synthetic-denied', 'synthetic-foreign'].map(id => ({ id, pinnedAt: '2026-01-01T00:00:00.000Z' }));
-    await db.userOrganization.update({ where: { id: 'synthetic-membership' }, data: { preferences: { pinnedConversations: pins } } });
-    await service.setPinned('synthetic-user', 'synthetic-org', ids[20], true, new Set(['synthetic-channel']));
+    await db.organization.create({ data: { id: `${run}-other-org`, name: 'Synthetic', slug: `${run}-other-org` } });
+    await db.channel.create({ data: { id: `${run}-other-channel`, organizationId: `${run}-org`, name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
+    await db.channel.create({ data: { id: `${run}-foreign-channel`, organizationId: `${run}-other-org`, name: 'Synthetic', type: 'WHATSAPP_ZAPPFY', config: {} } });
+    await db.contact.create({ data: { id: `${run}-foreign-contact`, organizationId: `${run}-other-org` } });
+    await db.conversation.create({ data: { id: `${run}-denied`, organizationId: `${run}-org`, channelId: `${run}-other-channel`, contactId: `${run}-contact` } });
+    await db.conversation.create({ data: { id: `${run}-foreign`, organizationId: `${run}-other-org`, channelId: `${run}-foreign-channel`, contactId: `${run}-foreign-contact` } });
+    const pins = [...ids.slice(0, 18), `${run}-denied`, `${run}-foreign`].map(id => ({ id, pinnedAt: '2026-01-01T00:00:00.000Z' }));
+    await db.userOrganization.update({ where: { id: `${run}-membership` }, data: { preferences: { pinnedConversations: pins } } });
+    await service.setPinned(`${run}-user`, `${run}-org`, ids[20], true, new Set([`${run}-channel`]));
     const result = (await prefs()).pinnedConversations.map((p: any) => p.id);
     expect(result).toHaveLength(19);
-    expect(result).not.toContain('synthetic-denied');
-    expect(result).not.toContain('synthetic-foreign');
+    expect(result).not.toContain(`${run}-denied`);
+    expect(result).not.toContain(`${run}-foreign`);
     expect(result).toContain(ids[20]);
   });
 

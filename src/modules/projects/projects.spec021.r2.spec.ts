@@ -29,6 +29,7 @@ describe('SPEC-021 R2', () => {
     const conv = { id: 'c', isGroup: true, channelId: 'ch', contact: { channels: [{ channelId: 'ch', externalId: '1@g.us' }] } };
     const prisma: any = {
       conversation: { findFirst: jest.fn().mockResolvedValue(conv), findMany: jest.fn().mockResolvedValue([conv]) },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 'c', channelId: 'ch', jid: '1@g.us' }]),
       projectConversation: {
         findFirst: jest.fn(async () => linked ? { projectId: 'p' } : null),
         upsert: jest.fn(async () => { linked = true; }),

@@ -30,6 +30,7 @@ describe('SPEC-021 project flows', () => {
     const project: any = { id: 'p', groupJid: '1@g.us', deletedAt: null };
     let links = [{ projectId: 'p', conversationId: 'group1' }, { projectId: 'p', conversationId: 'other' }, { projectId: 'another', conversationId: 'group1' }];
     const tx: any = {
+      $queryRaw: jest.fn().mockResolvedValue(conversations.filter(c => c.contact.channels[0].externalId === '1@g.us').map(c => ({ id: c.id, channelId: c.channelId, jid: '1@g.us' }))),
       conversation: { findFirst: jest.fn(async () => conversations[0]), findMany: jest.fn(async () => conversations) },
       projectConversation: {
         findFirst: jest.fn(async ({ where }: any) => links.find(l => l.conversationId === where.conversationId && (!where.projectId || l.projectId === where.projectId))),

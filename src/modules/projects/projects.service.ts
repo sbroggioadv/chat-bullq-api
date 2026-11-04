@@ -45,6 +45,17 @@ function validateKind(metadata?: Record<string, unknown>) {
   }
 }
 
+async function findGroupsByJids(db: Prisma.TransactionClient, organizationId: string, jids: string[]) {
+  if (!jids.length) return [];
+  return db.$queryRaw<{ id: string; channelId: string; jid: string }[]>`
+    SELECT c.id, c.channel_id AS "channelId", cc.external_id AS jid
+    FROM conversations c JOIN contact_channels cc
+      ON cc.contact_id = c.contact_id AND cc.channel_id = c.channel_id
+    WHERE c.organization_id = ${organizationId} AND c.deleted_at IS NULL AND c.is_group = true
+      AND cc.external_id IN (${Prisma.join(jids)})
+      AND cc.channel_id IN (SELECT id FROM channels WHERE organization_id = ${organizationId})`;
+}
+
 @Injectable()
 export class ProjectsService {
   constructor(
@@ -297,11 +308,8 @@ export class ProjectsService {
       if (!project) throw new NotFoundException('Projeto não encontrado');
       let ids = [conversationId];
       if (jid) {
-        const candidates = await tx.conversation.findMany({
-          where: { organizationId, deletedAt: null, isGroup: true },
-          select: { id: true, channelId: true, contact: { select: { channels: { select: { channelId: true, externalId: true } } } } },
-        });
-        ids = candidates.filter(c => deriveGroupJid(c) === jid).map(c => c.id);
+        const candidates = await findGroupsByJids(tx, organizationId, [jid]);
+        ids = candidates.map(c => c.id);
       }
       const existing = await tx.projectConversation.findMany({ where: { projectId: targetId, conversationId: { in: ids } }, select: { conversationId: true } });
       const removed = project.groupJid === jid && jid ? ids.length : existing.length;
@@ -398,12 +406,7 @@ export class ProjectsService {
       const legacy = new Map<string, ReturnType<ProjectsService['toDetail']>>();
       for (const project of projects) if (project.groupJid && !legacy.has(project.groupJid)) legacy.set(project.groupJid, this.toDetail(project));
       const jids = [...legacy.keys()];
-      const groups = jids.length ? await this.prisma.$queryRaw<{ id: string; channelId: string; jid: string }[]>`
-        SELECT c.id, c.channel_id AS "channelId", cc.external_id AS jid
-        FROM conversations c JOIN contact_channels cc
-          ON cc.contact_id = c.contact_id AND cc.channel_id = c.channel_id
-        WHERE c.organization_id = ${organizationId} AND c.deleted_at IS NULL AND c.is_group = true
-          AND cc.external_id IN (${Prisma.join(jids)})` : [];
+      const groups = await findGroupsByJids(this.prisma, organizationId, jids);
       for (const group of groups) {
         const project = legacy.get(group.jid);
         if (project && !linked.has(group.id)) linked.set(group.id, { project, channelId: group.channelId });
