@@ -1,18 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { NotificationType } from '@prisma/client';
+import { z } from 'zod';
+import { PrismaService } from '../../../../database/prisma.service';
+import { GroupNotifyService } from '../client-ops/group-notify.service';
+import { NotificationsService } from '../../../notifications/notifications.service';
 import { RealtimeGateway } from '../../../realtime/realtime.gateway';
 import { PendingActionService } from '../../confirmations/pending-action.service';
 import { AiTool, ToolContext, ToolResult } from '../tool.types';
 
+const handoffSchema = z.object({
+  notifyGroupJid: z.string().trim().regex(/^[^\s@]+@g\.us$/),
+  assigneeUserId: z.string().trim().min(1),
+  notifyLine: z.string().trim().min(1),
+});
 /**
- * Hands the conversation off to a human. Pauses AI on this conversation
- * (so the agent stops responding), moves status to PENDING (so it shows
- * up in the queue), and clears the active agent.
- *
- * Fase 2: a operação real ficou atrás de aprovação humana. A tool agora
- * cria um `PendingAction` (impact=critical) e devolve `requiresUserAction`
- * pro LLM. Quando aprovada, o executor da fase 2 faz o pause/handoff de
- * verdade. Mantemos a notificação imediata pro operador (via realtime)
- * pra ele revisar a fila de pendências sem demora.
+ * Configured groups pause and assign immediately, notify the internal group and
+ * the assignee. Individual/unconfigured conversations retain the approval path:
+ * PendingAction + realtime notification, with mutation only after approval.
  */
 @Injectable()
 export class TransferToHumanTool implements AiTool {
@@ -45,6 +49,9 @@ export class TransferToHumanTool implements AiTool {
   constructor(
     private readonly realtime: RealtimeGateway,
     private readonly pendingActions: PendingActionService,
+    private readonly prisma: PrismaService,
+    private readonly groupNotify: GroupNotifyService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async execute(
@@ -53,6 +60,9 @@ export class TransferToHumanTool implements AiTool {
   ): Promise<ToolResult> {
     const reason = String(input.reason ?? '').trim() || 'Handoff sem motivo informado';
     const summary = input.summary ? String(input.summary).trim() : null;
+
+    const immediate = await this.configuredGroupHandoff(reason, ctx);
+    if (immediate) return immediate;
 
     const preview = {
       action: `Transferir conversa pro atendimento humano: ${reason}`,
@@ -108,6 +118,73 @@ export class TransferToHumanTool implements AiTool {
       // Mantém o sinal de "saí do loop" — o agent deve parar de responder
       // até o operador decidir. Sem isso o LLM seguiria conversando como
       // se tivesse transferido de fato.
+      finalAction: 'TRANSFERRED_TO_HUMAN',
+    };
+  }
+
+  private async configuredGroupHandoff(reason: string, ctx: ToolContext): Promise<ToolResult | null> {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: ctx.conversationId, organizationId: ctx.organizationId },
+      include: { contact: { select: { name: true } } },
+    });
+    if (!conversation?.isGroup) return null;
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: ctx.organizationId }, select: { settings: true },
+    });
+    const settings = organization?.settings as Record<string, unknown> | null;
+    if (!settings || !Object.prototype.hasOwnProperty.call(settings, 'aiHandoff')) return null;
+    const parsed = handoffSchema.safeParse(settings.aiHandoff);
+    if (!parsed.success) {
+      this.logger.error(`Run ${ctx.runId}: invalid aiHandoff configuration`);
+      return null;
+    }
+    const config = parsed.data;
+    const member = await this.prisma.userOrganization.findFirst({
+      where: { userId: config.assigneeUserId, organizationId: ctx.organizationId }, select: { userId: true },
+    });
+    if (!member) {
+      this.logger.error(`Run ${ctx.runId}: aiHandoff assignee outside organization`);
+      return null;
+    }
+    const updated = await this.prisma.conversation.updateMany({
+      where: { id: ctx.conversationId, organizationId: ctx.organizationId, aiEnabled: { not: false } },
+      data: { aiEnabled: false, assignedToId: config.assigneeUserId, activeAgentId: null },
+    });
+    if (!updated.count) return this.immediateResult({ alreadyTransferred: true });
+    let notified = false;
+    let skipped = false;
+    try {
+      const result = await this.groupNotify.notifyGroupByJid({
+        organizationId: ctx.organizationId, groupJid: config.notifyGroupJid,
+        text: `Chamado da IA\nGrupo: ${conversation.contact.name}\nMotivo: ${reason.slice(0, 300)}\n${config.notifyLine}`,
+        currentConversationId: ctx.conversationId, senderName: 'Equipe',
+      });
+      notified = result.sent;
+      skipped = result.reason === 'skipped_same_conversation';
+      if (!notified && !skipped) this.logger.error(`Run ${ctx.runId}: aiHandoff group notification failed: ${result.reason ?? 'not sent'}`);
+    } catch (err: any) {
+      this.logger.error(`Run ${ctx.runId}: aiHandoff group notification failed: ${err?.message ?? err}`);
+    }
+    try {
+      await this.notifications.notify({
+        recipientId: config.assigneeUserId, organizationId: ctx.organizationId,
+        type: !notified && !skipped ? NotificationType.AI_TOOL_FAILURE : NotificationType.CONVERSATION_ASSIGNED, title: 'Chamado da IA',
+        body: `${!notified && !skipped ? 'O aviso no grupo interno falhou. ' : ''}Conversa pausada e atribuída a você. Grupo: ${conversation.contact.name}. Motivo: ${reason.slice(0, 300)}`,
+        data: { conversationId: ctx.conversationId, runId: ctx.runId, notified },
+      });
+    } catch (err: any) {
+      this.logger.error(`Run ${ctx.runId}: aiHandoff assignee notification failed: ${err?.message ?? err}`);
+    }
+    return this.immediateResult({ notified, ...(skipped ? { reason: 'skipped_same_conversation' } : {}) });
+  }
+
+  private immediateResult(details: Record<string, unknown>): ToolResult {
+    return {
+      output: {
+        ok: true, status: 'transferred', ...details,
+        message: 'Transferência registrada com sucesso. A equipe foi acionada e vai dar continuidade — fluxo padrão, não é erro.',
+        agent_should_say: 'Avise o cliente, com naturalidade, que a equipe foi acionada e vai dar continuidade. Não prometa horário nem prazo de retorno. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.',
+      },
       finalAction: 'TRANSFERRED_TO_HUMAN',
     };
   }

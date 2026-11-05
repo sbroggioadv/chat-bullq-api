@@ -14,15 +14,16 @@ const stop = { message: { content: '' }, stopReason: 'stop', usage };
 const NOTE = 'Ninguém respondeu em 15 minutos; responda só se for um pedido em que você possa ajudar. Cumprimento solto e conversa entre os membros continuam sem resposta.';
 
 function world(activeAgentId: string | null, script: any[], extra: any[] = [], group = true) {
-  const store: any = { activeAgentId, messages: [{ id: 'm', direction: 'INBOUND', type: 'TEXT', content: { text: 'pergunta' }, revokedAt: null }, ...extra] };
+  const store: any = { aiEnabled: null, activeAgentId, messages: [{ id: 'm', direction: 'INBOUND', type: 'TEXT', content: { text: 'pergunta' }, revokedAt: null }, ...extra] };
   let seq = 0;
   const outbound = { add: jest.fn().mockResolvedValue({}) };
   const realtime = { emitToChannel: jest.fn(), emitToConversation: jest.fn() };
-  const conv = () => ({ id: 'c', organizationId: 'o', channelId: 'ch', contactId: 'ct', isGroup: group, activeAgentId: store.activeAgentId });
+  const conv = () => ({ id: 'c', organizationId: 'o', channelId: 'ch', contactId: 'ct', isGroup: group, aiEnabled: store.aiEnabled, activeAgentId: store.activeAgentId });
   const agents = [orq, esp];
   const prisma: any = {
     aiAgent: { findFirst: jest.fn(async ({ where }: any) => agents.find((a) => a.id === where.id) ?? null), findUnique: jest.fn(async ({ where }: any) => ({ name: where.id })) },
-    organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) },
+    organization: { findUniqueOrThrow: jest.fn().mockResolvedValue({}), findUnique: jest.fn(async () => ({ settings: store.settings })) },
+    userOrganization: { findFirst: jest.fn().mockResolvedValue({ userId: 'responsavel' }) },
     channel: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) },
     contact: { findUniqueOrThrow: jest.fn().mockResolvedValue({}) },
     contactChannel: { findFirst: jest.fn().mockResolvedValue({ externalId: 'x' }) },
@@ -40,6 +41,8 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
     aiAgentChannel: { findFirst: jest.fn().mockResolvedValue({ agent: orq }) },
     conversation: {
       update: jest.fn(async ({ data }: any) => { if ('activeAgentId' in data) store.activeAgentId = data.activeAgentId; return {}; }),
+      findFirst: jest.fn(async () => ({ ...conv(), contact: { name: 'Grupo sintético' } })),
+      updateMany: jest.fn(async ({ where, data }: any) => { if (where.aiEnabled && store.aiEnabled === false) return { count: 0 }; Object.assign(store, data); return { count: 1 }; }),
       findUnique: jest.fn(async ({ select }: any) => (select ? { metadata: null, organization: {} } : conv())),
     },
     $transaction: jest.fn(async (ops: any[]) => Promise.all(ops)),
@@ -62,8 +65,10 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   (replyTool as any).execute = async (input: any, ctx: any) => { replyCtx.push({ keys: Object.keys(ctx), json: JSON.stringify(ctx) }); const r = await origReply(input, ctx); replyOut.push(r.output); return r; };
   const pending = { create: jest.fn().mockResolvedValue({ id: 'pending' }) };
   const action = { execute: jest.fn().mockResolvedValue({ output: { ok: true } }) };
+  const groupNotify = { notifyGroupByJid: jest.fn().mockResolvedValue({ sent: true }) };
+  const notifications = { notify: jest.fn().mockResolvedValue({}) };
   const tools: any = {
-    transferToHuman: new TransferToHumanTool(realtime as any, pending as any),
+    transferToHuman: new (TransferToHumanTool as any)(realtime, pending, prisma, groupNotify, notifications),
     tagConversation: action, grantAccess: action, listAvailableAgents: action,
     replyToConversation: replyTool,
     delegateToAgent: new DelegateToAgentTool(prisma, realtime as any, outbound as any),
@@ -71,7 +76,7 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   };
   svc.registry = { has: (n: string) => n in tools, isAllowedForAgent: () => true, get: (n: string) => tools[n] };
   const seen: string[] = [];
-  const w: any = { svc, store, conv, prisma, outbound, seen, replyCtx, replyOut, pending, action, tools };
+  const w: any = { svc, store, conv, prisma, outbound, groupNotify, notifications, seen, replyCtx, replyOut, pending, action, tools };
   const complete = jest.fn(async (args: any) => { seen.push(JSON.stringify(args.messages)); const next = script.shift() ?? stop; return typeof next === 'function' ? next(w) : next; });
   svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete }) };
   w.complete = complete;
@@ -540,4 +545,108 @@ it.each([true, false])('R7 invisíveis somente em grupo são silêncio: %s', asy
   await run(w, 'esp');
   expect(w.sent()).toEqual(group ? [] : [text.trim()]);
   expect(w.runs()).toEqual([group ? 'NO_ACTION' : 'REPLIED']);
+});
+
+const HANDOFF = { notifyGroupJid: 'synthetic@g.us', assigneeUserId: 'responsavel', notifyLine: 'Dr. Fulano, assuma o chamado.' };
+function configured(script: any[], group = true) {
+  const w = world('esp', script, [], group);
+  w.store.settings = { aiHandoff: { ...HANDOFF } };
+  // Use constructor metadata at runtime so pre-change controls exercise the old tool.
+  w.tools.transferToHuman = new (TransferToHumanTool as any)(w.svc.realtime, w.pending, w.prisma, w.groupNotify, w.notifications);
+  return w;
+}
+describe('SPEC-022 pelo runner real', () => {
+  it.each(['ferramenta', 'promessa'])('critério 1/6: %s pausa, atribui, avisa e mantém dono nulo', async (mode) => {
+    const reason = 'Pedido da pessoa';
+    const w = configured(mode === 'ferramenta' ? [call('transferToHuman', { reason }), batch(reply('A equipe foi acionada.'))] : [batch(reply(TEAM_PROMISE))]);
+    await run(w, 'esp');
+    expect(w.pending.create).not.toHaveBeenCalled();
+    expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
+    expect(w.prisma.conversation.updateMany).toHaveBeenCalledWith({ where: { id: 'c', organizationId: 'o', aiEnabled: { not: false } }, data: { aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null } });
+    const expectedReason = mode === 'ferramenta' ? reason : `A IA disse à pessoa que a equipe seria acionada: "${TEAM_PROMISE}"`;
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledWith({ organizationId: 'o', groupJid: HANDOFF.notifyGroupJid, text: `Chamado da IA\nGrupo: Grupo sintético\nMotivo: ${expectedReason.slice(0, 300)}\n${HANDOFF.notifyLine}`, currentConversationId: 'c', senderName: expect.any(String) });
+    expect(w.notifications.notify).toHaveBeenCalledTimes(1);
+    expect(w.notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ recipientId: 'responsavel', organizationId: 'o' }));
+    expect(w.sent()).toEqual([mode === 'ferramenta' ? 'A equipe foi acionada.' : TEAM_PROMISE]);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+    expect(w.complete).toHaveBeenCalledTimes(mode === 'ferramenta' ? 2 : 1);
+    expect(transferRows(w)[0].output).toEqual(expect.objectContaining({ ok: true, notified: true }));
+    expect(transferRows(w)[0].output).not.toHaveProperty('pendingActionId');
+  });
+  it('critério 2: chamadas concorrentes e repetidas avisam uma vez', async () => {
+    const w = configured([]);
+    const ctx = { organizationId: 'o', conversationId: 'c', runId: 'r', agentId: 'esp' };
+    const results = await Promise.all([w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx), w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx)]);
+    await w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx);
+    expect(results.every((r: any) => r.output.ok)).toBe(true);
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
+    expect(w.notifications.notify).toHaveBeenCalledTimes(1);
+  });
+  it.each(['individual', 'sem chave'])('critério 3: mantém pendência em %s', async (mode) => {
+    const w = configured([batch(tc('transferToHuman')), batch(reply('A equipe foi acionada.'))], mode !== 'individual');
+    if (mode === 'sem chave') w.store.settings = {};
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
+    expect(w.prisma.conversation.updateMany).not.toHaveBeenCalled();
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+  });
+  it.each(['retorno', 'exceção'])('critério 4: falha de aviso por %s mantém pausa e notifica falha', async (mode) => {
+    const w = configured([batch(reply(TEAM_PROMISE))]);
+    const logger = (w.tools.transferToHuman as any).logger;
+    jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    if (mode === 'retorno') w.groupNotify.notifyGroupByJid.mockResolvedValue({ sent: false, reason: 'Grupo sem conversa registrada' });
+    else w.groupNotify.notifyGroupByJid.mockRejectedValue(new Error('fila indisponível'));
+    await run(w, 'esp');
+    expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
+    expect(transferRows(w)[0].output).toEqual(expect.objectContaining({ ok: true, notified: false }));
+    expect(logger.error).toHaveBeenCalled();
+    expect(w.notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('falhou') }));
+    expect(w.notifications.notify).toHaveBeenCalledTimes(1);
+  });
+  it.each(['fora da organização', 'incompleta', 'inválida'])('critério 5 e validação: %s volta à pendência', async (mode) => {
+    const w = configured([batch(reply(TEAM_PROMISE))]);
+    if (mode === 'fora da organização') w.prisma.userOrganization.findFirst.mockResolvedValue(null);
+    if (mode === 'incompleta') w.store.settings.aiHandoff = { assigneeUserId: 'responsavel' };
+    if (mode === 'inválida') w.store.settings.aiHandoff.notifyGroupJid = 123;
+    const logger = (w.tools.transferToHuman as any).logger;
+    jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(logger.error).toHaveBeenCalled();
+    expect(w.prisma.conversation.updateMany).not.toHaveBeenCalled();
+  });
+  it('mesmo grupo não gera erro nem notificação de falha', async () => {
+    const w = configured([batch(reply(TEAM_PROMISE))]);
+    w.groupNotify.notifyGroupByJid.mockResolvedValue({ sent: false, reason: 'skipped_same_conversation' });
+    const logger = (w.tools.transferToHuman as any).logger;
+    jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    await run(w, 'esp');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(w.notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ body: expect.not.stringContaining('falhou') }));
+    expect(transferRows(w)[0].output.ok).toBe(true);
+  });
+  it('negativa com configuração não pausa nem avisa', async () => {
+    const w = configured([batch(reply('Não vou acionar a equipe agora.'))]);
+    await run(w, 'esp');
+    expect(w.prisma.conversation.updateMany).not.toHaveBeenCalled();
+    expect(w.groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
+    expect(w.pending.create).not.toHaveBeenCalled();
+  });
+  it('critério 7: pausa bloqueia a rechecagem e mensagem nova pelo gate real', async () => {
+    const { GroupNoReplyProcessor, GroupNoReplyService } = await import('./modules/ai-agents/runner/group-no-reply.service');
+    const { AgentRouterService } = await import('./modules/ai-agents/router/agent-router.service');
+    const w = configured([batch(tc('transferToHuman')), batch(reply('A equipe foi acionada.'))]);
+    await run(w, 'esp');
+    w.prisma.organization.findUnique.mockResolvedValue({ aiPanicMode: false, aiEnabled: true });
+    w.prisma.channel.findUnique = jest.fn().mockResolvedValue({ type: 'WHATSAPP', aiEnabled: true });
+    const router = new AgentRouterService(w.prisma, {} as any, {} as any);
+    const runner = { run: jest.fn() };
+    // Incoming replies change the latest message; restore inbound to test the pause itself.
+    w.store.messages = [w.store.messages[0]];
+    await new GroupNoReplyProcessor(w.prisma, router, runner as any, new GroupNoReplyService({} as any, w.prisma)).process({ data: { conversationId: 'c', messageId: 'm', minutes: 15 } } as any);
+    expect(runner.run).not.toHaveBeenCalled();
+    expect(await router.shouldHandle(w.conv(), { ...w.store.messages[0], id: 'new' })).toEqual(expect.objectContaining({ handle: false }));
+  });
 });
