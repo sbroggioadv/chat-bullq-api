@@ -556,6 +556,18 @@ function configured(script: any[], group = true) {
   return w;
 }
 describe('SPEC-022 pelo runner real', () => {
+  it.each([null, '', '   '])('R8: nome de grupo %p usa fallback nos dois avisos', async (name) => {
+    const w = configured([batch(reply(TEAM_PROMISE))]);
+    w.prisma.conversation.findFirst.mockImplementation(async () => ({ ...w.conv(), contact: { name } }));
+    await run(w, 'esp');
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledWith(expect.objectContaining({ text: expect.stringContaining('Grupo: Grupo sem nome\n') }));
+    expect(w.notifications.notify).toHaveBeenCalledTimes(1);
+    expect(w.notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('Grupo: Grupo sem nome. Motivo:') }));
+    expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
+    expect(w.pending.create).not.toHaveBeenCalled();
+  });
+
   it.each(['ferramenta', 'promessa'])('critério 1/6: %s pausa, atribui, avisa e mantém dono nulo', async (mode) => {
     const reason = 'Pedido da pessoa';
     const w = configured(mode === 'ferramenta' ? [call('transferToHuman', { reason }), batch(reply('A equipe foi acionada.'))] : [batch(reply(TEAM_PROMISE))]);

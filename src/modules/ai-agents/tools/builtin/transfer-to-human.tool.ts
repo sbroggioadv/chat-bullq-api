@@ -151,12 +151,13 @@ export class TransferToHumanTool implements AiTool {
       data: { aiEnabled: false, assignedToId: config.assigneeUserId, activeAgentId: null },
     });
     if (!updated.count) return this.immediateResult({ alreadyTransferred: true });
+    const groupName = conversation.contact.name?.trim() || 'Grupo sem nome';
     let notified = false;
     let skipped = false;
     try {
       const result = await this.groupNotify.notifyGroupByJid({
         organizationId: ctx.organizationId, groupJid: config.notifyGroupJid,
-        text: `Chamado da IA\nGrupo: ${conversation.contact.name}\nMotivo: ${reason.slice(0, 300)}\n${config.notifyLine}`,
+        text: `Chamado da IA\nGrupo: ${groupName}\nMotivo: ${reason.slice(0, 300)}\n${config.notifyLine}`,
         currentConversationId: ctx.conversationId, senderName: 'Equipe',
       });
       notified = result.sent;
@@ -169,7 +170,7 @@ export class TransferToHumanTool implements AiTool {
       await this.notifications.notify({
         recipientId: config.assigneeUserId, organizationId: ctx.organizationId,
         type: !notified && !skipped ? NotificationType.AI_TOOL_FAILURE : NotificationType.CONVERSATION_ASSIGNED, title: 'Chamado da IA',
-        body: `${!notified && !skipped ? 'O aviso no grupo interno falhou. ' : ''}Conversa pausada e atribuída a você. Grupo: ${conversation.contact.name}. Motivo: ${reason.slice(0, 300)}`,
+        body: `${!notified && !skipped ? 'O aviso no grupo interno falhou. ' : ''}Conversa pausada e atribuída a você. Grupo: ${groupName}. Motivo: ${reason.slice(0, 300)}`,
         data: { conversationId: ctx.conversationId, runId: ctx.runId, notified },
       });
     } catch (err: any) {
