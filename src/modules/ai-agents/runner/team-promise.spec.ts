@@ -19,3 +19,18 @@ describe('promisesTeamContact', () => {
     expect(promisesTeamContact(text)).toBe(false);
   });
 });
+
+const table = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'team-promise-r7.json'), 'utf8'));
+it.each(table.promessas)('tabela R7 promessa: %s', (text: string) => expect(promisesTeamContact(text)).toBe(true));
+it.each(table.nao_promessas)('tabela R7 não promessa: %s', (text: string) => expect(promisesTeamContact(text)).toBe(false));
+it('avalia frases separadas e preserva títulos', () => {
+  expect(promisesTeamContact('Posso ajudar? Vou avisar a Dra. Fulana.')).toBe(true);
+  expect(promisesTeamContact('Não vou chamar a equipe. Já avisei o Dr. Fulano.')).toBe(true);
+});
+it.each([
+  'A equipe chamou você.', 'Nossa equipe avisou o Dr. Fulano.',
+  'O time solicitou retorno.', 'Uma advogada pediu contato.',
+  'Os advogados encaminharam seu pedido.', 'A equipe está entrando em contato.',
+  'A equipe vai avisar. Não precisa responder.',
+])('flexões gerais de tempo e sujeito: %s', (text) => expect(promisesTeamContact(text)).toBe(true));
+it.each(['A equipe vai retornar? Me avise.', 'Não é que a Dra. Fulana foi avisada.', 'Pode entrar em contato com a equipe.'])('preserva pergunta e negação: %s', (text) => expect(promisesTeamContact(text)).toBe(false));
