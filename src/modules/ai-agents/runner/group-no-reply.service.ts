@@ -73,6 +73,6 @@ export class GroupNoReplyProcessor extends WorkerHost {
     if (!link || !isConversationalOrchestrator(link.agent) || (decision.scopedAgentIds && !decision.scopedAgentIds.includes(link.agent.id))) return;
     const latest = await this.prisma.message.findFirst({ where: { conversationId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] });
     if (!latest || latest.id !== messageId) return;
-    await this.runner.run({ conversation, triggerMessage: message, forcedAgentId: conversation.activeAgentId || link.agent.id, persistActiveAgent: false, expectedLatestMessageId: messageId, contextNote: `Ninguém respondeu em ${minutes} minutos; responda se puder ajudar.` });
+    await this.runner.run({ conversation, triggerMessage: message, forcedAgentId: conversation.activeAgentId || link.agent.id, persistActiveAgent: false, expectedLatestMessageId: messageId, contextNote: `Ninguém respondeu em ${minutes} minutos; responda só se for um pedido em que você possa ajudar. Cumprimento solto e conversa entre os membros continuam sem resposta.` });
   }
 }

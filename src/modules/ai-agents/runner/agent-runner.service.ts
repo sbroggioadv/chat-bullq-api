@@ -947,7 +947,7 @@ export class AiAgentRunnerService {
         errorMessage = undefined;
         try {
           const customSkill = customSkillsByName.get(call.name);
-          if (allowGroupSilence && call.name === 'replyToConversation' && !String(call.arguments.text ?? '').trim()) {
+          if (allowGroupSilence && call.name === 'replyToConversation' && !String(call.arguments.text ?? '').replace(/[\u200b-\u200d\ufeff]/g, '').trim()) {
             // A normal group turn may deliberately stay silent. The transfer
             // notice turn keeps the tool's existing empty-text failure.
             output = { ok: true, silent: true };

@@ -11,7 +11,7 @@ let callSeq = 0;
 const call = (name: string, args: any) => ({ message: { content: '', toolCalls: [{ id: `${name}-${++callSeq}`, name, arguments: args }] }, stopReason: 'tool_calls', usage });
 const say = (text: string) => ({ message: { content: text }, stopReason: 'stop', usage });
 const stop = { message: { content: '' }, stopReason: 'stop', usage };
-const NOTE = 'Ninguém respondeu em 15 minutos; responda se puder ajudar.';
+const NOTE = 'Ninguém respondeu em 15 minutos; responda só se for um pedido em que você possa ajudar. Cumprimento solto e conversa entre os membros continuam sem resposta.';
 
 function world(activeAgentId: string | null, script: any[], extra: any[] = [], group = true) {
   const store: any = { activeAgentId, messages: [{ id: 'm', direction: 'INBOUND', type: 'TEXT', content: { text: 'pergunta' }, revokedAt: null }, ...extra] };
@@ -519,4 +519,25 @@ describe.each([true, false])('R7 erro pós-envio grupo=%s', (group) => {
     expect(w.pending.create).not.toHaveBeenCalled();
     expect(w.complete).toHaveBeenCalledTimes(1);
   });
+});
+
+ it.each(['orq', 'esp'])('R7 rechecagem real silenciosa não cria terceira execução: %s', async (agent) => {
+  const { GroupNoReplyProcessor, GroupNoReplyService } = await import('./modules/ai-agents/runner/group-no-reply.service');
+  const w = world(agent, [batch(reply('')), batch(reply('\u200b\u200c\u200d\ufeff'))]);
+  await run(w, agent);
+  const guard = new GroupNoReplyService({} as any, w.prisma);
+  const router = { shouldHandle: jest.fn().mockResolvedValue({ handle: true }) };
+  await new GroupNoReplyProcessor(w.prisma, router as any, w.svc, guard).process({ data: { conversationId: 'c', messageId: 'm', minutes: 15 } } as any);
+  expect(w.seen[1]).toContain(NOTE);
+  expect(w.runAgents()).toEqual([agent, agent]);
+  expect(w.complete).toHaveBeenCalledTimes(2);
+  expect(w.sent()).toEqual([]);
+  expect(w.runs()).toEqual(['NO_ACTION', 'NO_ACTION']);
+});
+it.each([true, false])('R7 invisíveis somente em grupo são silêncio: %s', async (group) => {
+  const text = '\u200b\u200c\u200d\ufeff';
+  const w = world('esp', [batch(reply(text)), stop], [], group);
+  await run(w, 'esp');
+  expect(w.sent()).toEqual(group ? [] : [text.trim()]);
+  expect(w.runs()).toEqual([group ? 'NO_ACTION' : 'REPLIED']);
 });
