@@ -27,10 +27,45 @@ it('avalia frases separadas e preserva títulos', () => {
   expect(promisesTeamContact('Posso ajudar? Vou avisar a Dra. Fulana.')).toBe(true);
   expect(promisesTeamContact('Não vou chamar a equipe. Já avisei o Dr. Fulano.')).toBe(true);
 });
+it.each(['A equipe chamou você.', 'A equipe está entrando em contato.'])('flexões de contato: %s', text => expect(promisesTeamContact(text)).toBe(true));
+// R8: equipe precisa ter verbo de contato; sujeito indefinido não basta.
 it.each([
-  'A equipe chamou você.', 'Nossa equipe avisou o Dr. Fulano.',
-  'O time solicitou retorno.', 'Uma advogada pediu contato.',
-  'Os advogados encaminharam seu pedido.', 'A equipe está entrando em contato.',
+  'Nossa equipe avisou o Dr. Fulano.', 'O time solicitou retorno.',
+  'Uma advogada pediu contato.', 'Os advogados encaminharam seu pedido.',
   'A equipe vai avisar. Não precisa responder.',
-])('flexões gerais de tempo e sujeito: %s', (text) => expect(promisesTeamContact(text)).toBe(true));
+])('R8 corrige generalizações R7: %s', text => expect(promisesTeamContact(text)).toBe(false));
 it.each(['A equipe vai retornar? Me avise.', 'Não é que a Dra. Fulana foi avisada.', 'Pode entrar em contato com a equipe.'])('preserva pergunta e negação: %s', (text) => expect(promisesTeamContact(text)).toBe(false));
+
+const tableR8 = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, 'team-promise-r8.json'), 'utf8'));
+it.each(tableR8.promessas)('tabela R8 promessa: %s', (text: string) => expect(promisesTeamContact(text)).toBe(true));
+it.each(tableR8.nao_promessas)('tabela R8 não promessa: %s', (text: string) => expect(promisesTeamContact(text)).toBe(false));
+
+describe('R8 estruturas e exclusões fora das tabelas', () => {
+  it.each([
+    'Vou notificar a equipe para não perder o prazo.', 'Nossos advogados estão cientes.', 'Irei informar nossa equipe sobre isso.', 'Confirmo com o nosso advogado.',
+    'Estamos enviando sua mensagem para uma pessoa da equipe.',
+    'Em breve o pessoal vai cuidar do seu atendimento.', 'Nosso advogado lhe responderá.',
+    'Nossos advogados foram informados.', 'O time está sabendo disso.',
+    'Sua solicitação foi repassada para nosso time.', 'Isso ficou com alguém do escritório.',
+    'Entraremos em contato amanhã.', 'Retornaremos por aqui.', 'Te retornamos logo.',
+    'Deixa comigo, notificarei a equipe.', 'Tranquilo, avisamos o time.',
+    'Aguarde, vou consultar a doutora.', 'Vou avisar a equipe, ok?',
+    'Não vou avisar a equipe, já transferi para nosso time.',
+  ])('detecta %s', text => expect(promisesTeamContact(text)).toBe(true));
+  it.each([
+    'Vou deixar o pedido longe da equipe.', 'Vou falar sobre a equipe.', 'Vou colocar seu caso para a equipe.', 'O gerente vai avisar nossa equipe.', 'Eu vou explicar como o time atende.',
+    'O time comercial vai te ligar.', 'A equipe da franqueadora foi avisada.',
+    'A Dra. Fulana, juíza do caso, foi informada.', 'Um advogado vai entrar com recurso.',
+    'Ainda não avisei nosso time.', 'Seu contato não está com o time ainda.',
+    'Ninguém vai chamar a equipe.', 'Nenhum advogado vai te retornar.',
+    'Não precisa avisar nossa equipe.', 'Não consigo consultar o doutor.',
+    'A equipe não foi notificada.', 'Só vou avisar a equipe se você autorizar.',
+    'Podemos avisar nosso time.', 'Poderia avisar nossa equipe.',
+    'Prefere que eu chame o time.', 'Se quiser, vou avisar nossa equipe.',
+    'Se preferir, a equipe vai te ligar.', 'Se precisar, vou chamar nosso time.',
+    'Caso precise, vou consultar o doutor.', 'Quando terminar, a equipe vai te ligar.',
+    'Para falar com o time, envie o documento.', 'Antes de avisar o time, preciso do arquivo.',
+    'Sem isso, vou avisar a equipe.', 'Entre em contato com nosso advogado.',
+    'Vou te chamar de Exemplo.', 'A equipe vai te ligar, certo?',
+  ])('rejeita %s', text => expect(promisesTeamContact(text)).toBe(false));
+});
