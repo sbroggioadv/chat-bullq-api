@@ -117,8 +117,13 @@ export class AiAgentRunnerService {
     // Auto-chains (chainDepth > 0) NÃO classificam de novo — já tem activeAgentId.
     let selection: AgentSelection | null = null;
     if (chainDepth === 0 && !forcedAgentId) {
+      // Stored TEXT objects are read only for classification. Other extractText
+      // consumers intentionally retain their existing cadence/RAG behavior.
+      const triggerContent = triggerMessage.content as unknown;
       const triggerText = this.extractText(
-        (triggerMessage.content as unknown) ?? '',
+        triggerContent && typeof triggerContent === 'object' && !Array.isArray(triggerContent) && typeof (triggerContent as { text?: unknown }).text === 'string'
+          ? (triggerContent as { text?: unknown }).text
+          : triggerContent ?? '',
       );
       selection = await this.agentRouter.selectAgent(
         conversation,

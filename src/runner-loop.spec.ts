@@ -287,3 +287,29 @@ it('R5 ferramenta de transferência usa os textos aprovados sem promessa de temp
   expect(result.finalAction).toBe('TRANSFERRED_TO_HUMAN');
   expect(w.pending.create).toHaveBeenCalledTimes(1);
 });
+
+describe('R5 texto exclusivo do classificador', () => {
+  it.each([
+    ['objeto', { text: '  Pedido sintético para a equipe  ' }, 'Pedido sintético para a equipe', ''],
+    ['string', '  Pedido sintético para a equipe  ', 'Pedido sintético para a equipe', 'Pedido sintético para a equipe'],
+    ['lista', [{ text: ' Pedido sintético' }, { type: 'image' }, { text: ' para a equipe ' }], 'Pedido sintético para a equipe', 'Pedido sintético para a equipe'],
+    ['objeto sem texto', { text: 123 }, '', ''],
+    ['objeto com texto inválido', { text: [{ text: 'Não interpretar' }] }, '', ''],
+  ])('%s chega ao selectAgent sem alterar os demais consumidores', async (_label, content, expected, legacy) => {
+    const w = world('orq', [batch(reply())]);
+    w.store.messages[0].content = content;
+    w.svc.agentRouter.selectAgent.mockResolvedValue({ agentId: 'orq' });
+    w.svc.memoryExtractorQueue = { add: jest.fn().mockResolvedValue({}) };
+    w.svc.ragIndexerQueue = { add: jest.fn().mockResolvedValue({}) };
+    w.svc.scheduleAfterRunJobs.mockImplementation((...args: any[]) => (AiAgentRunnerService.prototype as any).scheduleAfterRunJobs.apply(w.svc, args));
+    await w.svc.run({ conversation: w.conv(), triggerMessage: w.store.messages[0], persistActiveAgent: false });
+    expect(w.svc.agentRouter.selectAgent).toHaveBeenCalledWith(expect.anything(), expected, []);
+    expect(w.svc.cadence.evaluate).toHaveBeenCalledWith('ch', 'c', expect.anything(), '', legacy);
+    expect(w.svc.augmentSystemPromptWithLayers.mock.calls[0][5]).toBe(legacy);
+    if (legacy) {
+      expect(w.svc.ragIndexerQueue.add).toHaveBeenCalledWith('index_message', expect.objectContaining({ content: legacy }), expect.anything());
+    } else {
+      expect(w.svc.ragIndexerQueue.add).not.toHaveBeenCalled();
+    }
+  });
+});
