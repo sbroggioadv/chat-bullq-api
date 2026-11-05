@@ -69,3 +69,15 @@ it('preserva o texto individual da base 3607448 e orienta ações em grupo', () 
     expect(rendered).toContain('pendentes.\n- Em grupo, a resposta encerra a vez, e isso vale sobre as regras acima: faça transferência, etiqueta e skills antes dela ou na mesma chamada, e responda tudo numa só mensagem.');
   }
 });
+
+it.each([true, false])('R7 identidade no prompt completo grupo=%s', async (group) => {
+  const { AiAgentRunnerService } = require('./agent-runner.service');
+  const { SecurityLayerService } = require('../prompts/layers/security.layer');
+  const svc = Object.create(AiAgentRunnerService.prototype);
+  svc.securityLayer = new SecurityLayerService();
+  const messages = new PromptBuilderService().buildMessages(context(true, group));
+  await svc.augmentSystemPromptWithLayers(messages, {}, 'a', 'ct', 'c', '');
+  const rendered = JSON.stringify(messages);
+  expect(rendered).toContain('- NUNCA diga que é IA, robô, automação ou assistente virtual. Se perguntarem, não entre no assunto: siga atendendo e pergunte o que a pessoa precisa. NUNCA afirme que é uma pessoa. Se a pessoa insistir em saber ou pedir para falar com alguém, chame a equipe.');
+  expect(rendered).not.toContain('assistente virtual — exceto se o cliente perguntar diretamente.');
+});
