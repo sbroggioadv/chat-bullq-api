@@ -1,3 +1,8 @@
+import { AiProvider } from '@prisma/client';
+import { AiLlmRouterService } from './modules/ai-agents/providers/ai-llm-router.service';
+import { OpenAiCompatibleAdapter } from './modules/ai-agents/providers/openai-compatible.adapter';
+import { FuguLlmAdapter } from './modules/ai-agents/providers/fugu-llm.adapter';
+import { QwenLlmAdapter } from './modules/ai-agents/providers/qwen-llm.adapter';
 import { TEAM_PROMISE_PROMPT } from './modules/ai-agents/runner/team-promise';
 import { TransferToHumanTool } from './modules/ai-agents/tools/builtin/transfer-to-human.tool';
 import { AiAgentRunnerService } from './modules/ai-agents/runner/agent-runner.service';
@@ -81,7 +86,7 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   const checkComplete = jest.fn(async (args: any) => say(args.messages[1].content.includes(TEAM_PROMISE) ? 'SIM' : 'NAO'));
   const complete = jest.fn(async (args: any) => { seen.push(JSON.stringify(args.messages)); const next = script.shift() ?? stop; return typeof next === 'function' ? next(w) : next; });
   const providerComplete = jest.fn((args: any) => args.messages[0]?.content === TEAM_PROMISE_PROMPT && !('tools' in args) ? checkComplete(args) : complete(args));
-  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }) };
+  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }), completeWithProvider: jest.fn((_provider: any, args: any) => checkComplete(args)) };
   w.checkComplete = checkComplete; w.providerComplete = providerComplete;
   w.complete = complete;
   w.sent = () => outbound.add.mock.calls.map((c: any[]) => c[1].message.content.text);
@@ -695,12 +700,12 @@ describe('R9 checagem pelo runner real', () => {
     w.checkComplete.mockResolvedValue(say(answer));
     await run(w, 'esp');
     expect(w.checkComplete).toHaveBeenCalledTimes(1);
-    expect(w.checkComplete.mock.calls[0][0]).toEqual({ modelId: 'x', messages: [{ role: 'system', content: TEAM_PROMISE_PROMPT }, { role: 'user', content: `Mensagem enviada:\n"""\n${TEAM_PROMISE}\n"""` }], temperature: 0, maxTokens: 1000, organizationId: 'o' });
+    expect(w.checkComplete.mock.calls[0][0]).toEqual({ modelId: 'qwen3.7-max', messages: [{ role: 'system', content: TEAM_PROMISE_PROMPT }, { role: 'user', content: `Mensagem enviada:\n"""\n${TEAM_PROMISE}\n"""` }], temperature: 0, maxTokens: 1000, organizationId: 'o' });
     const finalAction = answer === 'SIM' ? 'TRANSFERRED_TO_HUMAN' : 'REPLIED';
     expect(w.pending.create).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
     expect(saved(w)).toEqual(expect.objectContaining({ status: 'COMPLETED', finalAction, modelId: 'T/t', inputTokens: 2, outputTokens: 2 }));
     expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ finalAction, inputTokens: 2 }));
-    expect(checked(w)).toEqual([expect.objectContaining({ result: answer.toLowerCase(), attempts: 1, model: 'T/t', inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: expect.any(Number), runId: 'run1' })]);
+    expect(checked(w)).toEqual([expect.objectContaining({ result: answer.toLowerCase(), attempts: 1, model: 'QWEN/qwen3.7-max', inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: expect.any(Number), runId: 'run1' })]);
     expect(JSON.stringify(checked(w))).not.toContain(TEAM_PROMISE);
   });
   it.each(['exception', 'invalid', 'length'])('duas falhas %s não lançam e avisam sem texto', async mode => {
@@ -762,5 +767,88 @@ describe('R9 checagem pelo runner real', () => {
     expect(w.notifications.notify).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
     if (answer === 'SIM') expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
     if (answer === 'NAO') expect(w.prisma.conversation.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('R10 checagem fixa com transporte real simulado', () => {
+  afterEach(() => jest.restoreAllMocks());
+  const saved = (w: any) => w.prisma.aiAgentRun.update.mock.calls.at(-1)[0].data;
+  function routed(group: boolean, provider: 'FUGU' | 'QWEN', answer: string, override = false, missing = false) {
+    const w = world('esp', [], [], group);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    const agent = { ...esp, modelId: 'zai/glm-5.2', modelParams: { max_tokens: 7, top_p: 0.4 } };
+    w.prisma.aiAgent.findFirst.mockResolvedValue(agent);
+    const resolved = (p: string) => ({ provider: p, apiKey: missing && p === 'QWEN' ? null : 'synthetic-key', source: missing && p === 'QWEN' ? 'NONE' : 'ORG' });
+    const resolver = {
+      resolveForLlm: jest.fn(async () => ({ ...resolved(provider), modelOverride: override ? 'fugu-ultra-v1.1' : null })),
+      resolveProvider: jest.fn(async (_org, p) => resolved(p)),
+    };
+    const compat = new OpenAiCompatibleAdapter();
+    const router = new AiLlmRouterService(resolver as any, {} as any, {} as any, {} as any, {} as any, {} as any, new FuguLlmAdapter(compat), new QwenLlmAdapter(compat));
+    w.svc.llmRouter = router;
+    const http: any[] = [];
+    let mainCalls = 0;
+    jest.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const body = JSON.parse(init!.body as string);
+      http.push({ url: String(url), body });
+      const check = body.messages[0]?.content === TEAM_PROMISE_PROMPT;
+      const message = check ? { role: 'assistant', content: answer } : ++mainCalls === 1
+        ? { role: 'assistant', content: null, tool_calls: [{ id: 'reply', type: 'function', function: { name: 'replyToConversation', arguments: JSON.stringify({ text: TEAM_PROMISE }) } }] }
+        : { role: 'assistant', content: '' };
+      return { ok: true, json: async () => ({ model: body.model, choices: [{ message, finish_reason: message.tool_calls ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: check ? 10 : 2, completion_tokens: check ? 4 : 1 } }) } as Response;
+    });
+    return { w, resolver, router, http };
+  }
+  describe.each([true, false])('grupo=%s', group => {
+    it.each([
+      ['FUGU', false, 'SIM'], ['FUGU', false, 'NAO'],
+      ['FUGU', true, 'SIM'], ['FUGU', true, 'NAO'],
+      ['QWEN', false, 'SIM'], ['QWEN', false, 'NAO'],
+    ] as const)('%s override=%s veredito=%s', async (provider, override, answer) => {
+      const { w, resolver, http } = routed(group, provider, answer, override);
+      await run(w, 'esp');
+      const main = http.filter(c => c.body.messages[0]?.content !== TEAM_PROMISE_PROMPT);
+      const checks = http.filter(c => c.body.messages[0]?.content === TEAM_PROMISE_PROMPT);
+      expect(main).toHaveLength(group ? 1 : 2);
+      const mainModel = provider === 'FUGU' ? override ? 'fugu-ultra-v1.1' : 'fugu-ultra' : 'qwen3.7-max';
+      expect(main[0].body.model).toBe(mainModel);
+      expect(main[0].url).toBe(provider === 'FUGU' ? 'https://api.sakana.ai/v1/chat/completions' : 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions');
+      if (provider === 'FUGU') expect(main[0].body).not.toHaveProperty('temperature');
+      expect(checks).toEqual([{ url: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions', body: {
+        model: 'qwen3.7-max', messages: [{ role: 'system', content: TEAM_PROMISE_PROMPT }, { role: 'user', content: `Mensagem enviada:\n"""\n${TEAM_PROMISE}\n"""` }], temperature: 0, max_tokens: 1000,
+      } }]);
+      expect(resolver.resolveProvider).toHaveBeenCalledTimes(1);
+      expect(resolver.resolveProvider).toHaveBeenCalledWith('o', AiProvider.QWEN);
+      expect(w.pending.create).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
+      const mainCount = group ? 1 : 2;
+      const mainCost = provider === 'FUGU' ? 2 * 5 / 1e6 + 30 / 1e6 : 2 * 2.5 / 1e6 + 7.5 / 1e6;
+      expect(saved(w)).toEqual(expect.objectContaining({ status: 'COMPLETED', finalAction: answer === 'SIM' ? 'TRANSFERRED_TO_HUMAN' : 'REPLIED', modelId: `${provider}/${mainModel}`, inputTokens: mainCount * 2 + 10, outputTokens: mainCount + 4 }));
+      expect(saved(w).costUsd).toBeCloseTo(mainCount * mainCost + 10 * 2.5 / 1e6 + 4 * 7.5 / 1e6, 12);
+      const log = w.svc.logger.log.mock.calls.map((c: any[]) => { try { return JSON.parse(c[0]); } catch { return null; } }).find((v: any) => v?.msg === 'team_promise_checked');
+      expect(log).toEqual(expect.objectContaining({ model: 'QWEN/qwen3.7-max', result: answer.toLowerCase() }));
+    });
+    it('sem credencial Qwen mantém principal e avisa após duas tentativas sem HTTP de checagem', async () => {
+      const { w, resolver, http } = routed(group, 'FUGU', 'SIM', false, true);
+      await run(w, 'esp');
+      expect(resolver.resolveProvider).toHaveBeenCalledTimes(2);
+      expect(http).toHaveLength(group ? 1 : 2);
+      expect(http.every(c => c.url === 'https://api.sakana.ai/v1/chat/completions' && c.body.messages[0]?.content !== TEAM_PROMISE_PROMPT)).toBe(true);
+      expect(w.sent()).toEqual([TEAM_PROMISE]);
+      expect(saved(w)).toEqual(expect.objectContaining({ status: 'COMPLETED', finalAction: 'REPLIED', errorMessage: 'team_promise_check_failed', modelId: 'FUGU/fugu-ultra', inputTokens: group ? 2 : 4, outputTokens: group ? 1 : 2 }));
+      expect(w.pending.create).not.toHaveBeenCalled();
+      expect(w.svc.notifyToolFailure).toHaveBeenCalledTimes(1);
+      expect(w.svc.notifyToolFailure).toHaveBeenCalledWith(expect.objectContaining({ input: {}, output: { ok: false, error: 'team_promise_check_failed' } }));
+      expect(JSON.stringify(w.svc.notifyToolFailure.mock.calls)).not.toContain(TEAM_PROMISE);
+      expect(JSON.stringify(w.svc.logger.log.mock.calls)).not.toContain(TEAM_PROMISE);
+      expect(w.svc.logger.log).toHaveBeenCalledWith(expect.stringContaining('"model":"QWEN/qwen3.7-max"'));
+      expect(w.svc.logger.log).toHaveBeenCalledWith(expect.stringContaining('"attempts":2'));
+    });
+  });
+  it('método direto exige organização, sem resolver credenciais ou chamar HTTP', async () => {
+    const { router, resolver, http } = routed(true, 'FUGU', 'NAO');
+    await expect((router as any).completeWithProvider(AiProvider.QWEN, { modelId: 'qwen3.7-max', messages: [] })).rejects.toThrow('requires organizationId');
+    expect(resolver.resolveProvider).not.toHaveBeenCalled();
+    expect(http).toEqual([]);
   });
 });

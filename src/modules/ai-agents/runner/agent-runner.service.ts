@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   AiFinalAction,
+  AiProvider,
   AiRunStatus,
   Conversation,
   Message,
@@ -35,7 +36,7 @@ import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText, sanitizeLabel } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
-import { buildTeamPromiseMessages, parseTeamPromiseResponse } from './team-promise';
+import { TEAM_PROMISE_MODEL, buildTeamPromiseMessages, parseTeamPromiseResponse } from './team-promise';
 import { isConversationalOrchestrator } from './conversational-orchestrator';
 import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
 
@@ -588,7 +589,7 @@ export class AiAgentRunnerService {
 
       if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.length && route.ok) {
         promiseCompensationAttempted = true;
-        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, route.prepared, agent.modelId, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
+        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
       }
 
       const finishedAt = new Date();
@@ -708,7 +709,7 @@ export class AiAgentRunnerService {
     } catch (err: any) {
       if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.length && route.ok) {
         promiseCompensationAttempted = true;
-        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, route.prepared, agent.modelId, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
+        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
       }
       this.logger.error(
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
@@ -756,8 +757,7 @@ export class AiAgentRunnerService {
   }
 
   private async checkTeamPromise(
-    texts: string[], prepared: Awaited<ReturnType<AiLlmRouterService['prepare']>>,
-    modelId: string, aggregateUsage: LlmUsage, ctx: ToolContext,
+    texts: string[], aggregateUsage: LlmUsage, ctx: ToolContext,
     kind: 'ORCHESTRATOR' | 'WORKER', replied: boolean,
     observe: (name: string, output: unknown, text?: string) => void,
   ): Promise<string | undefined> {
@@ -767,13 +767,13 @@ export class AiAgentRunnerService {
       const usage: LlmUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
       let result: 'sim' | 'nao' | null = null;
       let attempts = 0;
-      let model = `${prepared.provider}/${prepared.modelId}`;
+      let model = `QWEN/${TEAM_PROMISE_MODEL}`;
       try {
         while (attempts < 2 && result === null) {
           attempts++;
           try {
-            const response = await prepared.complete({
-              modelId, messages: buildTeamPromiseMessages(text), temperature: 0,
+            const response = await this.llmRouter.completeWithProvider(AiProvider.QWEN, {
+              modelId: TEAM_PROMISE_MODEL, messages: buildTeamPromiseMessages(text), temperature: 0,
               maxTokens: 1000, organizationId: ctx.organizationId,
             });
             for (const key of Object.keys(usage) as (keyof LlmUsage)[]) {

@@ -49,6 +49,26 @@ export class AiLlmRouterService {
     return prepared.complete(req);
   }
 
+  /** Completa no provedor escolhido, sem rota da organização nem fallback. */
+  async completeWithProvider(
+    provider: AiProvider,
+    req: LlmCompletionRequest,
+  ): Promise<LlmCompletionResponse> {
+    if (!req.organizationId) {
+      throw new InternalServerErrorException('completeWithProvider requires organizationId');
+    }
+    const resolved = await this.resolver.resolveProvider(req.organizationId, provider);
+    if (resolved.source === 'NONE' || !resolved.apiKey) {
+      throw new InternalServerErrorException(`No LLM credential available for provider=${provider}`);
+    }
+    const response = await this.dispatch(resolved, req);
+    return {
+      ...response,
+      effectiveProvider: resolved.provider,
+      effectiveModelId: response.rawModelId || resolved.modelOverride || req.modelId,
+    };
+  }
+
   async prepare(organizationId: string, modelId: string) {
     const resolved = await this.resolver.resolveForLlm(organizationId);
     const requestedModel = resolved.modelOverride || modelId;

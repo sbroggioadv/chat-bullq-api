@@ -1,5 +1,8 @@
 import type { LlmMessage } from '../llm/llm.types';
 
+// Modelo medido; qualquer mudança exige nova medição.
+export const TEAM_PROMISE_MODEL = 'qwen3.7-max';
+
 // Texto medido; qualquer mudança exige nova medição.
 export const TEAM_PROMISE_PROMPT = `Você confere uma mensagem que o atendente de um escritório de advocacia acabou de enviar a uma pessoa pelo WhatsApp.
 

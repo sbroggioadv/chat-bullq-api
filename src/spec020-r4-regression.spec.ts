@@ -64,7 +64,7 @@ function world(activeAgentId: string | null, script: any[], agents: any[] = [orq
   const complete = jest.fn(async (args: any) => { seen.push({ agent: args.modelId, messages: JSON.stringify(args.messages) }); return script.shift() ?? stop; });
   const providerComplete = (args: any) => args.messages[0]?.content === TEAM_PROMISE_PROMPT && !('tools' in args)
     ? Promise.resolve({ ...stop, message: { content: 'NAO' } }) : complete(args);
-  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }) };
+  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }), completeWithProvider: jest.fn((_provider: any, args: any) => providerComplete(args)) };
   const sent = () => outbound.add.mock.calls.map((c: any[]) => c[1].message.content.text);
   const toolOutputs = (name: string) => prisma.aiToolCall.create.mock.calls.filter((c: any[]) => c[0].data.toolName === name).map((c: any[]) => c[0].data.output);
   const runs = () => prisma.aiAgentRun.update.mock.calls.map((c: any[]) => c[0].data.finalAction);
