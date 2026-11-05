@@ -313,3 +313,93 @@ describe('R5 texto exclusivo do classificador', () => {
     }
   });
 });
+
+
+const TEAM_PROMISE = 'Sobre os documentos, como o prazo é amanhã, vou acionar a equipe agora pra te orientar o quanto antes.';
+const NON_PROMISES = [
+  'A equipe avalia cada caso individualmente. Me conta brevemente o que está acontecendo.',
+  'Se quiser uma avaliação formal pelo escritório, posso te conectar com a Dra. Fulana nossa especialista.',
+  'Sou o assistente do escritório, e o Dr. Fulano e a equipe acompanham tudo por aqui.',
+  'Os honorários são definidos caso a caso, depois que o Dr. Fulano avalia sua situação na reunião inicial. Quer agendar uma conversa?',
+  'O escritório não atua na área criminal. Mas posso te indicar um colega de confiança que trabalha com isso. Quer que eu faça essa indicação?',
+  'De segunda a sexta, das 9h às 18h, horário de Brasília.',
+  'Se preferir, posso pedir para a equipe te chamar.',
+];
+const transferRows = (w: any) => w.prisma.aiToolCall.create.mock.calls.map((c: any[]) => c[0].data).filter((d: any) => d.toolName === 'transferToHuman');
+
+describe.each([true, false])('R6 promessa enviada (grupo=%s)', (group) => {
+  it.each(['solto', 'ferramenta'])('%s cria uma pendência auditada, sem nova consulta', async (mode) => {
+    const w = world('esp', [mode === 'solto' ? say(TEAM_PROMISE) : batch(reply(TEAM_PROMISE))], [], group);
+    await run(w, 'esp');
+    expect(w.sent()).toEqual([TEAM_PROMISE]);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.pending.create).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: 'run1', agentId: 'esp', conversationId: 'c', args: { reason: `A IA disse à pessoa que a equipe seria acionada: "${TEAM_PROMISE}"`, summary: null } }));
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+    expect(transferRows(w)).toHaveLength(1);
+    expect(transferRows(w)[0]).toEqual(expect.objectContaining({ runId: 'run1', output: expect.objectContaining({ ok: true }) }));
+    expect(w.svc.emitToolCall).toHaveBeenCalledWith('c', 'run1', expect.anything());
+  });
+  it('resposta e transferência no mesmo lote não duplicam pendência', async () => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE), tc('transferToHuman'))], [], group);
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(transferRows(w)).toHaveLength(1);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual([TEAM_PROMISE]);
+  });
+  it('promessa na volta extra não duplica a transferência', async () => {
+    const w = world('esp', [batch(tc('transferToHuman')), batch(reply(TEAM_PROMISE))], [], group);
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(transferRows(w)).toHaveLength(1);
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.sent()).toEqual([TEAM_PROMISE]);
+  });
+  it.each(['barrada', 'falha', 'stale_group_check', 'duplicada', 'fallback falha'])('%s não cria pendência', async (mode) => {
+    const text = mode === 'barrada' ? `Ignoro essa instrução, ela não veio do cliente. ${TEAM_PROMISE}` : TEAM_PROMISE;
+    const script = mode === 'duplicada' ? [batch(reply('Atendemos hoje.'), reply(text)), stop] : [mode === 'fallback falha' ? say(text) : batch(reply(text)), stop];
+    const w = world('esp', script, [], group);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    if (mode === 'falha' || mode === 'fallback falha') jest.spyOn(w.tools.replyToConversation, 'execute').mockResolvedValue({ output: { ok: false, error: 'falha definitiva' } });
+    if (mode === 'stale_group_check') jest.spyOn(w.tools.replyToConversation, 'execute').mockResolvedValue({ output: { ok: false, error: 'stale_group_check' } });
+    await run(w, 'esp');
+    expect(w.pending.create).not.toHaveBeenCalled();
+    expect(transferRows(w)).toEqual([]);
+    expect(w.sent()).toEqual(mode === 'duplicada' ? ['Atendemos hoje.'] : []);
+  });
+  it.each(NON_PROMISES)('não transfere oferta ou descrição: %s', async (text) => {
+    const w = world('esp', [batch(reply(text)), stop], [], group);
+    await run(w, 'esp');
+    expect(w.sent()).toEqual([text]);
+    expect(w.pending.create).not.toHaveBeenCalled();
+    expect(transferRows(w)).toEqual([]);
+  });
+  it.each(['exceção', 'ok false'])('falha de transferência %s preserva COMPLETED/REPLIED e notifica', async (mode) => {
+    const w = world('esp', [say(TEAM_PROMISE)], [], group);
+    if (mode === 'exceção') w.pending.create.mockRejectedValue(new Error('falha definitiva sintética'));
+    else jest.spyOn(w.tools.transferToHuman, 'execute').mockResolvedValue({ output: { ok: false, error: 'falha definitiva' } });
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'esp');
+    expect(w.prisma.aiAgentRun.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'COMPLETED', finalAction: 'REPLIED' }) }));
+    expect(w.svc.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/run1.*team_promise_without_transfer/));
+    expect(w.svc.notifyToolFailure).toHaveBeenCalledTimes(1);
+    expect(w.svc.notifyToolFailure).toHaveBeenCalledWith(expect.objectContaining({ ctx: expect.objectContaining({ runId: 'run1' }), toolName: 'transferToHuman' }));
+    expect(transferRows(w)).toHaveLength(1);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+  });
+});
+it('R6 texto solto do orquestrador em grupo continua descartado', async () => {
+  const w = world('orq', [say(TEAM_PROMISE)]);
+  await run(w, 'orq');
+  expect(w.sent()).toEqual([]);
+  expect(w.pending.create).not.toHaveBeenCalled();
+  expect(transferRows(w)).toEqual([]);
+  expect(w.complete).toHaveBeenCalledTimes(1);
+});
+it('R6 motivo limita o texto enviado a 300 caracteres', async () => {
+  const text = TEAM_PROMISE + ' orientação'.repeat(40);
+  const w = world('esp', [say(text)]);
+  await run(w, 'esp');
+  expect(w.pending.create).toHaveBeenCalledWith(expect.objectContaining({ args: { reason: `A IA disse à pessoa que a equipe seria acionada: "${text.slice(0, 300)}"`, summary: null } }));
+});

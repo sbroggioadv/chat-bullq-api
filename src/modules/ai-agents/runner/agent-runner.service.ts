@@ -35,6 +35,7 @@ import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText, sanitizeLabel } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
+import { promisesTeamContact } from './team-promise';
 import { isConversationalOrchestrator } from './conversational-orchestrator';
 import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
 
@@ -338,6 +339,8 @@ export class AiAgentRunnerService {
     // tags / hands off / ends. In a group, other tools can run in the
     // same batch; the successful reply ends the loop after that batch.
     let replyAlreadySuccessful = false;
+    const sentReplyTexts: string[] = [];
+    let transferAlreadySuccessful = false;
     let handBackReason = '';
     let transferReplyPending = false;
     let transferReplyAttempted = false;
@@ -433,6 +436,7 @@ export class AiAgentRunnerService {
                 exhaustionMessage = 'stale_group_check';
                 break;
               }
+              if ((result.output as any)?.ok === true) sentReplyTexts.push(text);
               if (result.finalAction) {
                 finalAction = result.finalAction as AiFinalAction;
               }
@@ -501,6 +505,8 @@ export class AiAgentRunnerService {
         );
 
         for (const result of toolResults) {
+          if (result.toolName === 'transferToHuman' && (result.output as any)?.ok === true) transferAlreadySuccessful = true;
+          if (result.replyText !== undefined) sentReplyTexts.push(result.replyText);
           toolsCalled.add(result.toolName);
           messages.push({
             role: 'tool',
@@ -554,6 +560,7 @@ export class AiAgentRunnerService {
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
           finalAction === AiFinalAction.CLOSED_CONVERSATION ||
+          sentReplyTexts.some(promisesTeamContact) ||
           (conversation.isGroup && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.ok === true)) ||
           toolResults.some((result) =>
             (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
@@ -561,6 +568,26 @@ export class AiAgentRunnerService {
           )
         ) {
           break;
+        }
+      }
+
+      const teamPromise = sentReplyTexts.find(promisesTeamContact);
+      if (teamPromise && !transferAlreadySuccessful) {
+        // Reuse normal execution for registry access, audit, events and failure
+        // notification. This happens after the loop: no model call or extra turn.
+        const [transfer] = await this.executeToolCalls(
+          [{ id: `team-promise-${run.id}`, name: 'transferToHuman', arguments: {
+            reason: `A IA disse à pessoa que a equipe seria acionada: "${teamPromise.slice(0, 300)}"`,
+          } }],
+          toolContext,
+          new Map(),
+          replyAlreadySuccessful,
+          agent.kind,
+        );
+        if ((transfer?.output as any)?.ok === true) {
+          finalAction = AiFinalAction.TRANSFERRED_TO_HUMAN;
+        } else {
+          this.logger.warn(`Run ${run.id}: team_promise_without_transfer`);
         }
       }
 
@@ -799,6 +826,7 @@ export class AiAgentRunnerService {
       toolName: string;
       output: unknown;
       finalAction?: string;
+      replyText?: string;
     }>
   > {
     const results: Array<{
@@ -806,6 +834,7 @@ export class AiAgentRunnerService {
       toolName: string;
       output: unknown;
       finalAction?: string;
+      replyText?: string;
     }> = [];
     // Tracks whether THIS batch already produced a successful reply.
     // Combined with the cross-iteration flag, it lets us block the very
@@ -961,6 +990,9 @@ export class AiAgentRunnerService {
         toolName: call.name,
         output,
         finalAction,
+        ...(call.name === 'replyToConversation' && (output as any)?.ok === true
+          ? { replyText: String(call.arguments.text ?? '').trim() }
+          : {}),
       });
 
       if (
