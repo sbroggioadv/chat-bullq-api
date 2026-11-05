@@ -1,3 +1,4 @@
+import { TEAM_PROMISE_PROMPT } from './modules/ai-agents/runner/team-promise';
 import { TransferToHumanTool } from './modules/ai-agents/tools/builtin/transfer-to-human.tool';
 import { AiAgentRunnerService } from './modules/ai-agents/runner/agent-runner.service';
 import { ReplyToConversationTool } from './modules/ai-agents/tools/builtin/reply-to-conversation.tool';
@@ -77,8 +78,11 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   svc.registry = { has: (n: string) => n in tools, isAllowedForAgent: () => true, get: (n: string) => tools[n] };
   const seen: string[] = [];
   const w: any = { svc, store, conv, prisma, outbound, groupNotify, notifications, seen, replyCtx, replyOut, pending, action, tools };
+  const checkComplete = jest.fn(async (args: any) => say(args.messages[1].content.includes(TEAM_PROMISE) ? 'SIM' : 'NAO'));
   const complete = jest.fn(async (args: any) => { seen.push(JSON.stringify(args.messages)); const next = script.shift() ?? stop; return typeof next === 'function' ? next(w) : next; });
-  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete }) };
+  const providerComplete = jest.fn((args: any) => args.messages[0]?.content === TEAM_PROMISE_PROMPT && !('tools' in args) ? checkComplete(args) : complete(args));
+  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }) };
+  w.checkComplete = checkComplete; w.providerComplete = providerComplete;
   w.complete = complete;
   w.sent = () => outbound.add.mock.calls.map((c: any[]) => c[1].message.content.text);
   w.runs = () => prisma.aiAgentRun.update.mock.calls.map((c: any[]) => c[0].data.finalAction);
@@ -333,11 +337,12 @@ const NON_PROMISES = [
 const transferRows = (w: any) => w.prisma.aiToolCall.create.mock.calls.map((c: any[]) => c[0].data).filter((d: any) => d.toolName === 'transferToHuman');
 
 describe.each([true, false])('R6 promessa enviada (grupo=%s)', (group) => {
-  it.each(['solto', 'ferramenta'])('%s cria uma pendência auditada, sem nova consulta', async (mode) => {
+  it.each(['solto', 'ferramenta'])('%s cria uma pendência auditada após checagem', async (mode) => {
     const w = world('esp', [mode === 'solto' ? say(TEAM_PROMISE) : batch(reply(TEAM_PROMISE))], [], group);
     await run(w, 'esp');
     expect(w.sent()).toEqual([TEAM_PROMISE]);
-    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.complete).toHaveBeenCalledTimes(!group && mode === 'ferramenta' ? 2 : 1);
+    expect(w.checkComplete).toHaveBeenCalledTimes(1);
     expect(w.pending.create).toHaveBeenCalledTimes(1);
     expect(w.pending.create).toHaveBeenCalledWith(expect.objectContaining({ agentRunId: 'run1', agentId: 'esp', conversationId: 'c', args: { reason: `A IA disse à pessoa que a equipe seria acionada: "${TEAM_PROMISE}"`, summary: null } }));
     expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
@@ -660,5 +665,102 @@ describe('SPEC-022 pelo runner real', () => {
     await new GroupNoReplyProcessor(w.prisma, router, runner as any, new GroupNoReplyService({} as any, w.prisma)).process({ data: { conversationId: 'c', messageId: 'm', minutes: 15 } } as any);
     expect(runner.run).not.toHaveBeenCalled();
     expect(await router.shouldHandle(w.conv(), { ...w.store.messages[0], id: 'new' })).toEqual(expect.objectContaining({ handle: false }));
+  });
+});
+
+
+describe('R9 checagem pelo runner real', () => {
+  const saved = (w: any) => w.prisma.aiAgentRun.update.mock.calls.at(-1)[0].data;
+  const checked = (w: any) => w.svc.logger.log.mock.calls.map((c: any[]) => { try { return JSON.parse(c[0]); } catch { return null; } }).filter((v: any) => v?.msg === 'team_promise_checked');
+  it('texto sem palavras de equipe também chega à checagem', async () => {
+    const text = 'Fulana já ficou sabendo.';
+    const w = world('esp', [batch(reply(text))]);
+    w.checkComplete.mockResolvedValue(say('SIM'));
+    await run(w, 'esp');
+    expect(w.checkComplete).toHaveBeenCalledTimes(1);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(transferRows(w)[0].input.reason).toContain(text);
+  });
+  it('NAO não repete checagem se a gravação final falhar', async () => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))]);
+    w.checkComplete.mockResolvedValue(say('NAO'));
+    w.prisma.aiAgentRun.update.mockRejectedValueOnce(new Error('gravação final'));
+    await run(w, 'esp');
+    expect(w.checkComplete).toHaveBeenCalledTimes(1);
+    expect(saved(w)).toEqual(expect.objectContaining({ status: 'FAILED', errorMessage: 'gravação final', inputTokens: 2 }));
+    expect(w.pending.create).not.toHaveBeenCalled();
+  });
+  it.each(['SIM', 'NAO'])('%s usa configuração medida e resultado no banco/evento', async answer => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))]);
+    w.checkComplete.mockResolvedValue(say(answer));
+    await run(w, 'esp');
+    expect(w.checkComplete).toHaveBeenCalledTimes(1);
+    expect(w.checkComplete.mock.calls[0][0]).toEqual({ modelId: 'x', messages: [{ role: 'system', content: TEAM_PROMISE_PROMPT }, { role: 'user', content: `Mensagem enviada:\n"""\n${TEAM_PROMISE}\n"""` }], temperature: 0, maxTokens: 1000, organizationId: 'o' });
+    const finalAction = answer === 'SIM' ? 'TRANSFERRED_TO_HUMAN' : 'REPLIED';
+    expect(w.pending.create).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
+    expect(saved(w)).toEqual(expect.objectContaining({ status: 'COMPLETED', finalAction, modelId: 'T/t', inputTokens: 2, outputTokens: 2 }));
+    expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ finalAction, inputTokens: 2 }));
+    expect(checked(w)).toEqual([expect.objectContaining({ result: answer.toLowerCase(), attempts: 1, model: 'T/t', inputTokens: 1, outputTokens: 1, costUsd: 0, durationMs: expect.any(Number), runId: 'run1' })]);
+    expect(JSON.stringify(checked(w))).not.toContain(TEAM_PROMISE);
+  });
+  it.each(['exception', 'invalid', 'length'])('duas falhas %s não lançam e avisam sem texto', async mode => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))]);
+    w.svc.notifyToolFailure = jest.fn().mockRejectedValue(new Error('aviso falhou'));
+    if (mode === 'exception') w.checkComplete.mockRejectedValue(new Error('provedor'));
+    else w.checkComplete.mockResolvedValue({ ...say(mode === 'length' ? 'SIM' : 'TALVEZ'), stopReason: mode === 'length' ? 'length' : 'stop' });
+    await expect(run(w, 'esp')).resolves.toBeUndefined();
+    expect(w.checkComplete).toHaveBeenCalledTimes(2);
+    expect(w.pending.create).not.toHaveBeenCalled();
+    expect(saved(w)).toEqual(expect.objectContaining({ status: 'COMPLETED', errorMessage: 'team_promise_check_failed', finalAction: 'REPLIED' }));
+    expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ status: 'COMPLETED', errorMessage: 'team_promise_check_failed' }));
+    expect(w.svc.logger.error).toHaveBeenCalledWith(expect.stringMatching(/run1.*team_promise_check_failed/));
+    expect(w.svc.notifyToolFailure).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'teamPromiseCheck', input: {}, output: { ok: false, error: 'team_promise_check_failed' } }));
+    expect(JSON.stringify(w.svc.notifyToolFailure.mock.calls)).not.toContain(TEAM_PROMISE);
+    expect(checked(w)[0]).toEqual(expect.objectContaining({ result: 'failed', attempts: 2 }));
+  });
+  it.each(['inválida', 'exceção'])('%s seguida de SIM soma todo uso e preserva modelo principal', async mode => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))]);
+    const checkUsage = { inputTokens: 7, outputTokens: 1242, cacheReadTokens: 2, cacheWriteTokens: 3, costUsd: 0.2 };
+    if (mode === 'exceção') w.checkComplete.mockRejectedValueOnce(new Error('provedor'));
+    else w.checkComplete.mockResolvedValueOnce({ ...say('TALVEZ'), usage: checkUsage });
+    w.checkComplete.mockResolvedValueOnce({ ...say('SIM'), usage: checkUsage, effectiveProvider: 'CHECK', effectiveModelId: 'other' });
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(saved(w)).toEqual(expect.objectContaining({ modelId: 'T/t', inputTokens: mode === 'exceção' ? 8 : 15, outputTokens: mode === 'exceção' ? 1243 : 2485, cacheReadTokens: mode === 'exceção' ? 2 : 4, cacheWriteTokens: mode === 'exceção' ? 3 : 6, costUsd: mode === 'exceção' ? 0.2 : 0.4 }));
+    expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ costUsd: mode === 'exceção' ? 0.2 : 0.4, outputTokens: mode === 'exceção' ? 1243 : 2485, modelId: 'T/t' }));
+    expect(checked(w)[0]).toEqual(expect.objectContaining({ attempts: 2, costUsd: mode === 'exceção' ? 0.2 : 0.4 }));
+  });
+  it.each(['SIM', 'NAO', 'FAIL'])('catch preserva erro original, resposta %s', async answer => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))]);
+    w.prisma.aiToolCall.create.mockRejectedValue(new Error('auditoria original'));
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    w.checkComplete.mockResolvedValue(say(answer));
+    await run(w, 'esp');
+    expect(saved(w)).toEqual(expect.objectContaining({ status: 'FAILED', errorMessage: 'auditoria original', inputTokens: answer === 'FAIL' ? 3 : 2 }));
+    expect(w.pending.create).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
+    if (answer === 'SIM') expect(saved(w).finalAction).toBe('TRANSFERRED_TO_HUMAN');
+    expect(w.checkComplete).toHaveBeenCalledTimes(answer === 'FAIL' ? 2 : 1);
+  });
+  it.each(['silêncio', 'sem resposta', 'transferiu'])('%s não checa nem gasta a mais', async mode => {
+    const w = world('esp', mode === 'silêncio' ? [batch(reply(''))] : mode === 'sem resposta' ? [stop] : [batch(reply(TEAM_PROMISE), tc('transferToHuman'))]);
+    await run(w, 'esp');
+    expect(w.checkComplete).not.toHaveBeenCalled();
+    expect(saved(w).inputTokens).toBe(1);
+  });
+  it('individual tem próxima vez para transferir sozinho', async () => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE)), batch(tc('transferToHuman'))], [], false);
+    await run(w, 'esp');
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.checkComplete).not.toHaveBeenCalled();
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+  });
+  it.each(['SIM', 'NAO', 'já pausada'])('SPEC-022 com resposta %s', async answer => {
+    const w = configured([batch(reply(TEAM_PROMISE))]);
+    w.checkComplete.mockImplementation(async () => { if (answer === 'já pausada') w.store.aiEnabled = false; return say(answer === 'NAO' ? 'NAO' : 'SIM'); });
+    await run(w, 'esp');
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
+    expect(w.notifications.notify).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
+    if (answer === 'SIM') expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
+    if (answer === 'NAO') expect(w.prisma.conversation.updateMany).not.toHaveBeenCalled();
   });
 });

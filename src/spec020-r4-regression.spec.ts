@@ -1,3 +1,4 @@
+import { TEAM_PROMISE_PROMPT } from './modules/ai-agents/runner/team-promise';
 /* SPEC-020 R4: runner e ferramentas reais com dependências simuladas. */
 import { AiAgentRunnerService } from './modules/ai-agents/runner/agent-runner.service';
 import { ReplyToConversationTool } from './modules/ai-agents/tools/builtin/reply-to-conversation.tool';
@@ -61,7 +62,9 @@ function world(activeAgentId: string | null, script: any[], agents: any[] = [orq
   svc.registry = { has: (n: string) => n in tools, isAllowedForAgent: () => true, get: (n: string) => tools[n] };
   const seen: { agent: string; messages: string }[] = [];
   const complete = jest.fn(async (args: any) => { seen.push({ agent: args.modelId, messages: JSON.stringify(args.messages) }); return script.shift() ?? stop; });
-  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete }) };
+  const providerComplete = (args: any) => args.messages[0]?.content === TEAM_PROMISE_PROMPT && !('tools' in args)
+    ? Promise.resolve({ ...stop, message: { content: 'NAO' } }) : complete(args);
+  svc.llmRouter = { prepare: jest.fn().mockResolvedValue({ provider: 'T', modelId: 't', complete: providerComplete }) };
   const sent = () => outbound.add.mock.calls.map((c: any[]) => c[1].message.content.text);
   const toolOutputs = (name: string) => prisma.aiToolCall.create.mock.calls.filter((c: any[]) => c[0].data.toolName === name).map((c: any[]) => c[0].data.output);
   const runs = () => prisma.aiAgentRun.update.mock.calls.map((c: any[]) => c[0].data.finalAction);

@@ -12,7 +12,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../../../database/prisma.service';
 import { LlmService } from '../llm/llm.service';
-import { LlmMessage, LlmToolCall, LlmToolDefinition } from '../llm/llm.types';
+import { LlmMessage, LlmToolCall, LlmToolDefinition, LlmUsage } from '../llm/llm.types';
 import { AiLlmRouterService } from '../providers/ai-llm-router.service';
 import { ToolRegistry } from '../tools/tool-registry.service';
 import { ToolContext } from '../tools/tool.types';
@@ -35,7 +35,7 @@ import { RetrievalService } from '../rag/retrieval.service';
 import { RealtimeGateway } from '../../realtime/realtime.gateway';
 import { sanitizeAssistantText, sanitizeLabel } from './text-guards';
 import { MediaUrlResolverService } from './media-url-resolver.service';
-import { promisesTeamContact } from './team-promise';
+import { buildTeamPromiseMessages, parseTeamPromiseResponse } from './team-promise';
 import { isConversationalOrchestrator } from './conversational-orchestrator';
 import { AgentCadenceController } from '../scope/agent-cadence-controller.service';
 
@@ -342,6 +342,7 @@ export class AiAgentRunnerService {
     const sentReplyTexts: string[] = [];
     let transferAlreadySuccessful = false;
     let promiseCompensationAttempted = false;
+    let promiseCheckError: string | undefined;
     const observeToolSuccess = (name: string, output: unknown, text?: string) => {
       if ((output as any)?.ok !== true) return;
       if (name === 'replyToConversation' && (output as any)?.silent !== true && text !== undefined) {
@@ -575,7 +576,6 @@ export class AiAgentRunnerService {
         if (
           finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN ||
           finalAction === AiFinalAction.CLOSED_CONVERSATION ||
-          sentReplyTexts.some(promisesTeamContact) ||
           (conversation.isGroup && toolResults.some((result) => result.toolName === 'replyToConversation' && (result.output as any)?.ok === true)) ||
           toolResults.some((result) =>
             (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
@@ -586,19 +586,21 @@ export class AiAgentRunnerService {
         }
       }
 
-      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.some(promisesTeamContact)) {
+      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.length && route.ok) {
         promiseCompensationAttempted = true;
-        await this.compensateTeamPromise(sentReplyTexts, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
+        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, route.prepared, agent.modelId, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
       }
 
       const finishedAt = new Date();
       const durationMs = Date.now() - startedAt;
+      const errorMessage = exhaustionMessage && (finalAction === AiFinalAction.NO_ACTION || exhaustionMessage === 'stale_group_check')
+        ? exhaustionMessage : promiseCheckError;
       await this.prisma.aiAgentRun.update({
         where: { id: run.id },
         data: {
           status: AiRunStatus.COMPLETED,
           ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
-          ...(exhaustionMessage && (finalAction === AiFinalAction.NO_ACTION || exhaustionMessage === 'stale_group_check') ? { errorMessage: exhaustionMessage } : {}),
+          ...(errorMessage ? { errorMessage } : {}),
           finalAction,
           finishedAt,
           durationMs,
@@ -615,7 +617,7 @@ export class AiAgentRunnerService {
         modelId: effectiveModelId,
         status: AiRunStatus.COMPLETED,
         finalAction,
-        errorMessage: exhaustionMessage && (finalAction === AiFinalAction.NO_ACTION || exhaustionMessage === 'stale_group_check') ? exhaustionMessage : null,
+        errorMessage: errorMessage ?? null,
         finishedAt,
         durationMs,
         inputTokens: aggregateUsage.inputTokens,
@@ -704,9 +706,9 @@ export class AiAgentRunnerService {
         }
       }
     } catch (err: any) {
-      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.some(promisesTeamContact)) {
+      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.length && route.ok) {
         promiseCompensationAttempted = true;
-        await this.compensateTeamPromise(sentReplyTexts, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
+        promiseCheckError = await this.checkTeamPromise(sentReplyTexts, route.prepared, agent.modelId, aggregateUsage, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
       }
       this.logger.error(
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
@@ -753,12 +755,60 @@ export class AiAgentRunnerService {
     }
   }
 
+  private async checkTeamPromise(
+    texts: string[], prepared: Awaited<ReturnType<AiLlmRouterService['prepare']>>,
+    modelId: string, aggregateUsage: LlmUsage, ctx: ToolContext,
+    kind: 'ORCHESTRATOR' | 'WORKER', replied: boolean,
+    observe: (name: string, output: unknown, text?: string) => void,
+  ): Promise<string | undefined> {
+    let failed = false;
+    for (const text of texts) {
+      const startedAt = Date.now();
+      const usage: LlmUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+      let result: 'sim' | 'nao' | null = null;
+      let attempts = 0;
+      let model = `${prepared.provider}/${prepared.modelId}`;
+      try {
+        while (attempts < 2 && result === null) {
+          attempts++;
+          try {
+            const response = await prepared.complete({
+              modelId, messages: buildTeamPromiseMessages(text), temperature: 0,
+              maxTokens: 1000, organizationId: ctx.organizationId,
+            });
+            for (const key of Object.keys(usage) as (keyof LlmUsage)[]) {
+              usage[key] += response.usage[key];
+              aggregateUsage[key] += response.usage[key];
+            }
+            if (response.effectiveProvider && response.effectiveModelId) model = `${response.effectiveProvider}/${response.effectiveModelId}`;
+            result = parseTeamPromiseResponse(this.extractText(response.message.content), response.stopReason);
+          } catch {
+            // Sem resposta de uso, não há gasto observável a contabilizar.
+          }
+        }
+        this.logger.log(JSON.stringify({ msg: 'team_promise_checked', runId: ctx.runId,
+          result: result ?? 'failed', attempts, model, inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens, costUsd: usage.costUsd, durationMs: Date.now() - startedAt }));
+        if (result === 'sim') {
+          await this.compensateTeamPromise(text, ctx, kind, replied, observe);
+          return failed ? 'team_promise_check_failed' : undefined;
+        }
+        if (result === 'nao') continue;
+        failed = true;
+        this.logger.error(`Run ${ctx.runId}: team_promise_check_failed`);
+        await this.notifyToolFailure({ ctx, toolName: 'teamPromiseCheck', input: {}, output: { ok: false, error: 'team_promise_check_failed' } });
+      } catch {
+        // A falha de auditoria/aviso não pode alterar o desfecho da execução.
+        this.logger.error(`Run ${ctx.runId}: team promise notification or compensation failed`);
+      }
+    }
+    return failed ? 'team_promise_check_failed' : undefined;
+  }
+
   private async compensateTeamPromise(
-    texts: string[], ctx: ToolContext, kind: 'ORCHESTRATOR' | 'WORKER', replied: boolean,
+    promise: string, ctx: ToolContext, kind: 'ORCHESTRATOR' | 'WORKER', replied: boolean,
     observe: (name: string, output: unknown, text?: string) => void,
   ): Promise<void> {
-    const promise = texts.find(promisesTeamContact);
-    if (!promise) return;
     const input = { reason: `A IA disse à pessoa que a equipe seria acionada: "${promise.slice(0, 300)}"` };
     let successful = false;
     let notifiedByExecutor = false;
