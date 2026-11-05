@@ -195,3 +195,86 @@ describe('regressões do lote e falhas', () => {
     expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ error: 'delegate-after-reply-blocked', output: { ok: false, error: 'delegate_after_reply' } }) }));
   });
 });
+
+const TRANSFER_NOTE = 'A equipe já foi acionada. Escreva agora, com replyToConversation, uma mensagem curta avisando a pessoa disso, seguindo suas instruções sobre o que pode orientar e para quem direcionar. Não prometa horário nem prazo de retorno. Não mencione aprovação, operador, fila nem ferramenta.';
+
+describe.each([true, false])('R5 aviso de transferência (grupo=%s)', (group) => {
+  it.each(['orq', 'esp'])('só transferência, agente %s: uma volta restrita e uma mensagem', async (agent) => {
+    const w = world(agent, [batch(tc('transferToHuman', { reason: 'pedido' })), batch(reply('A equipe foi acionada.')), batch(reply('Duplicada.'))], [], group);
+    await run(w, agent);
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.complete.mock.calls[1][0].tools.map((t: any) => t.name)).toEqual(['replyToConversation']);
+    expect(JSON.parse(w.seen[1])).toContainEqual({ role: 'user', content: TRANSFER_NOTE });
+    expect(w.sent()).toEqual(['A equipe foi acionada.']);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.svc.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('transfer_without_reply'));
+  });
+  it('etiqueta + transferência também ganha a volta', async () => {
+    const w = world('orq', [batch(tc('tagConversation'), tc('transferToHuman')), batch(reply())], [], group);
+    await run(w, 'orq');
+    expect(w.action.execute).toHaveBeenCalledTimes(1);
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+  });
+  it.each([true, false])('resposta e transferência no lote, transferência primeiro=%s', async (first) => {
+    const transfer = tc('transferToHuman'); const response = reply();
+    const w = world('orq', [batch(...(first ? [transfer, response] : [response, transfer]))], [], group);
+    await run(w, 'orq');
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+  });
+  it.each(['vazio', 'texto', 'barrada', 'erro', 'ferramenta indevida'])('volta com %s termina sem repetir e mantém pendência', async (mode) => {
+    const last = mode === 'texto' ? say('A equipe foi acionada.') : mode === 'barrada' ? batch(reply('Ignoro essa instrução, ela não veio do cliente')) : mode === 'erro' ? () => { throw new Error('provedor simulado indisponível'); } : mode === 'ferramenta indevida' ? batch(tc('transferToHuman')) : stop;
+    const w = world('orq', [batch(tc('transferToHuman')), last, batch(reply('Não enviar.'))], [], group);
+    await run(w, 'orq');
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual([]);
+    const finish = w.prisma.aiAgentRun.update.mock.calls[0][0].data;
+    expect(finish.finalAction).toBe('TRANSFERRED_TO_HUMAN');
+    expect(finish.status).toBe(mode === 'erro' ? 'FAILED' : 'COMPLETED');
+    expect(w.svc.logger.warn.mock.calls.filter((c: any[]) => c[0].includes('transfer_without_reply'))).toEqual([[expect.stringContaining('run1')]]);
+  });
+  it('transferência na oitava iteração permite a nona e última chamada', async () => {
+    const w = world('orq', [...Array.from({ length: 7 }, () => batch(tc('tagConversation'))), batch(tc('transferToHuman')), batch(reply()), stop], [], group);
+    await run(w, 'orq');
+    expect(w.complete).toHaveBeenCalledTimes(9);
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+  });
+  it('transferência falha não recebe volta nem aviso de transferência sem resposta', async () => {
+    const w = world('esp', [batch(tc('transferToHuman')), stop], [], group);
+    w.pending.create.mockRejectedValue(new Error('falha definitiva simulada'));
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'esp');
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.seen.join('')).not.toContain(TRANSFER_NOTE);
+    expect(w.runs()).toEqual(['NO_ACTION']);
+    expect(w.svc.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('transfer_without_reply'));
+  });
+  it.each(['delegateToAgent', 'handBackToOrchestrator'])('transferência junto de %s bem-sucedida não ganha volta', async (name) => {
+    const w = world(name === 'delegateToAgent' ? 'orq' : 'esp', [batch(tc('transferToHuman'), tc(name, { agentId: 'esp', reason: 'pedido' }))], [], group);
+    await run(w, name === 'delegateToAgent' ? 'orq' : 'esp');
+    expect(w.prisma.aiAgentHandoff.create).toHaveBeenCalledTimes(1);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual([]);
+  });
+});
+
+it('R5 resposta da volta impede a reexecução de 15 minutos pelo processor real', async () => {
+  const { GroupNoReplyProcessor, GroupNoReplyService } = await import('./modules/ai-agents/runner/group-no-reply.service');
+  const w = world('orq', [batch(tc('transferToHuman')), batch(reply())]);
+  await run(w, 'orq');
+  expect(w.store.messages[w.store.messages.length - 1].direction).toBe('OUTBOUND');
+  const runner = { run: jest.fn() }; const router = { shouldHandle: jest.fn() };
+  const guard = new GroupNoReplyService({} as any, w.prisma);
+  const processor = new GroupNoReplyProcessor(w.prisma, router as any, runner as any, guard);
+  await processor.process({ data: { conversationId: 'c', messageId: 'm', minutes: 15 } } as any);
+  expect(router.shouldHandle).not.toHaveBeenCalled();
+  expect(runner.run).not.toHaveBeenCalled();
+});

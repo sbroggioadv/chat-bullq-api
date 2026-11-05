@@ -334,6 +334,8 @@ export class AiAgentRunnerService {
     // same batch; the successful reply ends the loop after that batch.
     let replyAlreadySuccessful = false;
     let handBackReason = '';
+    let transferReplyPending = false;
+    let transferReplyAttempted = false;
     const toolContext: ToolContext = {
       organizationId: conversation.organizationId,
       conversationId: conversation.id,
@@ -355,7 +357,10 @@ export class AiAgentRunnerService {
 
       if (!route.ok) throw route.error;
 
-      while (iterationCount < MAX_TOOL_ITERATIONS) {
+      while (iterationCount < MAX_TOOL_ITERATIONS || transferReplyPending) {
+        const isTransferReply = transferReplyPending;
+        transferReplyPending = false;
+        if (isTransferReply) transferReplyAttempted = true;
         iterationCount++;
 
         // S18/W2: router resolves per-org provider + apiKey via routing.
@@ -364,7 +369,9 @@ export class AiAgentRunnerService {
         const response = await route.prepared.complete({
           modelId: agent.modelId,
           messages,
-          tools,
+          tools: isTransferReply
+            ? [this.registry.get('replyToConversation')].map(({ name, description, parameters }) => ({ name, description, parameters }))
+            : tools,
           temperature: agent.temperature,
           maxTokens: agent.maxTokens,
           modelParams: (agent.modelParams as Record<string, unknown>) ?? undefined,
@@ -384,6 +391,10 @@ export class AiAgentRunnerService {
         aggregateUsage.cacheReadTokens += response.usage.cacheReadTokens;
         aggregateUsage.cacheWriteTokens += response.usage.cacheWriteTokens;
         aggregateUsage.costUsd += response.usage.costUsd;
+
+        // The transfer notice must use the reply tool; plain text never falls
+        // through to fallback or any of the existing model nudges.
+        if (isTransferReply && (response.stopReason === 'stop' || !response.message.toolCalls?.length)) break;
 
         if (response.stopReason === 'stop' || !response.message.toolCalls?.length) {
           // Model ended its turn without further tool calls. Some models
@@ -475,9 +486,11 @@ export class AiAgentRunnerService {
         messages.push(response.message);
 
         const toolResults = await this.executeToolCalls(
-          response.message.toolCalls,
+          isTransferReply
+            ? response.message.toolCalls.filter((call) => call.name === 'replyToConversation')
+            : response.message.toolCalls,
           toolContext,
-          customSkillsByName,
+          isTransferReply ? new Map() : customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
         );
@@ -490,6 +503,11 @@ export class AiAgentRunnerService {
             name: result.toolName,
             content: JSON.stringify(result.output),
           });
+          // A successful transfer remains the terminal outcome even when
+          // a reply preceded it in the same batch.
+          if (result.finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN && (result.output as any)?.ok === true) {
+            finalAction = AiFinalAction.TRANSFERRED_TO_HUMAN;
+          }
           if (result.finalAction && finalAction === AiFinalAction.NO_ACTION) {
             finalAction = result.finalAction as AiFinalAction;
             if (expectedLatestMessageId && result.finalAction === 'HANDED_BACK') {
@@ -507,6 +525,23 @@ export class AiAgentRunnerService {
         if (expectedLatestMessageId && toolResults.some((result) => (result.toolName === 'replyToConversation' || result.toolName === 'delegateToAgent') && (result.output as any)?.error === 'stale_group_check')) {
           exhaustionMessage = 'stale_group_check';
           break;
+        }
+
+        if (isTransferReply) break;
+        if (
+          finalAction === AiFinalAction.TRANSFERRED_TO_HUMAN &&
+          !replyAlreadySuccessful &&
+          !toolResults.some((result) =>
+            (result.toolName === 'delegateToAgent' || result.toolName === 'handBackToOrchestrator') &&
+            (result.output as any)?.ok === true,
+          )
+        ) {
+          transferReplyPending = true;
+          messages.push({
+            role: 'user',
+            content: 'A equipe já foi acionada. Escreva agora, com replyToConversation, uma mensagem curta avisando a pessoa disso, seguindo suas instruções sobre o que pode orientar e para quem direcionar. Não prometa horário nem prazo de retorno. Não mencione aprovação, operador, fila nem ferramenta.',
+          });
+          continue;
         }
 
         // Hard short-circuit: handing off / closing the conversation should
@@ -648,6 +683,7 @@ export class AiAgentRunnerService {
         where: { id: run.id },
         data: {
           status: AiRunStatus.FAILED,
+          ...(transferReplyAttempted ? { finalAction } : {}),
           ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
           errorMessage,
           finishedAt,
@@ -664,7 +700,7 @@ export class AiAgentRunnerService {
         runId: run.id,
         modelId: effectiveModelId,
         status: AiRunStatus.FAILED,
-        finalAction: null,
+        finalAction: transferReplyAttempted ? finalAction : null,
         errorMessage,
         finishedAt,
         durationMs,
@@ -674,6 +710,10 @@ export class AiAgentRunnerService {
         cacheWriteTokens: aggregateUsage.cacheWriteTokens,
         costUsd: aggregateUsage.costUsd,
       });
+    } finally {
+      if (transferReplyAttempted && !replyAlreadySuccessful) {
+        this.logger.warn(`Run ${run.id}: transfer_without_reply`);
+      }
     }
   }
 
