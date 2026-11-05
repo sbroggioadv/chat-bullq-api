@@ -488,3 +488,35 @@ describe('R6 silêncio em grupo', () => {
     expect(runner.run).toHaveBeenCalledWith(expect.objectContaining({ triggerMessage: w.store.messages[0], expectedLatestMessageId: 'm', forcedAgentId: 'orq', persistActiveAgent: false, contextNote: NOTE }));
   });
 });
+
+describe.each([true, false])('R7 erro pós-envio grupo=%s', (group) => {
+  it.each([false, true])('auditoria falha; transferência falha=%s', async (fails) => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))], [], group);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    w.prisma.aiToolCall.create.mockRejectedValue(new Error('auditoria sintética'));
+    if (fails) w.pending.create.mockRejectedValue(new Error('falha definitiva'));
+    await expect(run(w, 'esp')).resolves.toBeUndefined();
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.sent()).toEqual([TEAM_PROMISE]);
+    expect(w.prisma.aiAgentRun.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', ...(!fails ? { finalAction: 'TRANSFERRED_TO_HUMAN' } : {}) }) }));
+    if (fails) {
+      expect(w.svc.logger.warn).toHaveBeenCalledWith(expect.stringMatching(/run1.*team_promise_without_transfer/));
+      expect(w.svc.notifyToolFailure).toHaveBeenCalled();
+    } else expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'ai:run:end', expect.objectContaining({ status: 'FAILED', finalAction: 'TRANSFERRED_TO_HUMAN' }));
+  });
+  it('gravação final falha depois da compensação: não repete transferência', async () => {
+    const w = world('esp', [batch(reply(TEAM_PROMISE))], [], group);
+    w.prisma.aiAgentRun.update.mockRejectedValueOnce(new Error('gravação final'));
+    await run(w, 'esp');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.prisma.aiAgentRun.update).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'FAILED', finalAction: 'TRANSFERRED_TO_HUMAN' }) }));
+  });
+  it('auditoria sem promessa não transfere', async () => {
+    const w = world('esp', [batch(reply('Documentos recebidos.'))], [], group);
+    w.prisma.aiToolCall.create.mockRejectedValue(new Error('auditoria sintética'));
+    await run(w, 'esp');
+    expect(w.pending.create).not.toHaveBeenCalled();
+    expect(w.complete).toHaveBeenCalledTimes(1);
+  });
+});

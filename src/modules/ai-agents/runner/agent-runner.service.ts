@@ -341,6 +341,18 @@ export class AiAgentRunnerService {
     let replyAlreadySuccessful = false;
     const sentReplyTexts: string[] = [];
     let transferAlreadySuccessful = false;
+    let promiseCompensationAttempted = false;
+    const observeToolSuccess = (name: string, output: unknown, text?: string) => {
+      if ((output as any)?.ok !== true) return;
+      if (name === 'replyToConversation' && (output as any)?.silent !== true && text !== undefined) {
+        sentReplyTexts.push(text);
+        replyAlreadySuccessful = true;
+      }
+      if (name === 'transferToHuman') {
+        transferAlreadySuccessful = true;
+        finalAction = AiFinalAction.TRANSFERRED_TO_HUMAN;
+      }
+    };
     let handBackReason = '';
     let transferReplyPending = false;
     let transferReplyAttempted = false;
@@ -503,11 +515,12 @@ export class AiAgentRunnerService {
           replyAlreadySuccessful,
           agent.kind,
           conversation.isGroup && !isTransferReply,
+          observeToolSuccess,
         );
 
         for (const result of toolResults) {
           if (result.toolName === 'transferToHuman' && (result.output as any)?.ok === true) transferAlreadySuccessful = true;
-          if (result.replyText !== undefined) sentReplyTexts.push(result.replyText);
+
           toolsCalled.add(result.toolName);
           messages.push({
             role: 'tool',
@@ -573,24 +586,9 @@ export class AiAgentRunnerService {
         }
       }
 
-      const teamPromise = sentReplyTexts.find(promisesTeamContact);
-      if (teamPromise && !transferAlreadySuccessful) {
-        // Reuse normal execution for registry access, audit, events and failure
-        // notification. This happens after the loop: no model call or extra turn.
-        const [transfer] = await this.executeToolCalls(
-          [{ id: `team-promise-${run.id}`, name: 'transferToHuman', arguments: {
-            reason: `A IA disse à pessoa que a equipe seria acionada: "${teamPromise.slice(0, 300)}"`,
-          } }],
-          toolContext,
-          new Map(),
-          replyAlreadySuccessful,
-          agent.kind,
-        );
-        if ((transfer?.output as any)?.ok === true) {
-          finalAction = AiFinalAction.TRANSFERRED_TO_HUMAN;
-        } else {
-          this.logger.warn(`Run ${run.id}: team_promise_without_transfer`);
-        }
+      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.some(promisesTeamContact)) {
+        promiseCompensationAttempted = true;
+        await this.compensateTeamPromise(sentReplyTexts, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
       }
 
       const finishedAt = new Date();
@@ -706,6 +704,10 @@ export class AiAgentRunnerService {
         }
       }
     } catch (err: any) {
+      if (!promiseCompensationAttempted && !transferAlreadySuccessful && sentReplyTexts.some(promisesTeamContact)) {
+        promiseCompensationAttempted = true;
+        await this.compensateTeamPromise(sentReplyTexts, toolContext, agent.kind, replyAlreadySuccessful, observeToolSuccess);
+      }
       this.logger.error(
         `Agent run ${run.id} failed: ${err?.message ?? err}`,
         err?.stack,
@@ -717,7 +719,7 @@ export class AiAgentRunnerService {
         where: { id: run.id },
         data: {
           status: AiRunStatus.FAILED,
-          ...(transferReplyAttempted ? { finalAction } : {}),
+          ...((transferReplyAttempted || transferAlreadySuccessful) ? { finalAction } : {}),
           ...(effectiveModelId ? { modelId: effectiveModelId } : {}),
           errorMessage,
           finishedAt,
@@ -734,7 +736,7 @@ export class AiAgentRunnerService {
         runId: run.id,
         modelId: effectiveModelId,
         status: AiRunStatus.FAILED,
-        finalAction: transferReplyAttempted ? finalAction : null,
+        finalAction: (transferReplyAttempted || transferAlreadySuccessful) ? finalAction : null,
         errorMessage,
         finishedAt,
         durationMs,
@@ -747,6 +749,40 @@ export class AiAgentRunnerService {
     } finally {
       if (transferReplyAttempted && !replyAlreadySuccessful) {
         this.logger.warn(`Run ${run.id}: transfer_without_reply`);
+      }
+    }
+  }
+
+  private async compensateTeamPromise(
+    texts: string[], ctx: ToolContext, kind: 'ORCHESTRATOR' | 'WORKER', replied: boolean,
+    observe: (name: string, output: unknown, text?: string) => void,
+  ): Promise<void> {
+    const promise = texts.find(promisesTeamContact);
+    if (!promise) return;
+    const input = { reason: `A IA disse à pessoa que a equipe seria acionada: "${promise.slice(0, 300)}"` };
+    let successful = false;
+    let notifiedByExecutor = false;
+    try {
+      const [result] = await this.executeToolCalls(
+        [{ id: `team-promise-${ctx.runId}`, name: 'transferToHuman', arguments: input }],
+        ctx, new Map(), replied, kind, false,
+        (name, output, text) => {
+          if (name === 'transferToHuman' && (output as any)?.ok === true) successful = true;
+          observe(name, output, text);
+        },
+      );
+      notifiedByExecutor = !!result;
+    } catch (err: any) {
+      this.logger.error(`Run ${ctx.runId}: team promise compensation audit failed: ${err?.message ?? err}`);
+    }
+    if (!successful) {
+      this.logger.warn(`Run ${ctx.runId}: team_promise_without_transfer`);
+      if (!notifiedByExecutor) {
+        try {
+          await this.notifyToolFailure({ ctx, toolName: 'transferToHuman', input, output: { ok: false, error: 'team_promise_without_transfer' } });
+        } catch (err: any) {
+          this.logger.warn(`Run ${ctx.runId}: failed to dispatch tool-failure notification: ${err?.message ?? err}`);
+        }
       }
     }
   }
@@ -823,6 +859,7 @@ export class AiAgentRunnerService {
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
     allowGroupSilence = false,
+    observeSuccess?: (name: string, output: unknown, text?: string) => void,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -962,6 +999,9 @@ export class AiAgentRunnerService {
         if (!isTransientFailure(errorMessage, output)) break;
         await new Promise((r) => setTimeout(r, 500));
       }
+
+      // Capture externally completed effects before fallible audit persistence.
+      observeSuccess?.(call.name, output, call.name === 'replyToConversation' ? String(call.arguments.text ?? '').trim() : undefined);
 
       const toolCallRow = await this.prisma.aiToolCall.create({
         data: {
