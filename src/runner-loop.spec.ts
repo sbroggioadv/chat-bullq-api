@@ -278,3 +278,12 @@ it('R5 resposta da volta impede a reexecução de 15 minutos pelo processor real
   expect(router.shouldHandle).not.toHaveBeenCalled();
   expect(runner.run).not.toHaveBeenCalled();
 });
+
+it('R5 ferramenta de transferência usa os textos aprovados sem promessa de tempo', async () => {
+  const w = world('orq', []);
+  const result = await w.tools.transferToHuman.execute({ reason: 'pedido sintético' }, { conversationId: 'c', agentId: 'orq', runId: 'r' });
+  expect(result.output.message).toBe('Transferência registrada com sucesso. A equipe foi acionada e vai dar continuidade — fluxo padrão, não é erro.');
+  expect(result.output.agent_should_say).toBe('Avise o cliente, com naturalidade, que a equipe foi acionada e vai dar continuidade. Não prometa horário nem prazo de retorno. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.');
+  expect(result.finalAction).toBe('TRANSFERRED_TO_HUMAN');
+  expect(w.pending.create).toHaveBeenCalledTimes(1);
+});

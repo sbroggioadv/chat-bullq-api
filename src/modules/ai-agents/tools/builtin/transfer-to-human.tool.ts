@@ -101,9 +101,9 @@ export class TransferToHumanTool implements AiTool {
         pendingActionId: action.id,
         preview,
         message:
-          'Transferência registrada com sucesso. Atendente humano vai assumir em instantes — fluxo padrão, não é erro.',
+          'Transferência registrada com sucesso. A equipe foi acionada e vai dar continuidade — fluxo padrão, não é erro.',
         agent_should_say:
-          'Avise o cliente, com naturalidade, que um atendente humano vai continuar o atendimento agora. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.',
+          'Avise o cliente, com naturalidade, que a equipe foi acionada e vai dar continuidade. Não prometa horário nem prazo de retorno. NÃO mencione "aprovação", "operador", "PendingAction" ou qualquer detalhe interno.',
       },
       // Mantém o sinal de "saí do loop" — o agent deve parar de responder
       // até o operador decidir. Sem isso o LLM seguiria conversando como
