@@ -502,6 +502,7 @@ export class AiAgentRunnerService {
           isTransferReply ? new Map() : customSkillsByName,
           replyAlreadySuccessful,
           agent.kind,
+          conversation.isGroup && !isTransferReply,
         );
 
         for (const result of toolResults) {
@@ -527,7 +528,8 @@ export class AiAgentRunnerService {
           }
           if (
             result.toolName === 'replyToConversation' &&
-            (result.output as any)?.ok === true
+            (result.output as any)?.ok === true &&
+            (result.output as any)?.silent !== true
           ) {
             replyAlreadySuccessful = true;
           }
@@ -820,6 +822,7 @@ export class AiAgentRunnerService {
     customSkillsByName: Map<string, AiSkill & { tool: AiTool | null }>,
     alreadyRepliedFromPriorIteration: boolean,
     agentKind: 'ORCHESTRATOR' | 'WORKER' = 'WORKER',
+    allowGroupSilence = false,
   ): Promise<
     Array<{
       toolCallId: string;
@@ -907,7 +910,11 @@ export class AiAgentRunnerService {
         errorMessage = undefined;
         try {
           const customSkill = customSkillsByName.get(call.name);
-          if (customSkill && customSkill.tool) {
+          if (allowGroupSilence && call.name === 'replyToConversation' && !String(call.arguments.text ?? '').trim()) {
+            // A normal group turn may deliberately stay silent. The transfer
+            // notice turn keeps the tool's existing empty-text failure.
+            output = { ok: true, silent: true };
+          } else if (customSkill && customSkill.tool) {
             const result =
               customSkill.source === 'SQL'
                 ? await this.sqlExecutor.execute(
@@ -990,14 +997,15 @@ export class AiAgentRunnerService {
         toolName: call.name,
         output,
         finalAction,
-        ...(call.name === 'replyToConversation' && (output as any)?.ok === true
+        ...(call.name === 'replyToConversation' && (output as any)?.ok === true && (output as any)?.silent !== true
           ? { replyText: String(call.arguments.text ?? '').trim() }
           : {}),
       });
 
       if (
         call.name === 'replyToConversation' &&
-        (output as any)?.ok === true
+        (output as any)?.ok === true &&
+        (output as any)?.silent !== true
       ) {
         repliedInThisBatch = true;
       }

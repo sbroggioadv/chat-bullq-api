@@ -403,3 +403,88 @@ it('R6 motivo limita o texto enviado a 300 caracteres', async () => {
   await run(w, 'esp');
   expect(w.pending.create).toHaveBeenCalledWith(expect.objectContaining({ args: { reason: `A IA disse à pessoa que a equipe seria acionada: "${text.slice(0, 300)}"`, summary: null } }));
 });
+
+describe('R6 silêncio em grupo', () => {
+  it.each(['orq', 'esp'])('vazio e espaços encerram %s sem resposta nem falha', async (agent) => {
+    for (const text of ['', '   \n\t ']) {
+      const w = world(agent, [batch(reply(text)), batch(reply('Não enviar.'))]);
+      w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+      await run(w, agent);
+      expect(w.sent()).toEqual([]);
+      expect(w.complete).toHaveBeenCalledTimes(1);
+      expect(w.runs()).toEqual(['NO_ACTION']);
+      expect(w.prisma.aiToolCall.create).toHaveBeenCalledTimes(1);
+      expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith({ data: expect.objectContaining({ runId: 'run1', toolName: 'replyToConversation', output: { ok: true, silent: true }, error: undefined }) });
+      expect(w.svc.emitToolCall).toHaveBeenCalledTimes(1);
+      expect(w.svc.notifyToolFailure).not.toHaveBeenCalled();
+      expect(w.store.messages).toHaveLength(1);
+      expect(w.store.messages[0].direction).toBe('INBOUND');
+    }
+  });
+  it.each([true, false])('vazio + transferência roda a volta (vazio primeiro=%s)', async (emptyFirst) => {
+    const empty = reply(' '); const transfer = tc('transferToHuman');
+    const w = world('orq', [batch(...(emptyFirst ? [empty, transfer] : [transfer, empty])), batch(reply('A equipe foi acionada.'))]);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'orq');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.sent()).toEqual(['A equipe foi acionada.']);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+    expect(w.svc.notifyToolFailure).not.toHaveBeenCalled();
+    expect(w.svc.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('transfer_without_reply'));
+  });
+  it('vazio na volta mantém erro antigo e aviso, sem terceira consulta', async () => {
+    const w = world('orq', [batch(tc('transferToHuman')), batch(reply('   ')), batch(reply('Não enviar.'))]);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'orq');
+    expect(w.complete).toHaveBeenCalledTimes(2);
+    expect(w.sent()).toEqual([]);
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith({ data: expect.objectContaining({ toolName: 'replyToConversation', output: { ok: false, error: 'text is empty' } }) });
+    expect(w.svc.logger.warn).toHaveBeenCalledWith('Run run1: transfer_without_reply');
+    expect(w.svc.notifyToolFailure).toHaveBeenCalledTimes(1);
+  });
+  it.each(['orq', 'esp'])('individual mantém text is empty e permite nova consulta (%s)', async (agent) => {
+    const w = world(agent, [batch(reply(' ')), batch(reply('Resposta.')), stop], [], false);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, agent);
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.complete).toHaveBeenCalledTimes(3);
+    expect(w.prisma.aiToolCall.create).toHaveBeenCalledWith({ data: expect.objectContaining({ output: { ok: false, error: 'text is empty' } }) });
+    expect(w.svc.notifyToolFailure).toHaveBeenCalledTimes(1);
+  });
+  it('silêncio não liga a trava de resposta nem bloqueia delegação no lote', async () => {
+    const w = world('orq', [batch(reply(''), delegate()), batch(reply('Resposta do especialista.'))]);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'orq');
+    expect(w.runAgents()).toEqual(['orq', 'esp']);
+    expect(w.sent()).toEqual(['Resposta do especialista.']);
+    expect(w.prisma.aiAgentHandoff.create).toHaveBeenCalledTimes(1);
+    expect(w.runs()).toEqual(['DELEGATED', 'REPLIED']);
+    expect(w.svc.notifyToolFailure).not.toHaveBeenCalled();
+    expect(w.prisma.aiToolCall.create.mock.calls.some((c: any[]) => c[0].data.error === 'delegate-after-reply-blocked')).toBe(false);
+  });
+  it('silêncio não bloqueia resposta real no mesmo lote', async () => {
+    const w = world('orq', [batch(reply(''), reply('Resposta.'))]);
+    w.svc.notifyToolFailure = jest.fn().mockResolvedValue(undefined);
+    await run(w, 'orq');
+    expect(w.sent()).toEqual(['Resposta.']);
+    expect(w.complete).toHaveBeenCalledTimes(1);
+    expect(w.runs()).toEqual(['REPLIED']);
+    expect(w.svc.notifyToolFailure).not.toHaveBeenCalled();
+  });
+  it('última mensagem segue INBOUND e processor de 15 minutos reexecuta como antes', async () => {
+    const { GroupNoReplyProcessor, GroupNoReplyService } = await import('./modules/ai-agents/runner/group-no-reply.service');
+    const w = world('orq', [batch(reply(''))]);
+    await run(w, 'orq');
+    expect(w.store.messages).toHaveLength(1);
+    const runner = { run: jest.fn().mockResolvedValue(undefined) };
+    const router = { shouldHandle: jest.fn().mockResolvedValue({ handle: true }) };
+    const guard = new GroupNoReplyService({} as any, w.prisma);
+    const processor = new GroupNoReplyProcessor(w.prisma, router as any, runner as any, guard);
+    await processor.process({ data: { conversationId: 'c', messageId: 'm', minutes: 15 } } as any);
+    expect(router.shouldHandle).toHaveBeenCalledTimes(1);
+    expect(runner.run).toHaveBeenCalledWith(expect.objectContaining({ triggerMessage: w.store.messages[0], expectedLatestMessageId: 'm', forcedAgentId: 'orq', persistActiveAgent: false, contextNote: NOTE }));
+  });
+});
