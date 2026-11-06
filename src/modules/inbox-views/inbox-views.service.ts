@@ -249,6 +249,7 @@ export class InboxViewsService {
       tagIds?: string;
       assignedToId?: string;
       stuck?: string;
+      projectKind?: 'ANY' | 'MENTORSHIP';
     },
   ) {
     const view = await this.findOne(id, organizationId, userId);
@@ -318,6 +319,7 @@ export class InboxViewsService {
         archived: finalArchived,
         unreadOnly: finalUnread,
         stuckOnly: finalStuck || undefined,
+        projectKind: ov.projectKind,
       },
       page,
       limit,

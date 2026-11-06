@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -9,7 +10,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { InboxViewsService } from './inbox-views.service';
 import {
   CreateInboxViewDto,
@@ -86,6 +87,7 @@ export class InboxViewsController {
     summary:
       'List conversations matching this view filters. Query params layer ON TOP — view = baseline, params = override (mesma semântica do inbox geral).',
   })
+  @ApiQuery({ name: 'projectKind', required: false, enum: ['ANY', 'MENTORSHIP'] })
   conversations(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
@@ -101,7 +103,11 @@ export class InboxViewsController {
     @Query('tagIds') tagIds?: string,
     @Query('assignedToId') assignedToId?: string,
     @Query('stuck') stuck?: string,
+    @Query('projectKind') projectKind?: string,
   ) {
+    if (projectKind !== undefined && projectKind !== 'ANY' && projectKind !== 'MENTORSHIP') {
+      throw new BadRequestException('projectKind inválido');
+    }
     return this.service.findConversations(
       id,
       orgId,
@@ -118,6 +124,7 @@ export class InboxViewsController {
         tagIds,
         assignedToId,
         stuck,
+        projectKind: projectKind as 'ANY' | 'MENTORSHIP' | undefined,
       },
     );
   }
