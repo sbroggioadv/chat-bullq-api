@@ -95,6 +95,10 @@ export class HistoryImportService {
     }
 
     // Gmail threads must remain distinct; other channels reuse an open conversation.
+    // Grupo não encerra: reutiliza a conversa mais recente do grupo em qualquer
+    // status, arquivada ou não (nunca extra fundida), SEM desarquivar nem
+    // reabrir aqui — isso só acontece em importMessages, se a sincronização
+    // trouxer mensagem nova (reviveGroupOnNewMessages).
     const existing = channel.type === ChannelType.GMAIL && normalized.externalConversationId
       ? null
       : await findFirstNotMerged(({ skip, take }) =>
@@ -103,15 +107,19 @@ export class HistoryImportService {
               organizationId: channel.organizationId,
               channelId: channel.id,
               contactId,
-              status: {
-                in: [
-                  ConversationStatus.PENDING,
-                  ConversationStatus.OPEN,
-                  ConversationStatus.BOT,
-                  ConversationStatus.WAITING,
-                ],
-              },
-              isArchived: false,
+              ...(normalized.isGroup
+                ? {}
+                : {
+                    status: {
+                      in: [
+                        ConversationStatus.PENDING,
+                        ConversationStatus.OPEN,
+                        ConversationStatus.BOT,
+                        ConversationStatus.WAITING,
+                      ],
+                    },
+                    isArchived: false,
+                  }),
             },
             orderBy: MOST_RECENT_FIRST,
             skip,
@@ -121,6 +129,7 @@ export class HistoryImportService {
 
     if (existing) {
       const data: Record<string, any> = {};
+      if (normalized.isGroup && !existing.isGroup) data.isGroup = true;
       if (normalized.externalConversationId) {
         const metadata = existing.metadata;
         data.metadata = {
@@ -184,7 +193,14 @@ export class HistoryImportService {
     // MergedConversationError sobe — a sincronização re-resolve a conversa.
     const { createdExternalIds, ...result } = await this.prisma.$transaction(async (tx) => {
       await throwIfMergedExtra(tx, conversationId);
-      return this.insertMessages(tx, conversationId, messages);
+      // Estado lido ANTES de gravar: a gravação de lastMessageAt muda updatedAt.
+      const before = await tx.conversation.findUnique({
+        where: { id: conversationId },
+        select: { isGroup: true, isArchived: true, archivedAt: true, status: true, closedAt: true, updatedAt: true },
+      });
+      const { newestCreatedAt, ...inserted } = await this.insertMessages(tx, conversationId, messages);
+      await this.reviveGroupOnNewMessages(tx, conversationId, before, newestCreatedAt);
+      return inserted;
     });
 
     // SPEC-017: depois do commit, dispara o espelhamento da mídia do CDN da
@@ -203,7 +219,7 @@ export class HistoryImportService {
     tx: Prisma.TransactionClient,
     conversationId: string,
     messages: NormalizedHistoricalMessage[],
-  ): Promise<MessagesImportResult & { createdExternalIds: string[] }> {
+  ): Promise<MessagesImportResult & { createdExternalIds: string[]; newestCreatedAt: Date | null }> {
     const externalIds = messages.map((m) => m.externalMessageId).filter(Boolean);
     const existing = await tx.message.findMany({
       where: {
@@ -219,7 +235,7 @@ export class HistoryImportService {
     );
 
     if (toCreate.length === 0) {
-      return { imported: 0, skipped: messages.length, createdExternalIds: [] };
+      return { imported: 0, skipped: messages.length, createdExternalIds: [], newestCreatedAt: null };
     }
 
     await tx.message.createMany({
@@ -260,7 +276,56 @@ export class HistoryImportService {
       imported: toCreate.length,
       skipped: messages.length - toCreate.length,
       createdExternalIds: toCreate.map((m) => m.externalMessageId),
+      newestCreatedAt: latestTimestamp.getTime() > 0 ? latestTimestamp : null,
     };
+  }
+
+  // Grupo não encerra: a conversa arquivada (ou fechada) do grupo só volta à
+  // caixa se a sincronização trouxe mensagem NOVA — ainda não gravada
+  // (insertMessages) e posterior ao arquivamento/fechamento (sem a data,
+  // updatedAt lido antes da gravação). Sincronização sem mensagem nova não
+  // desarquiva nem reabre nada. Pessoa: nada muda aqui.
+  private async reviveGroupOnNewMessages(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    before: {
+      isGroup: boolean;
+      isArchived: boolean;
+      archivedAt: Date | null;
+      status: ConversationStatus;
+      closedAt: Date | null;
+      updatedAt: Date;
+    } | null,
+    newestCreatedAt: Date | null,
+  ): Promise<void> {
+    if (!before?.isGroup || !newestCreatedAt) return;
+    const unarchive = before.isArchived && newestCreatedAt > (before.archivedAt ?? before.updatedAt);
+    const reopen = before.status === ConversationStatus.CLOSED
+      && newestCreatedAt > (before.closedAt ?? before.updatedAt);
+    if (!unarchive && !reopen) return;
+
+    await tx.conversation.update({
+      where: { id: conversationId },
+      data: {
+        ...(unarchive ? { isArchived: false, archivedAt: null, archivedById: null } : {}),
+        ...(reopen ? { status: ConversationStatus.PENDING, closedAt: null, assignedToId: null } : {}),
+      },
+    });
+    const metadata = { trigger: 'history_import_new_message', isGroup: true };
+    if (unarchive) {
+      await tx.conversationAuditLog.create({ data: { conversationId, action: 'UNARCHIVED', metadata } });
+    }
+    if (reopen) {
+      await tx.conversationAuditLog.create({
+        data: {
+          conversationId,
+          action: 'REOPENED',
+          fromValue: ConversationStatus.CLOSED,
+          toValue: ConversationStatus.PENDING,
+          metadata,
+        },
+      });
+    }
   }
 
   async notifyConversationImported(

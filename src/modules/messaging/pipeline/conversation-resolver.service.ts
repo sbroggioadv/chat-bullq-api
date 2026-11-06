@@ -18,8 +18,9 @@ const OPEN_STATES = [
   ConversationStatus.WAITING,
 ] as const;
 
-// Conversa arquivada nunca recebe mensagem nova: fica fora da escolha. Entre
-// várias abertas, vence a de mensagem mais recente, com desempate fixo.
+// Pessoa: conversa arquivada nunca recebe mensagem nova (fica fora da escolha).
+// Grupo: a arquivada é desarquivada e reutilizada (reuseGroupConversation).
+// Entre várias candidatas, vence a de mensagem mais recente, com desempate fixo.
 const MOST_RECENT_FIRST = [
   { lastMessageAt: { sort: 'desc' as const, nulls: 'last' as const } },
   { createdAt: 'desc' as const },
@@ -52,9 +53,15 @@ export class ConversationResolverService {
         const existing = await this.findOpen(organizationId, channelId, contactId);
         if (existing) return this.touchOpen(existing, isGroup);
 
-        // Extra fundida (pela marca, mesmo desarquivada) nunca é reaberta.
-        // Paginação estável: desempate por id depois de closedAt.
-        const lastClosed = await findFirstNotMerged(({ skip, take }) =>
+        if (isGroup) {
+          const reused = await this.reuseGroupConversation(organizationId, channelId, contactId);
+          if (reused) return reused;
+        }
+
+        // Pessoa: só reabre fechada não arquivada há menos de 24h (grupo já
+        // foi resolvido acima). Extra fundida (pela marca, mesmo desarquivada)
+        // nunca é reaberta. Paginação estável: desempate por id depois de closedAt.
+        const lastClosed = isGroup ? null : await findFirstNotMerged(({ skip, take }) =>
           this.prisma.conversation.findMany({
             where: {
               organizationId,
@@ -151,6 +158,77 @@ export class ConversationResolverService {
         take,
       }),
     );
+  }
+
+  // Grupo não encerra: arquivar só tira da lista. Quando o grupo fala, a
+  // conversa mais recente dele (arquivada ou não, qualquer status) é
+  // reutilizada — desarquivada e, se fechada, reaberta sem janela de 24h.
+  // Extra fundida (pela marca) nunca é escolhida nem desarquivada; sem
+  // nenhuma outra conversa do grupo, devolve null e o chamador cria.
+  private async reuseGroupConversation(
+    organizationId: string,
+    channelId: string,
+    contactId: string,
+  ): Promise<ResolvedConversation | null> {
+    const group = await findFirstNotMerged(({ skip, take }) =>
+      this.prisma.conversation.findMany({
+        where: { organizationId, channelId, contactId },
+        orderBy: MOST_RECENT_FIRST,
+        skip,
+        take,
+      }),
+    );
+    if (!group) return null;
+
+    const wasReopened = group.status === ConversationStatus.CLOSED;
+    const customerReplied = group.status === ConversationStatus.WAITING;
+    const status = wasReopened
+      ? ConversationStatus.PENDING
+      : customerReplied
+        ? ConversationStatus.OPEN
+        : group.status;
+    const metadata = { trigger: 'new_inbound_message', isGroup: true };
+
+    const data = {
+      ...(group.isArchived ? { isArchived: false, archivedAt: null, archivedById: null } : {}),
+      ...(wasReopened ? { status, closedAt: null, assignedToId: null } : {}),
+      ...(customerReplied ? { status } : {}),
+      ...(group.isGroup ? {} : { isGroup: true }),
+    };
+    if (Object.keys(data).length) {
+      await this.prisma.conversation.update({ where: { id: group.id }, data });
+    }
+    if (group.isArchived) {
+      await this.prisma.conversationAuditLog.create({
+        data: { conversationId: group.id, action: 'UNARCHIVED', metadata },
+      });
+    }
+    if (wasReopened) {
+      await this.prisma.conversationAuditLog.create({
+        data: {
+          conversationId: group.id,
+          action: 'REOPENED',
+          fromValue: ConversationStatus.CLOSED,
+          toValue: ConversationStatus.PENDING,
+          metadata,
+        },
+      });
+    }
+    if (customerReplied) {
+      await this.prisma.conversationAuditLog.create({
+        data: {
+          conversationId: group.id,
+          action: 'STATUS_CHANGED',
+          fromValue: ConversationStatus.WAITING,
+          toValue: ConversationStatus.OPEN,
+          metadata: { trigger: 'customer_replied' },
+        },
+      });
+    }
+    this.logger.log(
+      `Group conversation reused: ${group.id} (unarchived: ${group.isArchived}, reopened: ${wasReopened})`,
+    );
+    return { conversationId: group.id, status, isNew: false, wasReopened };
   }
 
   private async touchOpen(

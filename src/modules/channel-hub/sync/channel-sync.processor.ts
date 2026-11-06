@@ -123,8 +123,9 @@ export class ChannelSyncProcessor extends WorkerHost {
           } catch (err) {
             if (!(err instanceof MergedConversationError)) throw err;
             // A conversa virou extra fundida: re-resolve UMA vez pela
-            // resolução padrão do importador (exclui arquivadas no WhatsApp)
-            // e reimporta — a deduplicação por externalId evita repetir.
+            // resolução padrão do importador (nunca escolhe extra fundida; no
+            // WhatsApp, pessoa arquivada fica de fora) e reimporta — a
+            // deduplicação por externalId evita repetir.
             importResult = await this.importer.importConversation(channel, conv);
             msgResult = await this.importConversationMessages(
               channel,

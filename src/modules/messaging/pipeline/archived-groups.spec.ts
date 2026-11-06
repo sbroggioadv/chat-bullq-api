@@ -1,23 +1,28 @@
-import { ConversationStatus } from '@prisma/client';
+import { ChannelType, ConversationStatus } from '@prisma/client';
 import { ConversationResolverService } from './conversation-resolver.service';
+import { HistoryImportService } from './history-import.service';
 import { SegmentReadService } from '../../segments/segment-read.service';
 import { GroupNotifyService } from '../../ai-agents/tools/client-ops/group-notify.service';
 
-// Regressão de GRUPOS com conversa arquivada pelo usuário (a limpeza de
-// duplicadas não toca grupos: is_group=false no 02-aplicar.sql). Fixa o
-// comportamento esperado depois de excluir arquivadas no resolvedor.
+// Regressão de GRUPOS com conversa arquivada pelo usuário. Grupo não encerra:
+// arquivar só tira da lista, e a conversa volta quando o grupo fala — é
+// desarquivada e reutilizada, nunca duplicada (decisão do dono do produto,
+// 06/11). Extra fundida (marca cleanup_merged_into) segue fora da escolha.
 
 const JID = '120363000000000000@g.us';
 
 describe('grupo arquivado — inbound ao vivo', () => {
-  it('nova mensagem no grupo cuja única conversa está arquivada → cria conversa de grupo nova (a arquivada fica intacta)', async () => {
-    const arquivada = { id: 'grupo-arquivado', organizationId: 'org', channelId: 'ch', contactId: 'grupo', status: ConversationStatus.OPEN, isArchived: true, isGroup: true };
+  function setup(rows: Array<Record<string, unknown>>) {
     const prisma = {
       conversation: {
-        findMany: jest.fn(async ({ where }: any) => {
-          const statusOk = where.status?.in ? where.status.in.includes(arquivada.status) : where.status === arquivada.status;
-          const archivedOk = where.isArchived === undefined || where.isArchived === arquivada.isArchived;
-          return statusOk && archivedOk && where.contactId === arquivada.contactId ? [arquivada] : [];
+        findMany: jest.fn(async ({ where, skip = 0, take }: any) => {
+          const hits = rows.filter((c: any) => {
+            const statusOk = where.status === undefined
+              || (where.status?.in ? where.status.in.includes(c.status) : where.status === c.status);
+            const archivedOk = where.isArchived === undefined || where.isArchived === c.isArchived;
+            return statusOk && archivedOk && where.contactId === c.contactId;
+          });
+          return take === undefined ? hits.slice(skip) : hits.slice(skip, skip + take);
         }),
         create: jest.fn().mockResolvedValue({ id: 'grupo-novo' }),
         update: jest.fn(),
@@ -25,12 +30,101 @@ describe('grupo arquivado — inbound ao vivo', () => {
       conversationAuditLog: { create: jest.fn() },
     };
     const resolver = new ConversationResolverService(prisma as any, { withLock: (_k: string, fn: () => unknown) => fn() } as any);
+    return { prisma, resolver };
+  }
+  const base = { organizationId: 'org', channelId: 'ch', contactId: 'grupo', isGroup: true, metadata: {} };
+
+  it('nova mensagem no grupo cuja única conversa está arquivada → desarquiva e reutiliza essa conversa (nenhuma nova)', async () => {
+    const { prisma, resolver } = setup([{ ...base, id: 'grupo-arquivado', status: ConversationStatus.OPEN, isArchived: true }]);
+
+    const r = await resolver.resolve('org', 'ch', 'grupo', true);
+
+    expect(r).toEqual({ conversationId: 'grupo-arquivado', status: ConversationStatus.OPEN, isNew: false, wasReopened: false });
+    expect(prisma.conversation.update).toHaveBeenCalledTimes(1);
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'grupo-arquivado' },
+      data: expect.objectContaining({ isArchived: false, archivedAt: null, archivedById: null }),
+    });
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+    expect(prisma.conversationAuditLog.create).toHaveBeenCalledWith({
+      data: { conversationId: 'grupo-arquivado', action: 'UNARCHIVED', metadata: { trigger: 'new_inbound_message', isGroup: true } },
+    });
+  });
+
+  it('única conversa do grupo é extra fundida (arquivada) → cria nova e a fundida fica intacta', async () => {
+    const { prisma, resolver } = setup([
+      { ...base, id: 'extra-fundida', status: ConversationStatus.OPEN, isArchived: true, metadata: { cleanup_merged_into: 'original-apagada' } },
+    ]);
 
     const r = await resolver.resolve('org', 'ch', 'grupo', true);
 
     expect(r).toMatchObject({ conversationId: 'grupo-novo', isNew: true });
     expect(prisma.conversation.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ isGroup: true, contactId: 'grupo' }) }));
     expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('grupo arquivado — importador de histórico (sincronização)', () => {
+  const archivedAt = new Date('2026-11-05T10:00:00Z');
+  const channel: any = { id: 'ch', organizationId: 'org', type: ChannelType.WHATSAPP_ZAPPFY };
+  const arquivada = {
+    id: 'grupo-arquivado', organizationId: 'org', channelId: 'ch', contactId: 'grupo', status: ConversationStatus.OPEN,
+    isArchived: true, archivedAt, isGroup: true, closedAt: null, updatedAt: archivedAt, lastMessageAt: archivedAt, metadata: {},
+  };
+  function setup(gravadas: string[] = []) {
+    const prisma: any = {
+      contactChannel: { findUnique: jest.fn().mockResolvedValue({ id: 'cc', contactId: 'grupo', profileName: 'Grupo', contact: { organizationId: 'org' } }), update: jest.fn() },
+      conversation: {
+        findMany: jest.fn(async ({ where }: any) => {
+          const statusOk = where.status === undefined || where.status.in?.includes(arquivada.status);
+          const archivedOk = where.isArchived === undefined || where.isArchived === arquivada.isArchived;
+          return !where.metadata && statusOk && archivedOk && where.contactId === arquivada.contactId ? [arquivada] : [];
+        }),
+        findUnique: jest.fn().mockResolvedValue(arquivada),
+        update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        create: jest.fn().mockResolvedValue({ id: 'grupo-novo' }),
+      },
+      message: { findMany: jest.fn().mockResolvedValue(gravadas.map((externalId) => ({ externalId }))), createMany: jest.fn() },
+      conversationAuditLog: { create: jest.fn() },
+    };
+    prisma.$transaction = jest.fn((fn: any) => fn(prisma));
+    return { prisma, svc: new HistoryImportService(prisma, {} as any) };
+  }
+  const msg = (externalMessageId: string, timestamp: Date): any =>
+    ({ externalMessageId, externalConversationId: JID, externalContactId: JID, direction: 'INBOUND', timestamp, type: 'TEXT', content: {} });
+
+  it('importConversation de grupo reutiliza a conversa arquivada sem desarquivar (nenhuma nova)', async () => {
+    const { prisma, svc } = setup();
+
+    const r = await svc.importConversation(channel, { externalConversationId: JID, externalContactId: JID, isGroup: true });
+
+    expect(r).toEqual({ conversationId: 'grupo-arquivado', contactId: 'grupo', isNew: false });
+    expect(prisma.conversation.create).not.toHaveBeenCalled();
+    expect(prisma.conversation.update).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ isArchived: expect.anything() }) }));
+  });
+
+  it('importMessages sem mensagem nova (external_id já gravado) não desarquiva', async () => {
+    const { prisma, svc } = setup(['ja-gravada']);
+
+    await svc.importMessages(channel, 'grupo-arquivado', [msg('ja-gravada', new Date('2026-11-06T10:00:00Z'))]);
+
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+    expect(prisma.conversationAuditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('importMessages com mensagem nova posterior ao arquivamento desarquiva a conversa do grupo', async () => {
+    const { prisma, svc } = setup();
+
+    await svc.importMessages(channel, 'grupo-arquivado', [msg('nova', new Date('2026-11-06T10:00:00Z'))]);
+
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'grupo-arquivado' },
+      data: { isArchived: false, archivedAt: null, archivedById: null },
+    });
+    expect(prisma.conversationAuditLog.create).toHaveBeenCalledWith({
+      data: { conversationId: 'grupo-arquivado', action: 'UNARCHIVED', metadata: { trigger: 'history_import_new_message', isGroup: true } },
+    });
   });
 });
 
