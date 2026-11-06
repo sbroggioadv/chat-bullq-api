@@ -404,13 +404,14 @@ describe.each([true, false])('R6 promessa enviada (grupo=%s)', (group) => {
     expect(w.complete).toHaveBeenCalledTimes(1);
   });
 });
-it('R6 texto solto do orquestrador em grupo continua descartado', async () => {
+it('R6 texto solto sem classificação de escalonamento recebe um nudge e continua descartado', async () => {
   const w = world('orq', [say(TEAM_PROMISE)]);
   await run(w, 'orq');
   expect(w.sent()).toEqual([]);
   expect(w.pending.create).not.toHaveBeenCalled();
   expect(transferRows(w)).toEqual([]);
-  expect(w.complete).toHaveBeenCalledTimes(1);
+  expect(w.complete).toHaveBeenCalledTimes(2);
+  expect(w.seen[1]).toContain('Em grupo, texto sem ferramenta é descartado.');
 });
 it('R6 motivo limita o texto enviado a 300 caracteres', async () => {
   const text = TEAM_PROMISE + ' orientação'.repeat(40);
@@ -914,4 +915,15 @@ describe('R10 checagem fixa com transporte real simulado', () => {
     expect(resolver.resolveProvider).not.toHaveBeenCalled();
     expect(http).toEqual([]);
   });
+});
+
+it('P9 texto solto ESCALATE_HUMAN usa ferramentas reais e registra uma transferência', async () => {
+  const w = world(null, [say('Vou acionar a equipe.'), say('Vou acionar a equipe.')]);
+  w.svc.agentRouter.selectAgent.mockResolvedValue({ agentId: 'orq', classifiedIntent: 'ESCALATE_HUMAN' });
+  await w.svc.run({ conversation: w.conv(), triggerMessage: w.store.messages[0] });
+  expect(w.complete).toHaveBeenCalledTimes(2);
+  expect(w.sent()).toEqual(['Vou acionar a equipe para ajudar com seu pedido.']);
+  expect(transferRows(w)).toHaveLength(1);
+  expect(w.pending.create).toHaveBeenCalledTimes(1);
+  expect(w.runs()).toEqual(['TRANSFERRED_TO_HUMAN']);
 });

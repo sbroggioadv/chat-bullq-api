@@ -151,6 +151,19 @@ export class AiAgentRunnerService {
       return;
     }
 
+    if (selection?.noAction) {
+      const finishedAt = new Date();
+      await this.prisma.aiAgentRun.create({ data: {
+        organizationId: conversation.organizationId, conversationId: conversation.id,
+        agentId: agent.id, triggerMessageId: triggerMessage.id, modelId: agent.modelId,
+        status: AiRunStatus.COMPLETED, finalAction: AiFinalAction.NO_ACTION,
+        classifiedIntent: selection.classifiedIntent, classifierConfidence: selection.classifierConfidence,
+        skippedOrchestrator: true, finishedAt, durationMs: 0,
+        inputTokens: 0, outputTokens: 0, costUsd: selection.classifierCostUsd ?? 0,
+      } });
+      return;
+    }
+
     // S22 — Cadence gate: verifica caps de rate-limit antes de iniciar o run
     // (evita gastar tokens do LLM se a resposta vai ser bloqueada de qualquer forma)
     const scopeFeatureEnabled = process.env.AI_SCOPE_RESOLVER_ENABLED !== 'false';
@@ -330,6 +343,8 @@ export class AiAgentRunnerService {
     let exhaustionMessage: string | undefined;
     const toolsCalled = new Set<string>();
     let salesNudgeUsed = false;
+    let groupTextNudgeUsed = false;
+    let groupTextNudgePending = false;
     let conversationalNudgeUsed = false;
     // Hard cap of 1 successful replyToConversation per run. The system
     // prompt encourages "uma ideia por mensagem" + multi-step consultative
@@ -379,8 +394,9 @@ export class AiAgentRunnerService {
 
       if (!route.ok) throw route.error;
 
-      while (iterationCount < MAX_TOOL_ITERATIONS || transferReplyPending) {
+      while (iterationCount < MAX_TOOL_ITERATIONS || transferReplyPending || groupTextNudgePending) {
         const isTransferReply = transferReplyPending;
+        groupTextNudgePending = false;
         transferReplyPending = false;
         if (isTransferReply) transferReplyAttempted = true;
         iterationCount++;
@@ -460,6 +476,38 @@ export class AiAgentRunnerService {
               );
             }
           } else if (conversation.isGroup && isConversationalOrchestrator(agent) && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+            if (!groupTextNudgeUsed) {
+              groupTextNudgeUsed = true;
+              groupTextNudgePending = true;
+              messages.push(response.message, { role: 'user', content:
+                'Em grupo, texto sem ferramenta é descartado. Se for responder, use replyToConversation; se for chamar a equipe, chame transferToHuman agora.' });
+              continue;
+            }
+            if (selection?.classifiedIntent === 'ESCALATE_HUMAN') {
+              // Plain output can contain internal reasoning. Send a bounded
+              // customer notice, keeping the sanitized output as internal reason.
+              if (!replyAlreadySuccessful) {
+                const notice = 'Vou acionar a equipe para ajudar com seu pedido.';
+                const [reply] = await this.executeToolCalls(
+                  [{ id: `group-text-reply-${run.id}`, name: 'replyToConversation', arguments: { text: notice } }],
+                  toolContext, new Map(), replyAlreadySuccessful, agent.kind, false, observeToolSuccess,
+                );
+                if ((reply.output as any)?.error === 'stale_group_check') {
+                  exhaustionMessage = 'stale_group_check';
+                  break;
+                }
+              }
+              const [transfer] = await this.executeToolCalls(
+                [{ id: `group-text-transfer-${run.id}`, name: 'transferToHuman', arguments: { reason: text.slice(0, 500) } }],
+                toolContext, new Map(), replyAlreadySuccessful, agent.kind, false, observeToolSuccess,
+              );
+              if ((transfer.output as any)?.error === 'stale_group_check') {
+                exhaustionMessage = 'stale_group_check';
+                break;
+              }
+              if (transfer.finalAction) finalAction = transfer.finalAction as AiFinalAction;
+              break;
+            }
             this.logger.warn(`Run ${run.id}: discarded group text without replyToConversation`);
           } else if (rawText && (tooShortForReal || !text)) {
             this.logger.warn(

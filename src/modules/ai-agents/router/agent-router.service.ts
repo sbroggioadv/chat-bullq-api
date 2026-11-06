@@ -27,6 +27,7 @@ const DAY_KEYS = [
 ] as const;
 
 export interface AgentSelection {
+  noAction?: boolean;
   agentId: string;
   agentName: string;
   classifiedIntent: string | null;
@@ -115,7 +116,7 @@ export class AgentRouterService {
     // 3. Carrega threshold da org
     const org = await this.prisma.organization.findUnique({
       where: { id: conversation.organizationId },
-      select: { aiClassifierThreshold: true },
+      select: { aiClassifierThreshold: true, name: true },
     });
     const threshold = org?.aiClassifierThreshold
       ? Number(org.aiClassifierThreshold)
@@ -194,8 +195,36 @@ export class AgentRouterService {
       fallback.classifiedIntent = classification.intent;
       fallback.classifierConfidence = classification.confidence;
       fallback.classifierCostUsd = classification.costUsd;
+      if (conversation.isGroup && classification.intent === IntentType.SMALL_TALK &&
+          classification.confidence >= threshold &&
+          !await this.mentionsOrganizationOrAssistant(conversation, latestMessageText, org?.name)) {
+        fallback.noAction = true;
+        this.logger.log({ msg: 'group_small_talk_skipped', conversationId: conversation.id,
+          intent: classification.intent, confidence: classification.confidence, threshold });
+      }
     }
     return fallback;
+  }
+
+  private async mentionsOrganizationOrAssistant(
+    conversation: Conversation, text: string, organizationName?: string,
+  ): Promise<boolean> {
+    // mentionHandle is the existing agent mention contract. Only agents linked
+    // to this channel are eligible; names cover explicit natural-language address.
+    const links = await this.prisma.aiAgentChannel.findMany({
+      where: { channelId: conversation.channelId, mode: 'AUTONOMOUS',
+        agent: { organizationId: conversation.organizationId, isActive: true, deletedAt: null } },
+      select: { agent: { select: { name: true, mentionHandle: true } } },
+    });
+    const normalize = (value: string) => value.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+    const normalized = normalize(text);
+    const names = [organizationName, ...links.flatMap(({ agent }) =>
+      [agent.name, agent.mentionHandle ? `@${agent.mentionHandle}` : undefined])];
+    return names.some((name) => {
+      if (!name?.trim()) return false;
+      const escaped = normalize(name.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_-])`, 'u').test(normalized);
+    });
   }
 
   private async fallbackToOrchestrator(
