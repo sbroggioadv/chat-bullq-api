@@ -147,10 +147,18 @@ export class TransferToHumanTool implements AiTool {
       return null;
     }
     const updated = await this.prisma.conversation.updateMany({
-      where: { id: ctx.conversationId, organizationId: ctx.organizationId, aiEnabled: { not: false } },
+      where: { id: ctx.conversationId, organizationId: ctx.organizationId, OR: [{ aiEnabled: null }, { aiEnabled: true }] },
       data: { aiEnabled: false, assignedToId: config.assigneeUserId, activeAgentId: null },
     });
-    if (!updated.count) return this.immediateResult({ alreadyTransferred: true });
+    if (!updated.count) {
+      const current = await this.prisma.conversation.findFirst({
+        where: { id: ctx.conversationId, organizationId: ctx.organizationId },
+        select: { aiEnabled: true },
+      });
+      if (current?.aiEnabled === false) return this.immediateResult({ alreadyTransferred: true });
+      this.logger.error(`Run ${ctx.runId}: aiHandoff pause not confirmed; state=${JSON.stringify(current)}`);
+      return null;
+    }
     const groupName = conversation.contact.name?.trim() || 'Grupo sem nome';
     let notified = false;
     let skipped = false;

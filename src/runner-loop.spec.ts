@@ -48,7 +48,7 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
     conversation: {
       update: jest.fn(async ({ data }: any) => { if ('activeAgentId' in data) store.activeAgentId = data.activeAgentId; return {}; }),
       findFirst: jest.fn(async () => ({ ...conv(), contact: { name: 'Grupo sintético' } })),
-      updateMany: jest.fn(async ({ where, data }: any) => { if (where.aiEnabled && store.aiEnabled === false) return { count: 0 }; Object.assign(store, data); return { count: 1 }; }),
+      updateMany: jest.fn(async ({ where, data }: any) => { if (where.OR && store.aiEnabled === false) return { count: 0 }; Object.assign(store, data); return { count: 1 }; }),
       findUnique: jest.fn(async ({ select }: any) => (select ? { metadata: null, organization: {} } : conv())),
     },
     $transaction: jest.fn(async (ops: any[]) => Promise.all(ops)),
@@ -584,7 +584,7 @@ describe('SPEC-022 pelo runner real', () => {
     await run(w, 'esp');
     expect(w.pending.create).not.toHaveBeenCalled();
     expect(w.store).toEqual(expect.objectContaining({ aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null }));
-    expect(w.prisma.conversation.updateMany).toHaveBeenCalledWith({ where: { id: 'c', organizationId: 'o', aiEnabled: { not: false } }, data: { aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null } });
+    expect(w.prisma.conversation.updateMany).toHaveBeenCalledWith({ where: { id: 'c', organizationId: 'o', OR: [{ aiEnabled: null }, { aiEnabled: true }] }, data: { aiEnabled: false, assignedToId: 'responsavel', activeAgentId: null } });
     const expectedReason = mode === 'ferramenta' ? reason : `A IA disse à pessoa que a equipe seria acionada: "${TEAM_PROMISE}"`;
     expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
     expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledWith({ organizationId: 'o', groupJid: HANDOFF.notifyGroupJid, text: `Chamado da IA\nGrupo: Grupo sintético\nMotivo: ${expectedReason.slice(0, 300)}\n${HANDOFF.notifyLine}`, currentConversationId: 'c', senderName: expect.any(String) });
@@ -595,6 +595,27 @@ describe('SPEC-022 pelo runner real', () => {
     expect(w.complete).toHaveBeenCalledTimes(mode === 'ferramenta' ? 2 : 1);
     expect(transferRows(w)[0].output).toEqual(expect.objectContaining({ ok: true, notified: true }));
     expect(transferRows(w)[0].output).not.toHaveProperty('pendingActionId');
+  });
+  it.each([null, true, 'ausente'])('count zero sem pausa confirmada (%s) cria pendência visível', async (state) => {
+    const w = configured([]);
+    w.prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+    w.prisma.conversation.findFirst.mockImplementation(async ({ select }: any) =>
+      select ? (state === 'ausente' ? null : { aiEnabled: state }) : { ...w.conv(), contact: { name: 'Grupo sintético' } });
+    const logger = (w.tools.transferToHuman as any).logger;
+    jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const ctx = { organizationId: 'o', conversationId: 'c', runId: 'r', agentId: 'esp' };
+    const result = await w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx);
+    expect(w.prisma.conversation.findFirst).toHaveBeenLastCalledWith({
+      where: { id: 'c', organizationId: 'o' }, select: { aiEnabled: true },
+    });
+    expect(result.output).toEqual(expect.objectContaining({ pendingActionId: 'pending', status: 'queued_for_processing' }));
+    expect(result.output).not.toHaveProperty('alreadyTransferred');
+    expect(w.pending.create).toHaveBeenCalledTimes(1);
+    expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'conversation:pending-action', expect.objectContaining({ pendingActionId: 'pending' }));
+    const read = state === 'ausente' ? null : { aiEnabled: state };
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(`Run r: aiHandoff pause not confirmed; state=${JSON.stringify(read)}`));
+    expect(w.groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
+    expect(w.notifications.notify).not.toHaveBeenCalled();
   });
   it('critério 2: chamadas concorrentes e repetidas avisam uma vez', async () => {
     const w = configured([]);
