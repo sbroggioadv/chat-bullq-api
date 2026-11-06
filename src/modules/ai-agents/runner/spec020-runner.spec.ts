@@ -107,3 +107,29 @@ it('permite exatamente um nudge mesmo quando texto chega na oitava iteração', 
   expect(complete).toHaveBeenCalledTimes(9);
   expect(svc.registry.get.mock.calls.filter(([name]: string[]) => name === 'transferToHuman')).toHaveLength(1);
 });
+
+
+it.each([
+  'Não devo responder no grupo. O cliente precisa mandar documentos com prazo amanhã.',
+  '[O cliente precisa mandar documentos com prazo amanhã.]',
+  'Como assistente, preciso chamar a equipe.',
+  'Human: oi',
+  'x',
+  'Não devo responder ' + 'documentos urgentes '.repeat(40),
+])('escalona texto bruto mesmo sanitizado vazio ou curto: %s', async (rawText) => {
+  const { svc, complete, update } = await execute(true, true, rawText, undefined, 0, false, undefined, 'ESCALATE_HUMAN');
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(complete.mock.calls[1][0].messages.filter((m: any) => typeof m.content === 'string' && m.content.startsWith('Em grupo,'))).toHaveLength(1);
+  expect(svc.registry.get.mock.calls.map(([name]: string[]) => name)).toEqual(['replyToConversation', 'transferToHuman']);
+  expect(svc.toolExecute.mock.calls.map(([input]: any[]) => input)).toEqual([
+    { text: 'Vou acionar a equipe para ajudar com seu pedido.' },
+    { reason: rawText.slice(0, 500) },
+  ]);
+  expect(update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ finalAction: 'TRANSFERRED_TO_HUMAN' }) }));
+});
+
+it.each(['', '   '])('escalonamento sem texto bruto não gera nudge nem transferência: %s', async (rawText) => {
+  const { svc, complete } = await execute(true, true, rawText, undefined, 0, false, undefined, 'ESCALATE_HUMAN');
+  expect(complete).toHaveBeenCalledTimes(1);
+  expect(svc.registry.get).not.toHaveBeenCalled();
+});

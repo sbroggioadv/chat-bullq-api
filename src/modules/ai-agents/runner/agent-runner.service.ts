@@ -452,6 +452,7 @@ export class AiAgentRunnerService {
           // or a stub too short to be a real reply. Sending such text would
           // look like the agent literally typing "Human: oi" to the user.
           const tooShortForReal = text.length < 4;
+          const hasEscalationText = selection?.classifiedIntent === 'ESCALATE_HUMAN' && rawText.length > 0;
           if (!(conversation.isGroup && isConversationalOrchestrator(agent)) && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
             this.logger.log(
               `Run ${run.id}: model emitted text without replyToConversation, auto-sending as fallback`,
@@ -475,7 +476,8 @@ export class AiAgentRunnerService {
                 `Run ${run.id}: fallback reply failed: ${err?.message ?? err}`,
               );
             }
-          } else if (conversation.isGroup && isConversationalOrchestrator(agent) && text && !tooShortForReal && finalAction === AiFinalAction.NO_ACTION) {
+          } else if (conversation.isGroup && isConversationalOrchestrator(agent) &&
+              (hasEscalationText || (text && !tooShortForReal)) && finalAction === AiFinalAction.NO_ACTION) {
             if (!groupTextNudgeUsed) {
               groupTextNudgeUsed = true;
               groupTextNudgePending = true;
@@ -485,7 +487,7 @@ export class AiAgentRunnerService {
             }
             if (selection?.classifiedIntent === 'ESCALATE_HUMAN') {
               // Plain output can contain internal reasoning. Send a bounded
-              // customer notice, keeping the sanitized output as internal reason.
+              // customer notice, keeping the raw output as a bounded internal reason.
               if (!replyAlreadySuccessful) {
                 const notice = 'Vou acionar a equipe para ajudar com seu pedido.';
                 const [reply] = await this.executeToolCalls(
@@ -498,7 +500,7 @@ export class AiAgentRunnerService {
                 }
               }
               const [transfer] = await this.executeToolCalls(
-                [{ id: `group-text-transfer-${run.id}`, name: 'transferToHuman', arguments: { reason: text.slice(0, 500) } }],
+                [{ id: `group-text-transfer-${run.id}`, name: 'transferToHuman', arguments: { reason: rawText.slice(0, 500) } }],
                 toolContext, new Map(), replyAlreadySuccessful, agent.kind, false, observeToolSuccess,
               );
               if ((transfer.output as any)?.error === 'stale_group_check') {

@@ -1,4 +1,5 @@
 import { AgentRouterService } from './agent-router.service';
+import { AiAgentRunnerService } from '../runner/agent-runner.service';
 
 describe('SPEC-018 — gate de grupo', () => {
   let org: any, channel: any, conversation: any, prisma: any, router: AgentRouterService;
@@ -51,6 +52,12 @@ describe('grupo SMALL_TALK determinístico', () => {
     [true, 'Boa tarde @augusto', 0.99, false],
     [true, 'Boa tarde Augusto', 0.99, false],
     [true, 'Boa tarde Acme', 0.99, false],
+    [true, 'Boa tarde Acme-SP', 0.99, false],
+    [true, 'BOA TARDE ÁCME', 0.99, false],
+    [true, '👋', 0.99, true],
+    [true, { type: 'audio', url: 'audio.ogg' }, 0.99, true],
+    [true, 'Boa tarde Acmes', 0.99, true],
+    [true, 'Boa tarde prefixoAcme', 0.99, true],
     [true, 'Boa tarde', 0.7, false],
     [false, 'Boa tarde', 0.99, false],
   ])('grupo=%s texto=%s confiança=%s silêncio=%s', async (isGroup, text, confidence, skip) => {
@@ -63,7 +70,7 @@ describe('grupo SMALL_TALK determinístico', () => {
     };
     const classifier: any = { classify: jest.fn().mockResolvedValue({ intent: 'SMALL_TALK', confidence, costUsd: 0 }) };
     const router = new AgentRouterService(prisma, classifier, {} as any);
-    const selection = await router.selectAgent({ id: 'c', organizationId: 'o', channelId: 'ch', isGroup, aiEnabled: true } as any, text);
+    const selection = await router.selectAgent({ id: 'c', organizationId: 'o', channelId: 'ch', isGroup, aiEnabled: true } as any, (AiAgentRunnerService.prototype as any).extractText(text));
     expect(selection?.noAction === true).toBe(skip);
   });
 });

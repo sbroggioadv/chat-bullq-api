@@ -223,7 +223,8 @@ export class AgentRouterService {
     return names.some((name) => {
       if (!name?.trim()) return false;
       const escaped = normalize(name.trim()).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      return new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_-])`, 'u').test(normalized);
+      const hyphenInToken = name.includes('-') ? '-' : '';
+      return new RegExp(`(^|[^\\p{L}\\p{N}_])${escaped}(?=$|[^\\p{L}\\p{N}_${hyphenInToken}])`, 'u').test(normalized);
     });
   }
 
