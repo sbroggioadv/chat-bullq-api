@@ -14,6 +14,7 @@ it('escolhe o bloco conversacional e mantém o roteador antigo quando false', ()
   const conversational = JSON.stringify(builder.buildMessages(context(true, false))[0]);
   const old = JSON.stringify(builder.buildMessages(context(false, false))[0]);
   expect(conversational).toContain('ORQUESTRADOR CONVERSACIONAL');
+  expect(conversational).toContain('- Quando couber responder, seja simples e curto. Resolva somente o que suas instruções permitem.');
   expect(old).toContain('Você NÃO resolve o problema sozinho');
   expect(old).not.toContain('ORQUESTRADOR CONVERSACIONAL');
 });
@@ -22,7 +23,7 @@ it('identifica remetente e permite silêncio apenas no grupo', () => {
   const group = JSON.stringify(builder.buildMessages(context(true, true)));
   const individual = JSON.stringify(builder.buildMessages(context(true, false)));
   expect(group).toContain('[Pessoa A]:');
-  expect(group).toContain('sem texto e sem ferramenta');
+  expect(group).toContain('- Em grupo, responda só quando houver pergunta ou pedido concreto que você possa resolver ou encaminhar. Conversas entre membros e saudações ou cumprimentos sem pedido devem terminar sem texto e sem ferramenta.');
   expect(individual).not.toContain('[Pessoa A]:');
   expect(individual).not.toContain('sem texto e sem ferramenta');
 });
@@ -56,9 +57,9 @@ it('saneia os dois caminhos de nome de remetente, preservando nomes comuns', () 
   expect(JSON.stringify(builder.buildMessages(context(true, true)))).toContain('[Pessoa A]:');
 });
 
-it('preserva o texto individual da base 3607448 e orienta ações em grupo', () => {
+it('valida o texto individual com o novo template e orienta ações em grupo', () => {
   const { createHash } = require('crypto');
-  const hashes: Record<string, string> = { ORCHESTRATOR: '37fc4e222a4069332dbb1d5a90d9a55fbd36bec42afd8aee699eb0fd552dc7e9', WORKER: '549b0c367171c494e2df07c0619c0febfbd21363e8b2231c7ed4022ed1b40474' };
+  const hashes: Record<string, string> = { ORCHESTRATOR: '50573d4ed4993489002aa530dd06727519f971380944938b99db6ae532f1c422', WORKER: '549b0c367171c494e2df07c0619c0febfbd21363e8b2231c7ed4022ed1b40474' };
   for (const kind of Object.keys(hashes)) {
     const individual = context(true, false); individual.agent.kind = kind;
     const builder = new PromptBuilderService(); jest.spyOn(builder as any, 'formatNow').mockReturnValue('DATA FIXA');

@@ -24,7 +24,7 @@ function world(activeAgentId: string | null, script: any[], extra: any[] = [], g
   let seq = 0;
   const outbound = { add: jest.fn().mockResolvedValue({}) };
   const realtime = { emitToChannel: jest.fn(), emitToConversation: jest.fn() };
-  const conv = () => ({ id: 'c', organizationId: 'o', channelId: 'ch', contactId: 'ct', isGroup: group, aiEnabled: store.aiEnabled, activeAgentId: store.activeAgentId });
+  const conv = () => ({ id: 'c', organizationId: 'o', channelId: 'ch', contactId: 'ct', isGroup: group, aiEnabled: store.aiEnabled, assignedToId: store.assignedToId ?? null, activeAgentId: store.activeAgentId });
   const agents = [orq, esp];
   const prisma: any = {
     aiAgent: { findFirst: jest.fn(async ({ where }: any) => agents.find((a) => a.id === where.id) ?? null), findUnique: jest.fn(async ({ where }: any) => ({ name: where.id })) },
@@ -600,20 +600,62 @@ describe('SPEC-022 pelo runner real', () => {
     const w = configured([]);
     w.prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
     w.prisma.conversation.findFirst.mockImplementation(async ({ select }: any) =>
-      select ? (state === 'ausente' ? null : { aiEnabled: state }) : { ...w.conv(), contact: { name: 'Grupo sintético' } });
+      select ? (state === 'ausente' ? null : { aiEnabled: state, assignedToId: null }) : { ...w.conv(), contact: { name: 'Grupo sintético' } });
     const logger = (w.tools.transferToHuman as any).logger;
     jest.spyOn(logger, 'error').mockImplementation(() => undefined);
     const ctx = { organizationId: 'o', conversationId: 'c', runId: 'r', agentId: 'esp' };
     const result = await w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx);
     expect(w.prisma.conversation.findFirst).toHaveBeenLastCalledWith({
-      where: { id: 'c', organizationId: 'o' }, select: { aiEnabled: true },
+      where: { id: 'c', organizationId: 'o' }, select: { aiEnabled: true, assignedToId: true },
     });
     expect(result.output).toEqual(expect.objectContaining({ pendingActionId: 'pending', status: 'queued_for_processing' }));
     expect(result.output).not.toHaveProperty('alreadyTransferred');
     expect(w.pending.create).toHaveBeenCalledTimes(1);
     expect(w.svc.realtime.emitToConversation).toHaveBeenCalledWith('c', 'conversation:pending-action', expect.objectContaining({ pendingActionId: 'pending' }));
-    const read = state === 'ausente' ? null : { aiEnabled: state };
+    const read = state === 'ausente' ? null : { aiEnabled: state, assignedToId: null };
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(`Run r: aiHandoff pause not confirmed; state=${JSON.stringify(read)}`));
+    expect(w.groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
+    expect(w.notifications.notify).not.toHaveBeenCalled();
+  });
+  it('pausada sem dono atribui por atualização condicional e reutiliza os avisos', async () => {
+    const w = configured([]);
+    w.store.aiEnabled = false;
+    w.prisma.conversation.updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    const ctx = { organizationId: 'o', conversationId: 'c', runId: 'r', agentId: 'esp' };
+    const result = await w.tools.transferToHuman.execute({ reason: 'Motivo' }, ctx);
+    expect(w.prisma.conversation.updateMany).toHaveBeenNthCalledWith(2, {
+      where: { id: 'c', organizationId: 'o', aiEnabled: false, assignedToId: null },
+      data: { assignedToId: HANDOFF.assigneeUserId },
+    });
+    expect(result.output).toEqual(expect.objectContaining({ ok: true, status: 'transferred', notified: true }));
+    expect(result.output).not.toHaveProperty('alreadyTransferred');
+    expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
+    expect(w.notifications.notify).toHaveBeenCalledTimes(1);
+    expect(w.pending.create).not.toHaveBeenCalled();
+  });
+  it.each(['outro-dono', null])('corrida ao atribuir pausa sem dono: dono final=%s', async (owner) => {
+    const w = configured([]);
+    w.prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+    let reads = 0;
+    w.prisma.conversation.findFirst.mockImplementation(async ({ select }: any) => select
+      ? { aiEnabled: false, assignedToId: ++reads === 1 ? null : owner }
+      : { ...w.conv(), contact: { name: 'Grupo sintético' } });
+    const logger = (w.tools.transferToHuman as any).logger;
+    jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const result = await w.tools.transferToHuman.execute({ reason: 'Motivo' }, { organizationId: 'o', conversationId: 'c', runId: 'r', agentId: 'esp' });
+    expect(w.prisma.conversation.updateMany).toHaveBeenCalledTimes(2);
+    expect(reads).toBe(2);
+    expect(w.prisma.conversation.findFirst).toHaveBeenLastCalledWith({ where: { id: 'c', organizationId: 'o' }, select: { aiEnabled: true, assignedToId: true } });
+    if (owner) {
+      expect(result.output).toEqual(expect.objectContaining({ alreadyTransferred: true }));
+      expect(w.pending.create).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+    } else {
+      expect(result.output).toEqual(expect.objectContaining({ pendingActionId: 'pending', status: 'queued_for_processing' }));
+      expect(result.output).not.toHaveProperty('alreadyTransferred');
+      expect(w.pending.create).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Run r: aiHandoff pause not confirmed; state={"aiEnabled":false,"assignedToId":null}'));
+    }
     expect(w.groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
     expect(w.notifications.notify).not.toHaveBeenCalled();
   });
@@ -782,7 +824,7 @@ describe('R9 checagem pelo runner real', () => {
   });
   it.each(['SIM', 'NAO', 'já pausada'])('SPEC-022 com resposta %s', async answer => {
     const w = configured([batch(reply(TEAM_PROMISE))]);
-    w.checkComplete.mockImplementation(async () => { if (answer === 'já pausada') w.store.aiEnabled = false; return say(answer === 'NAO' ? 'NAO' : 'SIM'); });
+    w.checkComplete.mockImplementation(async () => { if (answer === 'já pausada') { w.store.aiEnabled = false; w.store.assignedToId = 'responsavel'; } return say(answer === 'NAO' ? 'NAO' : 'SIM'); });
     await run(w, 'esp');
     expect(w.groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);
     expect(w.notifications.notify).toHaveBeenCalledTimes(answer === 'SIM' ? 1 : 0);

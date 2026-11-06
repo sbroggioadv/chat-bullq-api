@@ -151,13 +151,33 @@ export class TransferToHumanTool implements AiTool {
       data: { aiEnabled: false, assignedToId: config.assigneeUserId, activeAgentId: null },
     });
     if (!updated.count) {
-      const current = await this.prisma.conversation.findFirst({
+      let current = await this.prisma.conversation.findFirst({
         where: { id: ctx.conversationId, organizationId: ctx.organizationId },
-        select: { aiEnabled: true },
+        select: { aiEnabled: true, assignedToId: true },
       });
-      if (current?.aiEnabled === false) return this.immediateResult({ alreadyTransferred: true });
-      this.logger.error(`Run ${ctx.runId}: aiHandoff pause not confirmed; state=${JSON.stringify(current)}`);
-      return null;
+      if (current?.aiEnabled === false && current.assignedToId) {
+        return this.immediateResult({ alreadyTransferred: true });
+      }
+      if (current?.aiEnabled === false && !current.assignedToId) {
+        const assigned = await this.prisma.conversation.updateMany({
+          where: { id: ctx.conversationId, organizationId: ctx.organizationId, aiEnabled: false, assignedToId: null },
+          data: { assignedToId: config.assigneeUserId },
+        });
+        if (assigned.count !== 1) {
+          current = await this.prisma.conversation.findFirst({
+            where: { id: ctx.conversationId, organizationId: ctx.organizationId },
+            select: { aiEnabled: true, assignedToId: true },
+          });
+          if (current?.aiEnabled === false && current.assignedToId) {
+            return this.immediateResult({ alreadyTransferred: true });
+          }
+          this.logger.error(`Run ${ctx.runId}: aiHandoff pause not confirmed; state=${JSON.stringify(current)}`);
+          return null;
+        }
+      } else {
+        this.logger.error(`Run ${ctx.runId}: aiHandoff pause not confirmed; state=${JSON.stringify(current)}`);
+        return null;
+      }
     }
     const groupName = conversation.contact.name?.trim() || 'Grupo sem nome';
     let notified = false;

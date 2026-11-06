@@ -51,9 +51,9 @@ suite('Chamado de grupo no PostgreSQL local descartável', () => {
   beforeEach(() => jest.clearAllMocks());
   afterAll(async () => { await db?.$disconnect(); });
 
-  const create = (aiEnabled?: boolean) => db.conversation.create({ data: {
+  const create = (aiEnabled?: boolean, assignedToId?: string) => db.conversation.create({ data: {
     id: `${prefix}-conversation-${++sequence}`, organizationId, channelId, contactId,
-    isGroup: true, activeAgentId: agentId,
+    isGroup: true, activeAgentId: agentId, assignedToId,
     ...(aiEnabled === undefined ? {} : { aiEnabled }),
   } });
   const context = (conversationId: string): ToolContext => ({
@@ -76,13 +76,28 @@ suite('Chamado de grupo no PostgreSQL local descartável', () => {
     expect(pending.create).not.toHaveBeenCalled();
   });
 
-  it('confirma pausa existente sem alterar a linha ou avisar', async () => {
-    const before = await create(false);
+  it('confirma pausa existente com dono sem alterar a linha ou avisar', async () => {
+    const before = await create(false, assigneeUserId);
     const result = await tool.execute({ reason: 'Pedido sintético' }, context(before.id));
     expect(await db.conversation.findUniqueOrThrow({ where: { id: before.id } })).toEqual(before);
     expect(result.output).toEqual(expect.objectContaining({ alreadyTransferred: true }));
     expect(groupNotify.notifyGroupByJid).not.toHaveBeenCalled();
     expect(notifications.notify).not.toHaveBeenCalled();
+    expect(pending.create).not.toHaveBeenCalled();
+  });
+
+  it('atribui pausa sem dono e avisa uma vez sem alreadyTransferred', async () => {
+    const before = await create(false);
+    expect(before.assignedToId).toBeNull();
+    const result = await tool.execute({ reason: 'Pedido sintético' }, context(before.id));
+    const after = await db.conversation.findUniqueOrThrow({ where: { id: before.id } });
+    expect(after).toEqual({ ...before, assignedToId: assigneeUserId, updatedAt: expect.any(Date) });
+    expect(result.output).toEqual(expect.objectContaining({ ok: true, status: 'transferred', notified: true }));
+    expect(result.output).not.toHaveProperty('alreadyTransferred');
+    expect(groupNotify.notifyGroupByJid).toHaveBeenCalledTimes(1);
+    expect(groupNotify.notifyGroupByJid).toHaveBeenCalledWith(expect.objectContaining({ organizationId, currentConversationId: before.id, groupJid: 'synthetic@g.us' }));
+    expect(notifications.notify).toHaveBeenCalledTimes(1);
+    expect(notifications.notify).toHaveBeenCalledWith(expect.objectContaining({ organizationId, recipientId: assigneeUserId }));
     expect(pending.create).not.toHaveBeenCalled();
   });
 
