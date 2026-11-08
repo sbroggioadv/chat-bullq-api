@@ -6,7 +6,7 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { mergedOriginalId } from '../messaging/conversations/merged-conversation';
+import { assertNotMergedExtra, mergedOriginalId } from '../messaging/conversations/merged-conversation';
 import {
   Channel,
   ChannelType,
@@ -23,7 +23,6 @@ import {
 } from '../iam/channel-access/channel-access.service';
 import { GmailHttpClient } from '../channel-hub/adapters/gmail/gmail.http-client';
 
-const CAL_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
 const DEFAULT_TZ = 'America/Sao_Paulo';
 
 /** Paleta oficial de colorId de evento do Google (fallback se /colors falhar). */
@@ -357,6 +356,8 @@ export class CalendarService {
         id: String(ev.id),
         compositeId: `${calendarId}:${String(ev.id)}`,
         calendarId,
+        channelId: channel.id,
+        status: ev.status || 'confirmed',
         htmlLink: ev.htmlLink || null,
         meetLink,
         start: ev.start?.dateTime || null,
@@ -570,6 +571,13 @@ export class CalendarService {
         metadata: {
           kind: 'calendar_scheduled',
           calendarEventId: created.id,
+          eventId: created.id,
+          calendarChannelId: created.channelId,
+          title: created.summary || input.summary,
+          start: created.start || input.startIso,
+          end: created.end || input.endIso,
+          attendees: (input.attendeeEmails || []).map(email => email.trim().toLowerCase()).filter(email => email.includes('@')),
+          status: created.status,
           calendarId: created.calendarId,
           meetLink: created.meetLink,
           htmlLink: created.htmlLink,
@@ -588,6 +596,76 @@ export class CalendarService {
       conversationId: conversation.id,
       systemMessageId: message.id,
     };
+  }
+
+  /** Linked events only: never return unrelated organization calendar entries. */
+  async conversationMeetings(conversationId: string, organizationId: string, access: ChannelAccess) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId, deletedAt: null },
+      select: { id: true, channelId: true, metadata: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    this.channelAccess.assertChannelAccess(access, conversation.channelId);
+    assertNotMergedExtra(conversation, 'meeting_history');
+    const rows = await this.prisma.message.findMany({
+      where: { conversationId, conversation: { organizationId, deletedAt: null }, type: MessageContentType.SYSTEM, revokedAt: null },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+    const channels = (await this.prisma.channel.findMany({
+      where: { organizationId, type: ChannelType.GMAIL, deletedAt: null, isActive: true },
+      orderBy: { createdAt: 'asc' },
+    })).filter(channel => this.channelAccess.hasAccess(access, channel.id) && this.channelHasCalendar(channel));
+    const items: Array<{ eventId: string | null; title: string; start: string | null; end: string | null; meetLink: string | null; attendees: string[]; status: string; createdAt: Date }> = [];
+    const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const string = (value: unknown): string | null => typeof value === 'string' && value ? value : null;
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const meta = object(row.metadata), content = object(row.content);
+      const text = string(content.text) || '';
+      if (meta.kind !== 'calendar_scheduled' && !text.startsWith('📅 Reunião agendada:')) continue;
+      const eventId = string(meta.eventId) || string(meta.calendarEventId);
+      const calendarId = string(meta.calendarId) || 'primary';
+      const identity = `${string(meta.calendarChannelId) || ''}:${calendarId}:${eventId || row.id}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const item = {
+        eventId,
+        title: string(meta.title) || text.match(/^📅 Reunião agendada: (.+)/)?.[1] || 'Reunião',
+        // Old bubbles only contain a localized label. Preserve that label;
+        // inventing an ISO timezone or an end time would fabricate data.
+        start: string(meta.start) || text.match(/(?:^|\n)Quando: (.+)/)?.[1] || null,
+        end: string(meta.end),
+        meetLink: string(meta.meetLink) || text.match(/(?:^|\n)Meet: (https:\/\/\S+)/)?.[1] || null,
+        attendees: Array.isArray(meta.attendees) ? meta.attendees.filter((v): v is string => typeof v === 'string') : [],
+        status: string(meta.status) || 'unknown',
+        createdAt: row.createdAt,
+      };
+      const candidates = meta.calendarChannelId ? channels.filter(c => c.id === meta.calendarChannelId) : channels;
+      if (!eventId) { items.push(item); continue; }
+      for (const channel of candidates) {
+        try {
+          const http = await this.calClient(channel);
+          const { data: ev } = await http.get(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`);
+          item.title = ev.summary || item.title;
+          item.start = ev.start?.dateTime || ev.start?.date || item.start;
+          item.end = ev.end?.dateTime || ev.end?.date || item.end;
+          item.meetLink = ev.hangoutLink || ev.conferenceData?.entryPoints?.find((e: { entryPointType: string; uri?: string }) => e.entryPointType === 'video')?.uri || null;
+          item.attendees = (ev.attendees || []).map((a: { email?: string }) => a.email).filter((email: unknown): email is string => typeof email === 'string');
+          item.status = ev.status || item.status;
+          break;
+        } catch (err: unknown) {
+          const status = axios.isAxiosError(err) ? err.response?.status : (err as { response?: { status?: number } })?.response?.status;
+          if (status === 404 || status === 410) {
+            // A legacy bubble has no Google account identity: a missing event
+            // in one accessible account is not evidence of cancellation.
+            if (meta.calendarChannelId) item.status = 'cancelled';
+          }
+          else throw new BadGatewayException('Não foi possível consultar a reunião no Google Calendar');
+        }
+      }
+      items.push(item);
+    }
+    return { connected: channels.length > 0, items };
   }
 
   private throwCalError(err: any, action: string): never {
