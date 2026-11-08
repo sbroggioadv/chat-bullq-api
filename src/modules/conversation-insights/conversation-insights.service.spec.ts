@@ -1,5 +1,7 @@
-import { BadGatewayException, BadRequestException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { Logger, BadGatewayException, BadRequestException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { ConversationInsightsService } from './conversation-insights.service';
+import { AiLlmRouterService } from '../ai-agents/providers/ai-llm-router.service';
+import { ProviderResolverService } from '../ai-agents/providers/provider-resolver.service';
 import { ChannelAccessService } from '../iam/channel-access/channel-access.service';
 
 const at = new Date('2026-11-08T12:00:00Z');
@@ -115,4 +117,62 @@ describe('Conversation insights — SPEC-023', () => {
     await expect(service.generateSummary('c1', 'org1', 'ALL', {})).rejects.toBeInstanceOf(BadGatewayException);
     expect(db.$executeRaw).toHaveBeenCalledTimes(2);
   });
+  it('bounds rare-term scanning and continues after the last scanned row without losing hits', async () => {
+    const { service, db } = setup();
+    const rows = Array.from({ length: 5200 }, (_, i) => message(String(6000 - i).padStart(6, '0'), { text: i === 5100 ? 'termo raro' : 'outro' }));
+    db.message.findMany.mockImplementation(async ({ where, take }) => {
+      const before = where.OR?.find((part: { id?: { lt: string } }) => part.id)?.id.lt;
+      return rows.filter(row => !before || row.id < before).slice(0, take);
+    });
+    const first = await service.search('c1', 'org1', 'ALL', { q: 'raro' });
+    expect(first).toEqual({ items: [], nextCursor: rows[4999].id });
+    expect(db.message.findMany).toHaveBeenCalledTimes(25);
+    expect(db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      take: 200, select: { id: true, createdAt: true, direction: true, type: true, senderName: true, content: true },
+      where: expect.objectContaining({ conversationId: 'c1', conversation: { organizationId: 'org1', deletedAt: null } }),
+    }));
+    db.message.findFirst.mockResolvedValue(rows[4999]);
+    const second = await service.search('c1', 'org1', 'ALL', { q: 'raro', before: first.nextCursor! });
+    expect(second.items.map(row => row.id)).toEqual([rows[5100].id]);
+    expect(second.nextCursor).toBeNull();
+  });
+  it.each([{}, { force: false }, undefined])('reuses a fresh summary without reserving or invoking the LLM (%j)', async body => {
+    const { service, db, llm } = setup();
+    const summary = { text: 'salvo', sections: {}, generatedAt: at.toISOString(), messageCount: 1 };
+    db.conversation.findFirst.mockResolvedValue({ id: 'c1', channelId: 'ch1', metadata: { summary } });
+    expect(await service.generateSummary('c1', 'org1', 'ALL', body!)).toMatchObject({ text: 'salvo', stale: false });
+    expect(db.$executeRaw).not.toHaveBeenCalled(); expect(llm.completeWithProvider).not.toHaveBeenCalled();
+    expect(db.message.findMany).not.toHaveBeenCalled();
+  });
+  it.each([true, false])('regenerates a saved summary when force=%s or stale', async force => {
+    const { service, db, llm } = setup();
+    db.conversation.findFirst.mockResolvedValue({ id: 'c1', channelId: 'ch1', metadata: { summary: { text: 'salvo', sections: {}, generatedAt: at.toISOString(), messageCount: 1 } } });
+    db.message.count.mockResolvedValue(force ? 0 : 1); db.message.findMany.mockResolvedValue([message()]);
+    await service.generateSummary('c1', 'org1', 'ALL', { force });
+    expect(llm.completeWithProvider).toHaveBeenCalledTimes(1);
+    expect(db.$executeRaw).toHaveBeenCalledTimes(2);
+  });
+  it('logs a safe cause and exposes provider failure without logging secrets or message data', async () => {
+    const { service, db, llm } = setup(); db.message.findMany.mockResolvedValue([message()]);
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    try {
+      llm.completeWithProvider.mockRejectedValue({ name: 'AxiosError', message: 'secret key and conversation', response: { status: 401, data: 'secret' } });
+      await expect(service.generateSummary('c1', 'org1', 'ALL', {})).rejects.toMatchObject({ status: 502 });
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'conversation_summary_failed', stage: 'provider', errorType: 'AxiosError', status: 401 }));
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/secret|Ação/);
+    } finally { warn.mockRestore(); }
+  });
+  it('uses the economic model through the real resolver and router despite expensive org routing', async () => {
+    const { db } = setup(); db.message.findMany.mockResolvedValue([message()]);
+    const routing = { organizationCapabilityRouting: { findUnique: jest.fn().mockResolvedValue({ providerSelected: 'OPENAI', modelOverride: 'expensive-model' }) } };
+    const resolver = new ProviderResolverService(routing as never, { get: () => undefined } as never,
+      { getDecryptedCredential: async () => ({ apiKey: 'synthetic-key' }) } as never, {} as never);
+    const adapter = { complete: jest.fn().mockResolvedValue({ stopReason: 'stop', message: { content: JSON.stringify({ assunto: 'a', situacao: 's', pendencias: 'p', proximoPasso: 'n' }) } }) };
+    const router = new AiLlmRouterService(resolver, {} as never, adapter as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    const service = new ConversationInsightsService(db as never, new ChannelAccessService(db as never), {} as never, router, resolver);
+    await service.generateSummary('c1', 'org1', 'ALL', {});
+    expect(adapter.complete).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'gpt-4o-mini', organizationId: 'org1' }), 'synthetic-key', expect.any(String));
+    expect(routing.organizationCapabilityRouting.findUnique).toHaveBeenCalledTimes(1);
+  });
+
 });

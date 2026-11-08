@@ -1,4 +1,4 @@
-import { BadGatewayException, BadRequestException, HttpException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, HttpException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { AiProvider, MessageContentType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { ChannelAccess, ChannelAccessService } from '../iam/channel-access/channel-access.service';
@@ -47,6 +47,7 @@ function normalizedText(text: string) {
 
 @Injectable()
 export class ConversationInsightsService {
+  private readonly logger = new Logger(ConversationInsightsService.name);
   constructor(
     private readonly prisma: PrismaService,
     private readonly channels: ChannelAccessService,
@@ -95,9 +96,13 @@ export class ConversationInsightsService {
     let boundary = await this.boundary(id, org, query.before);
     const items: Array<{ id: string; createdAt: Date; direction: string; type: string; senderName: string | null; snippet: string; matchStart: number; matchLength: number }> = [];
     // JSON text fields need Unicode folding without requiring a database extension.
-    // Scan in bounded batches, stopping only at one extra hit or exhaustion.
-    while (items.length <= limit) {
-      const rows = await this.prisma.message.findMany({ where: { ...this.where(id, org), ...boundary }, orderBy: orderDesc, take: 200 });
+    // At most 5,000 rows per request. A partial cursor also advances empty pages.
+    let scanCursor: string | null = null;
+    for (let batch = 0; batch < 25; batch++) {
+      const rows = await this.prisma.message.findMany({
+        where: { ...this.where(id, org), ...boundary }, orderBy: orderDesc, take: 200,
+        select: { id: true, createdAt: true, direction: true, type: true, senderName: true, content: true },
+      });
       for (const row of rows) {
         const text = textContent(row.content), normalized = normalizedText(text);
         const match = normalized.normalized.indexOf(folded);
@@ -107,11 +112,12 @@ export class ConversationInsightsService {
         items.push({ id: row.id, createdAt: row.createdAt, direction: row.direction, type: row.type, senderName: row.senderName, snippet: text.slice(snippetStart, Math.max(end, start + 160)), matchStart: start - snippetStart, matchLength: end - start });
         if (items.length > limit) break;
       }
-      if (items.length > limit || rows.length < 200) break;
+      if (items.length > limit || rows.length < 200) { scanCursor = null; break; }
+      scanCursor = rows[rows.length - 1].id;
       boundary = this.olderThan(rows[rows.length - 1]);
     }
     const hasMore = items.length > limit;
-    return { items: items.slice(0, limit), nextCursor: hasMore ? items[limit - 1].id : null };
+    return { items: items.slice(0, limit), nextCursor: hasMore ? items[limit - 1].id : scanCursor };
   }
 
   async around(id: string, org: string, access: ChannelAccess, messageId: string, rawLimit?: string) {
@@ -160,9 +166,14 @@ export class ConversationInsightsService {
     return this.summaryResult(saved as Summary, id, org);
   }
 
-  async generateSummary(id: string, org: string, access: ChannelAccess, body: { force?: boolean }) {
+  async generateSummary(id: string, org: string, access: ChannelAccess, body: { force?: boolean } = {}) {
     const row = await this.conversation(id, org, access);
     if (!body || (body.force !== undefined && typeof body.force !== 'boolean')) throw new BadRequestException('force deve ser booleano');
+    const savedSummary = jsonObject(row.metadata).summary;
+    if (!body.force && savedSummary && typeof savedSummary === 'object') {
+      const result = await this.summaryResult(savedSummary as Summary, id, org);
+      if (!result.stale) return result;
+    }
     const startedAt = new Date();
     const rows = await this.prisma.message.findMany({ where: this.where(id, org), orderBy: orderDesc, take: 200 });
     if (!rows.length) throw new BadRequestException('Não há mensagens para resumir');
@@ -190,8 +201,11 @@ export class ConversationInsightsService {
     }
     if (!data.length) throw new BadRequestException('Não há conteúdo textual para resumir');
     let sections: Sections;
+    let stage = 'credentials';
     try {
       const route = await this.resolver.resolveForLlm(org);
+      // resolveProvider inside completeWithProvider ignores the org routing override.
+      stage = 'provider';
       const response = await this.llm.completeWithProvider(route.provider, {
         organizationId: org, modelId: cheapModels[route.provider], temperature: 0, maxTokens: 1000,
         messages: [
@@ -199,12 +213,23 @@ export class ConversationInsightsService {
           { role: 'user', content: JSON.stringify({ conversationData: data.reverse() }) },
         ],
       });
+      stage = 'completion';
       if (response.stopReason !== 'stop' || typeof response.message.content !== 'string') throw new Error('invalid_completion');
+      stage = 'json';
       const parsed = jsonObject(JSON.parse(response.message.content.replace(/^```(?:json)?\s*|\s*```$/g, '')));
+      stage = 'sections';
       const keys = ['assunto', 'situacao', 'pendencias', 'proximoPasso'] as const;
       if (keys.some(key => typeof parsed[key] !== 'string' || !(parsed[key] as string).trim() || (parsed[key] as string).length > 4000)) throw new Error('invalid_sections');
       sections = Object.fromEntries(keys.map(key => [key, parsed[key]])) as Sections;
-    } catch {
+    } catch (error: unknown) {
+      // Only controlled categories and numeric HTTP status: SDK messages, stacks,
+      // responses and arbitrary codes can contain credentials or conversation data.
+      const cause = error as { name?: unknown; status?: unknown; response?: { status?: unknown } } | null;
+      const errorType = ['Error', 'SyntaxError', 'TypeError', 'AxiosError', 'APIError', 'TimeoutError', 'AuthenticationError'].find(name => name === cause?.name) || 'UnknownError';
+      const status = cause?.response?.status ?? cause?.status;
+      this.logger.warn({ event: 'conversation_summary_failed', stage, errorType,
+        ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}),
+      });
       throw new BadGatewayException('Não foi possível gerar o resumo com o provedor de IA. Tente novamente.');
     }
     const summary: Summary = { sections, text: `Assunto: ${sections.assunto}\nSituação: ${sections.situacao}\nPendências: ${sections.pendencias}\nPróximo passo: ${sections.proximoPasso}`, generatedAt: startedAt.toISOString(), messageCount: data.length };
