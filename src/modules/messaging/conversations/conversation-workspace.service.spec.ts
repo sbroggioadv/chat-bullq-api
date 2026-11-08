@@ -78,6 +78,19 @@ describe('SPEC-023 API-1', () => {
     expect(prisma.contactChannel.create).toHaveBeenCalledWith({ data: { channelId: 'mail', contactId: 'person', externalId: 'person@example.test' } });
     expect(prisma.conversation.create).toHaveBeenCalledWith({ data: { organizationId: 'org', channelId: 'mail', contactId: 'person', isGroup: false, status: 'PENDING' } });
   });
+  it('F8 inclui canal atual não trocável com motivo e preserva filtros de acesso', async () => {
+    const { service, prisma, conversation } = fixture();
+    conversation.channelId = 'ig';
+    prisma.channel.findMany.mockResolvedValue([{ id: 'ig', name: 'Instagram', type: 'INSTAGRAM', isActive: true }]);
+    expect(await service.sendChannels('conv', 'org', new Set(['ig']))).toEqual([
+      expect.objectContaining({ channelId: 'ig', current: true, conversationId: 'conv', available: false, reason: expect.any(String) }),
+    ]);
+    expect(prisma.channel.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: {
+      organizationId: 'org', deletedAt: null, id: { in: ['ig'] },
+      OR: [{ type: { in: ['WHATSAPP_ZAPPFY', 'WHATSAPP_OFFICIAL', 'GMAIL'] } }, { id: 'ig' }],
+    } }));
+    await expect(service.openChannel('conv', 'org', 'author', new Set(['ig']), 'ig')).rejects.toBeInstanceOf(BadRequestException);
+  });
   it('F8 reusa arquivada e pula extras mescladas sem criar', async () => {
     const { service, prisma } = fixture();
     prisma.conversation.findMany.mockResolvedValue([{ id: 'merged', metadata: { cleanup_merged_into: 'original' } }, { id: 'original', isArchived: true, metadata: {} }]);

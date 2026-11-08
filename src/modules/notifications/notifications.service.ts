@@ -24,7 +24,7 @@ export class NotificationsService {
     body: string;
     data?: Record<string, any>;
   }) {
-    if ((await conversationNotificationState(this.prisma, params.organizationId, params.data?.conversationId)).suppressNotifications) return null;
+    if (params.type === 'NEW_MESSAGE' && (await conversationNotificationState(this.prisma, params.organizationId, params.data?.conversationId, this.logger)).suppressNotifications) return null;
     const notification = await this.repository.create({
       recipientId: params.recipientId,
       organizationId: params.organizationId,

@@ -15,7 +15,7 @@ export class NotificationProcessor extends WorkerHost {
 
   async process(job: Job): Promise<any> {
     const { notificationId, recipientId, organizationId, type, title, body, data } = job.data;
-    if ((await conversationNotificationState(this.prisma, organizationId, data?.conversationId)).suppressNotifications) {
+    if (type === 'NEW_MESSAGE' && (await conversationNotificationState(this.prisma, organizationId, data?.conversationId, this.logger)).suppressNotifications) {
       return { delivered: false, reason: 'conversation_muted', channels: [] };
     }
 

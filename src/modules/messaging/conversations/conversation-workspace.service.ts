@@ -130,7 +130,7 @@ export class ConversationWorkspaceService {
   async sendChannels(id: string, org: string, access: ChannelAccess) {
     const conv = await this.conversation(id, org, access);
     const channels = await this.prisma.channel.findMany({
-      where: { organizationId: org, deletedAt: null, ...(access === 'ALL' ? {} : { id: { in: [...access] } }), type: { in: ['WHATSAPP_ZAPPFY', 'WHATSAPP_OFFICIAL', 'GMAIL'] } },
+      where: { organizationId: org, deletedAt: null, ...(access === 'ALL' ? {} : { id: { in: [...access] } }), OR: [{ type: { in: ['WHATSAPP_ZAPPFY', 'WHATSAPP_OFFICIAL', 'GMAIL'] } }, { id: conv.channelId }] },
       select: { id: true, name: true, type: true, isActive: true }, orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
     return Promise.all(channels.map(async channel => {

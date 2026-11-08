@@ -240,6 +240,23 @@ describe('inbound — claim de idempotência (preexistente em f6d34ed)', () => {
   beforeEach(() => jest.spyOn(Date, 'now').mockReturnValue(NOW.getTime()));
   afterEach(() => jest.restoreAllMocks());
 
+  it('falha no lookup de silêncio preserva realtime, chatbot e disparo da IA após persistir', async () => {
+    const w = world([conv({ id: 'c1', status: ConversationStatus.PENDING })]);
+    const gateway = { messageNotificationState: jest.fn().mockRejectedValue(new Error('db_timeout')), emitToChannel: jest.fn(), emitToConversation: jest.fn() };
+    const { processor, job, webhookEvents } = inbound(w, { gateway });
+    const warn = jest.spyOn((processor as any).logger, 'warn').mockImplementation(() => undefined);
+    (processor as any).checkActiveBotForChannel.mockResolvedValue(true);
+    await expect(processor.process(job)).resolves.toMatchObject({ conversationId: 'c1' });
+    expect(w.messages).toHaveLength(1);
+    expect(gateway.emitToChannel).toHaveBeenCalledWith('ch', 'message:new', expect.objectContaining({ mutedUntil: null, suppressNotifications: false }));
+    expect(gateway.emitToConversation).toHaveBeenCalledWith('c1', 'message:new', expect.objectContaining({ suppressNotifications: false }));
+    expect((processor as any).chatbotQueue.add).toHaveBeenCalledWith('process-bot', expect.objectContaining({ conversationId: 'c1' }), expect.any(Object));
+    expect((processor as any).tryAiAgent).toHaveBeenCalled();
+    expect(webhookEvents.markProcessed).toHaveBeenCalledWith('wh-1');
+    expect(webhookEvents.markFailed).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
+  });
+
   it('falha ANTES de persistir libera a claim: o retry persiste a mensagem (não volta duplicate_claim)', async () => {
     const w = world([conv({ id: 'c1' })]);
     const contactResolver = { resolve: jest.fn().mockRejectedValueOnce(new Error('db_timeout')).mockResolvedValue({ contactId: 'contact', isNew: false }) };

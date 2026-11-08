@@ -275,7 +275,12 @@ export class InboundMessageProcessor extends WorkerHost {
       persisted = true;
       const { message: savedMessage } = saved;
 
-      const notificationState = await this.realtimeGateway.messageNotificationState(conversationId, organizationId);
+      let notificationState: { mutedUntil: string | null; suppressNotifications: boolean } = { mutedUntil: null, suppressNotifications: false };
+      try {
+        notificationState = await this.realtimeGateway.messageNotificationState(conversationId, organizationId);
+      } catch {
+        this.logger.warn({ msg: 'inbound_mute_lookup_failed', conversationId, organizationId });
+      }
 
       this.realtimeGateway.emitToChannel(channelId, 'message:new', {
         message: savedMessage,
