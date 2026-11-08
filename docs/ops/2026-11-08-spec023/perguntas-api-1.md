@@ -13,3 +13,11 @@ O setor não alterou dependências nem criou configuração paralela de lint. O 
 - Aplicação do SQL e deploy permanecem nas etapas autorizativas da SPEC, sem execução neste setor.
 
 Não surgiu decisão estrutural indispensável para implementar os contratos aprovados. Nenhuma aprovação foi simulada ou alegada como roteada.
+
+## A1-5 — Conferência do externalId Zappfy antes do deploy (rodada pós-QA)
+
+Pendente de evidência real; nenhuma conexão de produção foi feita nesta rodada e a montagem de identidade permaneceu intacta.
+
+O integrador deve conferir, em leitura autorizada e com saída anonimizada, o formato de `contact_channels.external_id` em canais `WHATSAPP_ZAPPFY`: existem somente JIDs `<dígitos>@s.whatsapp.net` ou também `@lid`/outros sufixos? O `chatid` recebido no webhook do mesmo contato/canal coincide exatamente com o vínculo já salvo? Existem contatos com mais de uma identidade no mesmo canal?
+
+Cruzar um vínculo existente com um evento inbound do mesmo canal, sem copiar telefone, identificador ou conteúdo real para o repositório. Registrar apenas formatos e contagens anonimizadas. Se houver identidade diferente da síntese atual, revisar o reuso de `ContactChannel` por contato/canal e a regra de escolha para múltiplos vínculos antes de publicar F8. Este setor não decidiu normalização nem fallback sem esse dado.

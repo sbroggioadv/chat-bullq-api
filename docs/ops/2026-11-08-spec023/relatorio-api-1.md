@@ -99,3 +99,30 @@ A suíte completa emitiu: `A worker process has failed to exit gracefully and ha
 3. Migração e deploy apenas nas etapas da SPEC, com dump e CONFIRMO próprios. Os arquivos SQL estão em prisma/migrations/20261108000000_conversation_mute/ e não foram aplicados.
 
 COMPANION_COMPLETE: companion-spec023-api-1-1
+
+## Rodada de correção pós-QA
+
+Branch `spec023/api-1`, worktree `api-spec023-1`, correção em commit local `6e271a8`. Esta seção atualiza o comportamento de F1 descrito anteriormente: somente `NEW_MESSAGE` é suprimido; alertas operacionais continuam sendo registrados/enfileirados/entregues.
+
+### Achados tratados e limites
+
+- **A1-1 corrigido:** lookup de silêncio protegido no inbound após persistir; em falha registra aviso estruturado, usa `mutedUntil:null` e `suppressNotifications:false` e segue realtime/chatbot/IA. O helper canônico também trata falha de consulta para proteger gateway, criação e entrega de notificações; o catch do inbound mantém a fronteira segura caso o método do gateway rejeite. Logs não incluem corpo de mensagem nem erro bruto com possível dado de conexão.
+- **A1-2 corrigido conforme decisão do integrador:** somente `NEW_MESSAGE` consulta silêncio. SLA, transferência/atribuição da IA, falha operacional da IA e SYSTEM são persistidos e entregues mesmo silenciados. Confirmados os tipos reais usados por `sla-timer`, `watchdog` e `transfer-to-human` (`CONVERSATION_ASSIGNED`/`AI_TOOL_FAILURE`). Testes cobrem esses tipos, além de `CONVERSATION_TRANSFERRED`.
+- **A1-3 registrado, sem alterar produto:** silêncio continua global da conversa, compartilhado por todos os agentes com acesso ao canal, conforme a SPEC. Não foi criada tabela nem preferência por usuário.
+- **A1-4 corrigido:** o filtro inclui o canal atual mesmo fora dos tipos trocáveis; organização, canal ativo no cadastro (`deletedAt:null`) e acesso continuam obrigatórios. Instagram atual retorna `current:true`, `available:false` e motivo explícito; open segue recusado.
+- **A1-5 pendente de evidência real:** montagem de `externalId` não alterada. Checklist do dado de produção necessário em `perguntas-api-1.md`, também registrado no caminho absoluto solicitado do workspace pai. Nenhum dado real consultado ou copiado.
+- **A1-6 aceito nesta rodada:** notas continuam sem paginação/teto, como permite a SPEC. Limitar a 200 sem cursor esconderia notas antigas; demanda de paginação fica para escopo próprio se volume justificar.
+- **A1-7 corrigido:** `desfazer.sql` usa `DROP COLUMN IF EXISTS`. Arquivo inspecionado; SQL não aplicado nesta rodada, nem em banco local.
+
+### Verificação — comandos e saídas
+
+1. **Vermelho antes do código:** `yarn test conversation-mute merged-redirect conversation-workspace.service --maxWorkers=2 --silent` → exit 1; `3 failed` suites; `7 failed, 47 passed, 54 total`. Inbound rejeitou com `db_timeout` depois de persistir; quatro tipos operacionais não criaram registro; notify rejeitou `db`; filtro do canal atual excluía Instagram. Log local: `/tmp/spec023-api1-fix-red.log`.
+2. **Verde após correção:** mesmo comando → exit 0; `3 passed`; `54 passed`. Depois foram acrescentados os dois tipos efetivos usados pela transferência da IA, sem mudar produção. Log: `/tmp/spec023-api1-fix-green.log`.
+3. **Direcionados finais:** `yarn test conversation-workspace conversation-mute clickup-incorporation-access clickup-inbox-workbench-w3 merged-redirect inbound --maxWorkers=2 --silent` → exit 0; `1 skipped, 10 passed, 10 of 11 total`; `26 skipped, 189 passed, 215 total`; `Time: 9.937 s`. Log: `/tmp/spec023-api1-fix-targeted-final.log`.
+4. **Tipos finais:** `yarn typecheck --incremental false` → exit 0; `tsc --noEmit --incremental false`; `Done in 14.75s`.
+5. **Suíte completa com os nove novos casos:** `yarn test --maxWorkers=2 --silent` → exit 0; `5 skipped, 147 passed, 147 of 152 total`; `49 skipped, 1350 passed, 1399 total`; `Time: 23.366 s`; `Done in 25.34s`. Log: `/tmp/spec023-api1-fix-full.log`. Nesta execução não ocorreu aviso de worker forçado; isso não diagnostica a execução anterior.
+6. `git diff --check` → exit 0, sem saída. Lint continua não verificado: o package.json atual não define script lint; sem introduzir configuração ad hoc.
+
+Nenhum skip, assertiva preexistente ou timeout foi relaxado para passar. O teste novo de falha do inbound exercita process real e persistência simulada, verifica as duas emissões realtime, fila de chatbot, chamada de IA e conclusão do webhook; não prova Redis/PostgreSQL/provedor real. Não houve push, deploy, migração aplicada, consulta de produção ou `--no-verify`. Pronto para nova revisão independente do integrador, sem declarar aceite de produção. Não surgiu decisão estrutural indispensável nem foi simulada aprovação.
+
+COMPANION_COMPLETE: companion-spec023-api-1-fix-1
