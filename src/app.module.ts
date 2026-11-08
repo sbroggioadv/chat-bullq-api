@@ -23,6 +23,7 @@ import { ChannelAccessModule } from './modules/iam/channel-access/channel-access
 import { AiAgentsModule } from './modules/ai-agents/ai-agents.module';
 import { InboxViewsModule } from './modules/inbox-views/inbox-views.module';
 import { EmailModule } from './modules/email/email.module';
+import { ConversationInsightsModule } from './modules/conversation-insights/conversation-insights.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { PipelinesModule } from './modules/pipelines/pipelines.module';
 import { SegmentsModule } from './modules/segments/segments.module';
@@ -81,6 +82,7 @@ import redisConfig, { buildRedisConnectionOptions } from './config/redis.config'
     InboxViewsModule,
     EmailModule,
     CalendarModule,
+    ConversationInsightsModule,
     PipelinesModule,
     SegmentsModule,
     ProjectsModule,
