@@ -16,6 +16,8 @@ import { InboundMessageProcessor } from './pipeline/inbound-message.processor';
 import { OutboundMessageProcessor } from './pipeline/outbound-message.processor';
 import { ConversationFsmService } from './conversations/conversation-fsm.service';
 import { ConversationsController } from './conversations/conversations.controller';
+import { ConversationWorkspaceController } from './conversations/conversation-workspace.controller';
+import { ConversationWorkspaceService } from './conversations/conversation-workspace.service';
 import { ConversationsService } from './conversations/conversations.service';
 import { ConversationsRepository } from './conversations/conversations.repository';
 import { MessagesController } from './messages/messages.controller';
@@ -52,7 +54,7 @@ import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service
     ProjectsModule,
     JarvisDeskModule,
   ],
-  controllers: [ConversationsController, MessagesController, ContactsController],
+  controllers: [ConversationsController, ConversationWorkspaceController, MessagesController, ContactsController],
   providers: [
     IdempotencyService,
     ContactResolverService,
@@ -62,6 +64,7 @@ import { ContactAvatarCronService } from './contacts/contact-avatar-cron.service
     OutboundMessageProcessor,
     ConversationFsmService,
     ConversationsService,
+    ConversationWorkspaceService,
     ConversationsRepository,
     MessagesService,
     MessagesRepository,
