@@ -275,13 +275,17 @@ export class InboundMessageProcessor extends WorkerHost {
       persisted = true;
       const { message: savedMessage } = saved;
 
+      const notificationState = await this.realtimeGateway.messageNotificationState(conversationId, organizationId);
+
       this.realtimeGateway.emitToChannel(channelId, 'message:new', {
         message: savedMessage,
         conversationId,
         contactId,
+        ...notificationState,
       });
       this.realtimeGateway.emitToConversation(conversationId, 'message:new', {
         message: savedMessage,
+        ...notificationState,
       });
 
       // SPEC-017: mídia do CDN da Meta expira. A mensagem já está gravada;

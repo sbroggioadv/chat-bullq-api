@@ -521,7 +521,7 @@ describe('Achado 7: eco do Instagram é espelhado; enviada pelo BullQ não', () 
       { claimProcessing: jest.fn(async () => true), markProcessed: jest.fn(), releaseClaim: jest.fn() } as any,
       { resolve: jest.fn(async () => ({ contactId: 'contact', isNew: false })) } as any,
       { resolve: jest.fn(async () => ({ conversationId: 'conv', status: 'OPEN' })) } as any,
-      { emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
+      { messageNotificationState: jest.fn().mockResolvedValue({ mutedUntil: null, suppressNotifications: false }), emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
       {} as any, {} as any, { markProcessed: jest.fn(), markFailed: jest.fn() } as any,
       {} as any, {} as any, {} as any, { enqueue: jest.fn() } as any,
       { scheduleCheck: jest.fn(async () => undefined), cancelCheck: jest.fn(async () => undefined) } as any,

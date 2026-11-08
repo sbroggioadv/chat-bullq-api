@@ -15,6 +15,7 @@ import { OrgRole } from '@prisma/client';
 import { PresenceService } from './presence.service';
 import { PrismaService } from '../../database/prisma.service';
 import { ChannelAccessService } from '../iam/channel-access/channel-access.service';
+import { conversationNotificationState } from '../notifications/conversation-mute';
 
 @WebSocketGateway({
   cors: { origin: '*', credentials: true },
@@ -256,6 +257,10 @@ export class RealtimeGateway
 
   emitToOrg(orgId: string, event: string, data: any) {
     this.server.to(`org:${orgId}`).emit(event, data);
+  }
+
+  messageNotificationState(conversationId: string, organizationId: string) {
+    return conversationNotificationState(this.prisma, organizationId, conversationId);
   }
 
   /**

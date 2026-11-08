@@ -779,6 +779,7 @@ model Conversation {
   isArchived   Boolean   @default(false) @map("is_archived")
   archivedAt   DateTime? @map("archived_at")
   archivedById String?   @map("archived_by_id")
+  mutedUntil   DateTime? @map("muted_until")
   metadata     Json      @default("{}")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")

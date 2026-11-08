@@ -111,7 +111,7 @@ function inbound(w: ReturnType<typeof world>, opts: { aoResolver?: (n: number) =
     w.prisma, idem as any,
     opts.contactResolver ?? { resolve: jest.fn().mockResolvedValue({ contactId: 'contact', isNew: false }) } as any,
     conversationResolver as any,
-    opts.gateway ?? { emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
+    opts.gateway ?? { messageNotificationState: jest.fn().mockResolvedValue({ mutedUntil: null, suppressNotifications: false }), emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
     {} as any, {} as any, webhookEvents as any, {} as any, {} as any, {} as any,
     { enqueue: jest.fn().mockResolvedValue(undefined) } as any,
     { scheduleCheck: jest.fn().mockResolvedValue(undefined), cancelCheck: jest.fn().mockResolvedValue(undefined) } as any,
@@ -132,6 +132,19 @@ function inbound(w: ReturnType<typeof world>, opts: { aoResolver?: (n: number) =
 describe('inbound — extra fundida reusa o resolvedor padrão (política da original)', () => {
   beforeEach(() => jest.spyOn(Date, 'now').mockReturnValue(NOW.getTime()));
   afterEach(() => jest.restoreAllMocks());
+  it('SPEC-023: silêncio preserva mensagem inbound e sinaliza os dois eventos realtime', async () => {
+    const w = world([conv({ id: 'c1' })]);
+    const gateway = { messageNotificationState: jest.fn().mockResolvedValue({ mutedUntil: '9999-12-31T23:59:59.000Z', suppressNotifications: true }), emitToChannel: jest.fn(), emitToConversation: jest.fn() };
+    const { processor, job } = inbound(w, { gateway });
+    await processor.process(job);
+    expect(w.messages).toHaveLength(1);
+    expect(w.messages[0]).toMatchObject({ direction: 'INBOUND', conversationId: 'c1' });
+    expect(gateway.messageNotificationState).toHaveBeenCalledWith('c1', 'org');
+    for (const emit of [gateway.emitToChannel, gateway.emitToConversation]) {
+      expect(emit).toHaveBeenCalledWith(expect.any(String), 'message:new', expect.objectContaining({ suppressNotifications: true, mutedUntil: '9999-12-31T23:59:59.000Z', message: expect.objectContaining({ direction: 'INBOUND' }) }));
+    }
+    expect(processor['tryAiAgent']).toHaveBeenCalled();
+  });
   // A corrida: o resolvedor escolheu a extra; a limpeza a funde antes da gravação.
   const corrida = (w: ReturnType<typeof world>, extra: string, original: string) =>
     (n: number) => { if (n === 1) w.fundir(extra, original); };
@@ -271,7 +284,7 @@ describe('inbound — claim de idempotência (preexistente em f6d34ed)', () => {
 
   it('falha DEPOIS de persistir mantém a claim: o retry não reprocessa (sem efeito em dobro)', async () => {
     const w = world([conv({ id: 'c1' })]);
-    const gateway = { emitToChannel: jest.fn().mockImplementationOnce(() => { throw new Error('socket'); }), emitToConversation: jest.fn() };
+    const gateway = { messageNotificationState: jest.fn().mockResolvedValue({ mutedUntil: null, suppressNotifications: false }), emitToChannel: jest.fn().mockImplementationOnce(() => { throw new Error('socket'); }), emitToConversation: jest.fn() };
     const { processor, job, idem } = inbound(w, { gateway });
 
     await expect(processor.process(job)).rejects.toThrow('socket');

@@ -4,6 +4,7 @@ import { Queue } from 'bullmq';
 import { NotificationType } from '@prisma/client';
 import { NotificationsRepository } from './notifications.repository';
 import { PrismaService } from '../../database/prisma.service';
+import { conversationNotificationState } from './conversation-mute';
 
 @Injectable()
 export class NotificationsService {
@@ -23,6 +24,7 @@ export class NotificationsService {
     body: string;
     data?: Record<string, any>;
   }) {
+    if ((await conversationNotificationState(this.prisma, params.organizationId, params.data?.conversationId)).suppressNotifications) return null;
     const notification = await this.repository.create({
       recipientId: params.recipientId,
       organizationId: params.organizationId,

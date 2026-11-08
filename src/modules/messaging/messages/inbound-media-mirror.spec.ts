@@ -454,7 +454,7 @@ describe('Caminho webhook: mapper → InboundMessageProcessor → fila', () => {
       { claimProcessing: jest.fn(async () => true), markProcessed: jest.fn(), releaseClaim: jest.fn() } as any,
       { resolve: jest.fn(async () => ({ contactId: 'contact', isNew: false })) } as any,
       { resolve: jest.fn(async () => ({ conversationId: 'conv', status: ConversationStatus.OPEN })) } as any,
-      { emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
+      { messageNotificationState: jest.fn().mockResolvedValue({ mutedUntil: null, suppressNotifications: false }), emitToChannel: jest.fn(), emitToConversation: jest.fn() } as any,
       {} as any, {} as any, { markProcessed: jest.fn(), markFailed: jest.fn() } as any,
       {} as any, {} as any, {} as any,
       { enqueue: jest.fn() } as any,
