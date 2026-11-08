@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { CalendarService } from './calendar.service';
 import { ChannelAccessService } from '../iam/channel-access/channel-access.service';
-import { BadGatewayException, ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 jest.mock('axios');
 const now = new Date('2026-11-08T12:00:00Z');
 function setup() {
@@ -44,11 +44,12 @@ describe('Calendar conversation meeting history', () => {
     const { service, db, bubble, channel, get } = setup(); db.message.findMany.mockResolvedValue([{ ...bubble, metadata: { ...bubble.metadata, calendarChannelId: 'gmail' } }]); db.channel.findMany.mockResolvedValue([channel]);
     expect(await service.conversationMeetings('c1', 'org', new Set(['wa']))).toMatchObject({ connected: false }); expect(get).not.toHaveBeenCalled();
   });
-  it('maps deleted Google events to cancelled, and exposes provider failures', async () => {
+  it('maps deleted Google events to cancelled, and degrades provider failures per item', async () => {
     const { service, db, bubble, channel, get } = setup(); db.message.findMany.mockResolvedValue([{ ...bubble, metadata: { ...bubble.metadata, calendarChannelId: 'gmail' } }]); db.channel.findMany.mockResolvedValue([channel]);
     get.mockRejectedValueOnce({ response: { status: 404 } });
     expect((await service.conversationMeetings('c1', 'org', 'ALL')).items[0].status).toBe('cancelled');
-    get.mockRejectedValueOnce({ response: { status: 500 } }); await expect(service.conversationMeetings('c1', 'org', 'ALL')).rejects.toBeInstanceOf(BadGatewayException);
+    get.mockRejectedValueOnce({ response: { status: 500 } });
+    expect((await service.conversationMeetings('c1', 'org', 'ALL')).items[0]).toMatchObject({ title: 'Consulta', status: 'unknown' });
   });
   it('refuses missing, inaccessible and merged conversations before Google', async () => {
     const { service, db, get } = setup(); db.conversation.findFirst.mockResolvedValueOnce(null);
@@ -63,4 +64,28 @@ describe('Calendar conversation meeting history', () => {
     await service.createEventFromConversation('org', 'ALL', { conversationId: 'c1', channelId: 'gmail', summary: 'Consulta', startIso: '2026-11-09T15:00:00Z', endIso: '2026-11-09T16:00:00Z', attendeeEmails: ['a@example.test'] });
     expect(db.message.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ metadata: expect.objectContaining({ eventId: 'ev', calendarChannelId: 'gmail', title: 'Consulta', start: '2026-11-09T15:00:00Z', end: '2026-11-09T16:00:00Z', attendees: ['a@example.test'], status: 'confirmed' }) }) }));
   });
+  it('filters meeting bubbles in the database before applying a bounded take', async () => {
+    const { service, db } = setup(); await service.conversationMeetings('c1', 'org', 'ALL');
+    expect(db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      take: 100, select: { id: true, createdAt: true, content: true, metadata: true },
+      where: expect.objectContaining({ conversationId: 'c1', type: 'SYSTEM', revokedAt: null,
+        OR: [{ metadata: { path: ['kind'], equals: 'calendar_scheduled' } }, { content: { path: ['text'], string_starts_with: '📅 Reunião agendada:' } }],
+      }),
+    }));
+  });
+  it.each([401, 429, 500])('preserves failed item snapshot and refreshes the next meeting on Google %s', async status => {
+    const { service, db, bubble, channel, get } = setup();
+    db.message.findMany.mockResolvedValue([bubble, { ...bubble, id: 'second', metadata: { ...bubble.metadata, calendarEventId: 'ev2' } }]);
+    db.channel.findMany.mockResolvedValue([channel]);
+    get.mockRejectedValueOnce({ response: { status } }).mockResolvedValueOnce({ data: { summary: 'Atualizada', status: 'confirmed' } });
+    const result = await service.conversationMeetings('c1', 'org', 'ALL');
+    expect(result.items).toMatchObject([{ eventId: 'ev', title: 'Consulta', status: 'unknown', meetLink: 'https://meet.google.com/abc' }, { eventId: 'ev2', title: 'Atualizada', status: 'confirmed' }]);
+  });
+  it('preserves the snapshot on token refresh failure', async () => {
+    const { service, db, bubble, channel, gmail } = setup();
+    db.message.findMany.mockResolvedValue([bubble]); db.channel.findMany.mockResolvedValue([channel]);
+    gmail.accessToken.mockRejectedValue(new Error('revoked'));
+    expect((await service.conversationMeetings('c1', 'org', 'ALL')).items[0]).toMatchObject({ status: 'unknown', title: 'Consulta' });
+  });
+
 });

@@ -608,7 +608,14 @@ export class CalendarService {
     this.channelAccess.assertChannelAccess(access, conversation.channelId);
     assertNotMergedExtra(conversation, 'meeting_history');
     const rows = await this.prisma.message.findMany({
-      where: { conversationId, conversation: { organizationId, deletedAt: null }, type: MessageContentType.SYSTEM, revokedAt: null },
+      where: { conversationId, conversation: { organizationId, deletedAt: null }, type: MessageContentType.SYSTEM, revokedAt: null,
+        OR: [
+          { metadata: { path: ['kind'], equals: 'calendar_scheduled' } },
+          { content: { path: ['text'], string_starts_with: '📅 Reunião agendada:' } },
+        ],
+      },
+      take: 100,
+      select: { id: true, createdAt: true, content: true, metadata: true },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
     const channels = (await this.prisma.channel.findMany({
@@ -660,7 +667,12 @@ export class CalendarService {
             // in one accessible account is not evidence of cancellation.
             if (meta.calendarChannelId) item.status = 'cancelled';
           }
-          else throw new BadGatewayException('Não foi possível consultar a reunião no Google Calendar');
+          else {
+            item.status = 'unknown';
+            this.logger.warn({ event: 'conversation_meeting_refresh_failed',
+              ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}),
+            });
+          }
         }
       }
       items.push(item);
