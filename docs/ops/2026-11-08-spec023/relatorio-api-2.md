@@ -54,3 +54,57 @@ Execução final: `SPEC023_TEST_PG_URL=postgresql://spec023@127.0.0.1:55439/spec
 - O integrador consolida o devlog e o handoff do projeto. Esta sessão fez `devlog ver`; não publicou anotações paralelas no painel.
 
 COMPANION_COMPLETE companion-spec023-api-2-1
+
+
+## Rodada de correção pós-QA
+
+08/11/2026, companion `companion-spec023-api-2-fix-1`, worktree `api-spec023-2`, branch `spec023/api-2`. Base da rodada: `d948a87`. Correção implementada e verificada localmente; este registro não constitui novo parecer de QA independente.
+
+### Achados e resultado
+
+- **A2-1 corrigido:** busca com no máximo 25 lotes de 200 mensagens (5.000 linhas) por requisição, `select` restrito a seis campos do contrato e texto. Ao atingir o teto, devolve `nextCursor` da última mensagem varrida, inclusive com zero resultados; a próxima chamada continua a busca. Quando há um resultado excedente, o cursor continua sendo o último resultado entregue, preservando o excedente. Formato da SPEC §3 preservado. Teste com 5.200 mensagens sintéticas comprova 25 consultas, página vazia com cursor e encontro do termo raro na chamada seguinte, sem perda.
+- **A2-2 corrigido:** filtro no banco por `metadata.kind = calendar_scheduled` OU prefixo textual da bolha antiga; `take:100`, ordenação determinística e seleção de somente id/createdAt/content/metadata. Falha de token, 401, 429 ou 5xx preserva o snapshot daquele item, com `status:unknown`, e permite atualizar as outras reuniões. 404/410 continuam indicando cancelamento somente quando a conta criadora é conhecida. Log de falha inclui apenas evento e status HTTP numérico, quando disponível. Testes verificam a consulta limitada e a degradação por item. A lista cobre as 100 bolhas de reunião mais recentes; chamadas externas continuam sequenciais, opção de paralelismo sugerida pelo QA não aplicada nesta correção para manter o diff restrito e evitar rajada de requisições.
+- **A2-3 invariável comprovada, divergência do QA reconciliada:** no checkout desta rodada, `completeWithProvider` chama `resolveProvider`, que executa `lookupCredential(organizationId, provider, null)`. Portanto `dispatch` recebe `modelOverride:null`, mesmo quando `resolveForLlm` encontrou override caro. O teste novo instancia **resolver e router reais**, simula apenas persistência/credencial e adapter, configura `expensive-model` no roteamento da organização e verifica `gpt-4o-mini` no adapter. Passava já antes da correção; não foi necessário alterar contrato compartilhado, router nem resolver. Comentário no serviço registra a razão. Não se declara smoke real ou confirmação de disponibilidade dos modelos Kimi/ZAI/Qwen.
+- **A2-4 corrigido:** log estruturado `conversation_summary_failed` com etapa (`credentials`, `provider`, `completion`, `json`, `sections`), tipo de erro em lista fechada e status HTTP numérico válido, quando disponível. Nenhum corpo, mensagem livre do SDK, stack, chave ou conteúdo da conversa no log deste catch. Cliente continua recebendo 502 visível. Teste verifica causa 401 e ausência dos dados sensíveis sintéticos no log.
+- **A2-5 corrigido:** POST sem corpo/sem force ou `force:false` devolve resumo salvo quando não stale, sem LLM nem reserva. `force:true`, resumo inexistente ou stale geram como antes, respeitando a reserva atômica de um minuto. Testes cobrem as três formas de reuso e regeneração forçada ou por stale; os testes PostgreSQL de concorrência e falha continuam passando.
+- **A2-6 mantido com motivo:** falha de provedor continua consumindo a janela de um minuto, conforme brief e proteção de custo. Localizado escritor do objeto completo em `src/modules/messaging/pipeline/history-import.service.ts:134-147` (`existing.metadata` → `data.metadata` → `conversation.update`): existe risco de sobrescrever folha concorrente, mas a corrida não foi reproduzida nesta rodada. Corrigir globalmente todos os escritores ultrapassa o setor e exige auditoria própria. A prova PostgreSQL atesta preservação de folhas escritas concorrentemente via JSONB, não segurança de todos os escritores da aplicação.
+- **A2-7 preservado:** bolhas legadas podem ter eventId nulo e início localizado. Inventar id/fuso seria incorreto; mantém-se a limitação já comunicada a WEB-2/integrador no relatório anterior.
+
+### Comandos e saídas
+
+Todos os comandos de código e Git foram executados no worktree do setor. O apêndice foi também anexado ao relatório no caminho absoluto indicado pelo brief, sem alteração de código fora do worktree. Logs completos locais em `tmp/spec023-fix-*.log` (ignorados pelo Git).
+
+| Comando | Saída resumida |
+| --- | --- |
+| `pwd` / `git branch --show-current` | worktree exato solicitado; `spec023/api-2` |
+| `devlog ver` | card BullQ / Synq consultado; nenhuma anotação paralela de entrega (consolidação pelo integrador) |
+| `yarn test conversation-insights.service calendar.conversation-insights --maxWorkers=2` antes da implementação | 2 suítes falham; 11 testes falham, 41 passam; Yarn exit 1. Log: `tmp/spec023-fix-red.log` |
+| Mesmo comando após implementação | 2 suítes / 52 testes passam; exit 0 |
+| `pg_ctl -D tmp/spec023-pg -l tmp/spec023-pg.log -o "-h 127.0.0.1 -p 55439 -k ''" start` | `server started`; cluster descartável criado na rodada anterior, sem produção |
+| `SPEC023_TEST_PG_URL=postgresql://spec023@127.0.0.1:55439/spec023_test yarn test conversation-insights calendar --maxWorkers=2 --detectOpenHandles` | 4 suítes / 66 testes passam; exit 0; 7,267 s. Inclui 2 testes com reserva/persistência JSONB em PostgreSQL real |
+| `yarn typecheck --incremental false` | `tsc --noEmit --incremental false`; exit 0 |
+| `yarn build` | `nest build`; exit 0 |
+| ESLint explícito com comando abaixo | sem saída; exit 0 |
+| `SPEC023_TEST_PG_URL=postgresql://spec023@127.0.0.1:55439/spec023_test yarn test --maxWorkers=2` | 147 suítes passam, 5 ignoradas; 1.364 testes passam, 49 ignorados (1.413 totais); exit 0; 24,038 s; sem aviso de worker encerrado |
+| `git diff --check` | sem saída, exit 0 |
+| `git diff 55e019e -- prisma/schema.prisma` | sem saída; schema preservado |
+| `pg_ctl -D tmp/spec023-pg stop -m fast` | `server stopped`; exit 0 |
+
+Lint reproduzido com a configuração temporária já descrita em `verification-evidence-api-2.md`:
+
+```sh
+npm exec --yes --package=eslint@9.39.1 --package=typescript-eslint@8.48.1 -- sh -c 'NODE_PATH="$(dirname "$(dirname "$(command -v eslint)")")" eslint --config tmp/spec023-eslint.config.cjs src/modules/conversation-insights/*.ts src/modules/calendar/calendar.service.ts src/modules/calendar/calendar.conversation-insights.spec.ts src/app.module.ts'
+```
+
+Sem script/config canônicos de lint no checkout; o comando acima é um gate explícito dos arquivos tocados, não lint global. Warnings existentes do Yarn: ausência de licença e colisão de dependência `ajv` no package pai; nenhum erro de tipos/build.
+
+### Commits e próximo passo
+
+- `8a611e4 fix(calendar): bound meeting history and degrade provider failures`
+- `5d227ee fix(conversations): cap search scans and reuse fresh summaries`
+
+Commits locais com hooks habilitados, sem `--no-verify`; nenhuma edição em schema, lockfiles, regras ou estado compartilhado; nenhum push, deploy, migração ou acesso a banco de produção. Runtime `.aiox/` fica fora dos commits. Sem bloqueio estrutural.
+
+Próximo passo do integrador: revisar `git show 8a611e4` e `git show 5d227ee`, repetir QA independente sobre este HEAD e integrar API-1/WEB-2. Smoke real de Google/LLM, performance com volume de produção e aceite humano continuam pendentes; os testes usam doubles nessas fronteiras. Esta rodada fecha correções locais e relatório, sem declarar entrega em produção.
+
+COMPANION_COMPLETE companion-spec023-api-2-fix-1
