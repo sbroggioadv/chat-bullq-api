@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve as resolvePath } from 'node:path';
 import { StorageService } from '../storage/storage.service';
 import { PrismaService } from '../../database/prisma.service';
+import { assertNotMergedExtra } from '../messaging/conversations/merged-conversation';
 import { STATUS } from './domain/casamento';
 import { canonico } from './domain/telefone';
 import { idSeguro } from './domain/ids';
@@ -837,6 +838,7 @@ export class ClickUpInboxService {
     const parsed = validarIncorporacao(dto);
     if (!parsed.ok) invalidValue(parsed.erro);
     const conv = await this.loadConversation(organizationId, conversationId);
+    assertNotMergedExtra(conv, 'clickup:incorporate');
     if (!conv.clickupTaskId) taskNotBound('task não vinculada a esta conversa');
     const taskId = conv.clickupTaskId;
     const originId = parsed.value.messageId ?? parsed.value.documentId!;
@@ -1416,6 +1418,7 @@ export class ClickUpInboxService {
         id: true,
         isGroup: true,
         clickupTaskId: true,
+        metadata: true,
         contact: { select: { name: true, phone: true } },
       },
     });

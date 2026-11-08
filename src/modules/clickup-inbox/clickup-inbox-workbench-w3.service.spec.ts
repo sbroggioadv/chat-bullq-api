@@ -109,6 +109,15 @@ function attachmentPosts(fetchFn: { mock: { calls: any[] } }) {
 }
 
 describe('SPEC-009 W3 incorporations', () => {
+  it('SPEC-023 F9: texto como anexo falha; comentário funciona; extra fundida não incorpora', async () => {
+    const h = w3Harness();
+    await expect(h.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, { kind: 'attachment', messageId: 'msg-1' })).rejects.toMatchObject({ status: 422 });
+    expect(attachmentPosts(h.fetchFn)).toHaveLength(0);
+    expect(await h.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, { kind: 'comment', messageId: 'msg-1' })).toMatchObject({ ok: true, kind: 'comment' });
+    const merged = w3Harness({ conv: boundGroup({ metadata: { cleanup_merged_into: 'original' } }) });
+    await expect(merged.service.incorporateWorkbench('org-a', 'conv-a', KEY_A, { kind: 'comment', messageId: 'msg-1' })).rejects.toMatchObject({ status: 422 });
+    expect(commentPosts(merged.fetchFn)).toHaveLength(0);
+  });
   it('AC-16 XOR: um request com os dois origins é 422; comment e attachment são POSTs independentes', async () => {
     const { service, fetchFn } = w3Harness();
     await expectHttp(

@@ -376,6 +376,7 @@ export function makePrisma(
           id: found.id,
           isGroup: found.isGroup,
           clickupTaskId: found.clickupTaskId ?? null,
+          metadata: found.metadata ?? {},
           contact: found.contact,
         };
       }),

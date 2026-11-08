@@ -1,8 +1,9 @@
 import { Body, Controller, Get, Headers, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
-import { CurrentOrg } from '../../common/decorators';
+import { CurrentOrg, CurrentChannelAccess } from '../../common/decorators';
 import { ClickUpInboxService } from './clickup-inbox.service';
+import { ChannelAccessService, type ChannelAccess } from '../iam/channel-access/channel-access.service';
 import { BindWorkbenchDto, CreateWorkbenchTaskDto, IncorporateWorkbenchDto } from './dto/clickup-inbox.dto';
 
 @ApiTags('ClickUp inbox workbench')
@@ -10,7 +11,7 @@ import { BindWorkbenchDto, CreateWorkbenchTaskDto, IncorporateWorkbenchDto } fro
 @UseGuards(JwtAuthGuard, OrgGuard, RolesGuard)
 @Controller('clickup-inbox/conversations/:conversationId/workbench')
 export class ClickUpInboxWorkbenchController {
-  constructor(private readonly service: ClickUpInboxService) {}
+  constructor(private readonly service: ClickUpInboxService, private readonly channelAccess: ChannelAccessService) {}
 
   @Get()
   @ApiOperation({ summary: 'Resolve o workbench ClickUp da conversa' })
@@ -65,12 +66,14 @@ export class ClickUpInboxWorkbenchController {
 
   @Post('incorporations')
   @ApiOperation({ summary: 'Incorpora um comentário XOR um anexo na task vinculada' })
-  incorporate(
+  async incorporate(
     @CurrentOrg('id') orgId: string,
     @Param('conversationId') conversationId: string,
     @Headers('idempotency-key') idempotencyKey: string,
     @Body() dto: IncorporateWorkbenchDto,
+    @CurrentChannelAccess() access: ChannelAccess,
   ) {
+    await this.channelAccess.assertConversationAccess(access, conversationId, orgId);
     return this.service.incorporateWorkbench(orgId, conversationId, idempotencyKey, dto);
   }
 }
