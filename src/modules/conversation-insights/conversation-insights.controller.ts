@@ -1,5 +1,4 @@
-import type { Response } from 'express';
-import { Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { CurrentChannelAccess, CurrentOrg } from '../../common/decorators';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
@@ -34,8 +33,8 @@ export class ConversationInsightsController {
   }
 
   @Get('summary')
-  async summary(@Param('id') id: string, @CurrentOrg('id') org: string, @CurrentChannelAccess() access: ChannelAccess, @Res() response: Response) {
-    return response.json(await this.service.getSummary(id, org, access));
+  summary(@Param('id') id: string, @CurrentOrg('id') org: string, @CurrentChannelAccess() access: ChannelAccess) {
+    return this.service.getSummary(id, org, access);
   }
 
   @Post('summary')

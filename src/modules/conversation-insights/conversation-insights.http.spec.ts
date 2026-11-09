@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { INestApplication, ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import { AddressInfo } from 'net';
+import { ResponseInterceptor } from '../../common/interceptors/response.interceptor';
 import { ConversationInsightsController } from './conversation-insights.controller';
 import { ConversationInsightsService } from './conversation-insights.service';
 import { JwtAuthGuard, OrgGuard, RolesGuard } from '../../common/guards';
@@ -21,6 +22,7 @@ describe('Conversation insights HTTP routes', () => {
         return true;
       } }).overrideGuard(OrgGuard).useValue({ canActivate: () => true }).overrideGuard(RolesGuard).useValue({ canActivate: () => true }).compile();
     app = module.createNestApplication();
+    app.useGlobalInterceptors(new ResponseInterceptor()); // mesmo envelope { data, meta } de produção (main.ts)
     await app.listen(0, '127.0.0.1'); base = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;
   });
   beforeEach(() => {
@@ -36,12 +38,21 @@ describe('Conversation insights HTTP routes', () => {
     expect((await fetch(`${base}/conversations/c1${path}`, { headers: { authorization: 'test', 'x-test-org': 'other' } })).status).toBe(404);
     expect((await fetch(`${base}/conversations/c1${path}`, { headers: { authorization: 'test', 'x-test-channel': 'other' } })).status).toBe(403);
   });
-  it('exposes search, attachment, meeting and summary empty contracts', async () => {
+  it('exposes search, attachment, meeting and summary empty contracts in the production { data, meta } envelope', async () => {
     const headers = { authorization: 'test' };
-    expect(await (await fetch(`${base}/conversations/c1/messages/search?q=ab`, { headers })).json()).toEqual({ items: [], nextCursor: null });
-    expect(await (await fetch(`${base}/conversations/c1/attachments`, { headers })).json()).toEqual({ items: [], nextCursor: null });
-    expect(await (await fetch(`${base}/conversations/c1/meetings`, { headers })).json()).toEqual({ connected: false, items: [] });
-    const summary = await fetch(`${base}/conversations/c1/summary`, { headers }); expect(summary.status).toBe(200); expect(await summary.json()).toBeNull();
+    expect((await (await fetch(`${base}/conversations/c1/messages/search?q=ab`, { headers })).json()).data).toEqual({ items: [], nextCursor: null });
+    expect((await (await fetch(`${base}/conversations/c1/attachments`, { headers })).json()).data).toEqual({ items: [], nextCursor: null });
+    expect((await (await fetch(`${base}/conversations/c1/meetings`, { headers })).json()).data).toEqual({ connected: false, items: [] });
+    const summary = await fetch(`${base}/conversations/c1/summary`, { headers }); expect(summary.status).toBe(200);
+    const body = await summary.json(); expect(body).toEqual({ data: null, meta: { timestamp: expect.any(String) } });
+  });
+  it('GET summary with a saved summary returns it under data', async () => {
+    const saved = { text: 'Resumo', generatedAt: '2026-11-09T00:00:00.000Z' };
+    const spy = jest.spyOn(ConversationInsightsService.prototype, 'getSummary').mockResolvedValueOnce(saved as never);
+    try {
+      const res = await fetch(`${base}/conversations/c1/summary`, { headers: { authorization: 'test' } });
+      expect(res.status).toBe(200); expect(await res.json()).toEqual({ data: saved, meta: { timestamp: expect.any(String) } });
+    } finally { spy.mockRestore(); }
   });
   it('validates query and body at the HTTP boundary', async () => {
     const headers = { authorization: 'test', 'content-type': 'application/json' };
