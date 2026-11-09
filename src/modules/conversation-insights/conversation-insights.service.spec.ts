@@ -102,6 +102,14 @@ describe('Conversation insights — SPEC-023', () => {
     expect(db.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 200, where: expect.objectContaining({ conversationId: 'c1' }) }));
     expect(db.$executeRaw).toHaveBeenCalledTimes(2);
   });
+  it('uses the Qwen production model (qwen3.7-max), not qwen-turbo, when the resolved provider is QWEN', async () => {
+    const { db, llm } = setup(); db.message.findMany.mockResolvedValue([message()]);
+    const resolver = { resolveForLlm: jest.fn().mockResolvedValue({ provider: 'QWEN' }) };
+    const qwenService = new ConversationInsightsService(db as never, new ChannelAccessService(db as never), {} as never, llm as never, resolver as never);
+    await qwenService.generateSummary('c1', 'org1', 'ALL', { force: true });
+    const [provider, req] = llm.completeWithProvider.mock.calls[0] as unknown as [string, { modelId: string }];
+    expect(provider).toBe('QWEN'); expect(req.modelId).toBe('qwen3.7-max'); expect(req.modelId).not.toBe('qwen-turbo');
+  });
   it('rate limit cannot be bypassed with force', async () => {
     const { service, db, llm } = setup(); db.message.findMany.mockResolvedValue([message()]); db.$executeRaw.mockResolvedValue(0);
     await expect(service.generateSummary('c1', 'org1', 'ALL', { force: true })).rejects.toMatchObject({ status: 429 }); expect(llm.completeWithProvider).not.toHaveBeenCalled();

@@ -6,6 +6,7 @@ import { assertNotMergedExtra } from '../messaging/conversations/merged-conversa
 import { CalendarService } from '../calendar/calendar.service';
 import { AiLlmRouterService } from '../ai-agents/providers/ai-llm-router.service';
 import { ProviderResolverService } from '../ai-agents/providers/provider-resolver.service';
+import { QwenLlmAdapter } from '../ai-agents/providers/qwen-llm.adapter';
 
 type PageQuery = { limit?: string; before?: string };
 type Sections = { assunto: string; situacao: string; pendencias: string; proximoPasso: string };
@@ -14,7 +15,7 @@ const orderDesc = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
 const kinds = ['image', 'video', 'audio', 'document'] as const;
 const cheapModels: Record<AiProvider, string> = {
   ANTHROPIC: 'claude-haiku-4-5', OPENAI: 'gpt-4o-mini', GEMINI: 'gemini-2.5-flash',
-  KIMI: 'kimi-k2.6', ZAI: 'glm-4.5-flash', FUGU: 'fugu-ultra', QWEN: 'qwen-turbo',
+  KIMI: 'kimi-k2.6', ZAI: 'glm-4.5-flash', FUGU: 'fugu-ultra', QWEN: QwenLlmAdapter.DEFAULT_MODEL,
 };
 export function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
