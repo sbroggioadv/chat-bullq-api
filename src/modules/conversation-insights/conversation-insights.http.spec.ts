@@ -46,6 +46,19 @@ describe('Conversation insights HTTP routes', () => {
     const summary = await fetch(`${base}/conversations/c1/summary`, { headers }); expect(summary.status).toBe(200);
     const body = await summary.json(); expect(body).toEqual({ data: null, meta: { timestamp: expect.any(String) } });
   });
+  it.each(['received', 'sent'])('filters attachment origin %s in the query', async origin => {
+    const res = await fetch(`${base}/conversations/c1/attachments?origin=${origin}&q=contrato&kind=document`, { headers: { authorization: 'test' } });
+    expect(res.status).toBe(200);
+    expect(db.message.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: expect.objectContaining({
+      direction: origin === 'received' ? 'INBOUND' : 'OUTBOUND',
+      content: { path: ['fileName'], string_contains: 'contrato', mode: 'insensitive' },
+      type: { in: ['DOCUMENT'] },
+    }) }));
+  });
+  it.each(['invalid', '', 'received&origin=sent'])('rejects invalid attachment origin %s with HTTP 400', async origin => {
+    const res = await fetch(`${base}/conversations/c1/attachments?origin=${origin}`, { headers: { authorization: 'test' } });
+    expect(res.status).toBe(400);
+  });
   it('GET summary with a saved summary returns it under data', async () => {
     const saved = { text: 'Resumo', generatedAt: '2026-11-09T00:00:00.000Z' };
     const spy = jest.spyOn(ConversationInsightsService.prototype, 'getSummary').mockResolvedValueOnce(saved as never);

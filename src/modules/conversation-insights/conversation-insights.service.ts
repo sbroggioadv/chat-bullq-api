@@ -135,14 +135,21 @@ export class ConversationInsightsService {
     return { items: [...older.reverse(), target, ...newer] };
   }
 
-  async attachments(id: string, org: string, access: ChannelAccess, query: PageQuery & { kind?: string }) {
+  async attachments(id: string, org: string, access: ChannelAccess, query: PageQuery & { kind?: string; q?: string; origin?: string }) {
     await this.conversation(id, org, access);
     const kind = query.kind ?? 'all';
     if (kind !== 'all' && !kinds.includes(kind as typeof kinds[number])) throw new BadRequestException('kind inválido');
+    if (query.origin !== undefined && query.origin !== 'received' && query.origin !== 'sent') throw new BadRequestException('origin inválido');
+    if (query.q !== undefined && typeof query.q !== 'string') throw new BadRequestException('q deve ser texto');
+    const q = query.q?.trim();
+    const filters: Prisma.MessageWhereInput = {
+      ...(query.origin !== undefined ? { direction: query.origin === 'received' ? 'INBOUND' : 'OUTBOUND' } : {}),
+      ...(q ? { content: { path: ['fileName'], string_contains: q, mode: 'insensitive' } } : {}),
+    };
     const limit = limitValue(query.limit);
     const boundary = await this.boundary(id, org, query.before);
     const types = (kind === 'all' ? kinds : [kind]).map(k => k.toUpperCase() as MessageContentType);
-    const rows = await this.prisma.message.findMany({ where: { ...this.where(id, org), ...boundary, type: { in: types } }, orderBy: orderDesc, take: limit + 1 });
+    const rows = await this.prisma.message.findMany({ where: { ...this.where(id, org), ...boundary, ...filters, type: { in: types } }, orderBy: orderDesc, take: limit + 1 });
     return { items: rows.slice(0, limit).map(row => {
       const c = jsonObject(row.content);
       const size = c.sizeBytes ?? c.fileSize ?? c.size;
