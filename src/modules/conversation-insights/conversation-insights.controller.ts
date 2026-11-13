@@ -23,7 +23,7 @@ export class ConversationInsightsController {
   }
 
   @Get('attachments')
-  attachments(@Param('id') id: string, @CurrentOrg('id') org: string, @CurrentChannelAccess() access: ChannelAccess, @Query() query: { kind?: string; limit?: string; before?: string }) {
+  attachments(@Param('id') id: string, @CurrentOrg('id') org: string, @CurrentChannelAccess() access: ChannelAccess, @Query() query: { kind?: string; q?: string; origin?: string; limit?: string; before?: string }) {
     return this.service.attachments(id, org, access, query);
   }
 
