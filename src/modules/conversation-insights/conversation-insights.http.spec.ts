@@ -59,6 +59,12 @@ describe('Conversation insights HTTP routes', () => {
     const res = await fetch(`${base}/conversations/c1/attachments?origin=${origin}`, { headers: { authorization: 'test' } });
     expect(res.status).toBe(400);
   });
+  it.each([200, 201])('validates attachment search length %s at the HTTP boundary', async length => {
+    db.message.findMany.mockClear();
+    const res = await fetch(`${base}/conversations/c1/attachments?q=${'a'.repeat(length)}`, { headers: { authorization: 'test' } });
+    expect(res.status).toBe(length === 200 ? 200 : 400);
+    if (length > 200) expect(db.message.findMany).not.toHaveBeenCalled();
+  });
   it('GET summary with a saved summary returns it under data', async () => {
     const saved = { text: 'Resumo', generatedAt: '2026-11-09T00:00:00.000Z' };
     const spy = jest.spyOn(ConversationInsightsService.prototype, 'getSummary').mockResolvedValueOnce(saved as never);

@@ -141,7 +141,8 @@ export class ConversationInsightsService {
     if (kind !== 'all' && !kinds.includes(kind as typeof kinds[number])) throw new BadRequestException('kind inválido');
     if (query.origin !== undefined && query.origin !== 'received' && query.origin !== 'sent') throw new BadRequestException('origin inválido');
     if (query.q !== undefined && typeof query.q !== 'string') throw new BadRequestException('q deve ser texto');
-    const q = query.q?.trim();
+    if (query.q !== undefined && query.q.length > 200) throw new BadRequestException('q deve ter no máximo 200 caracteres');
+    const q = query.q?.trim().replace(/[\\%_]/g, '\\$&');
     const filters: Prisma.MessageWhereInput = {
       ...(query.origin !== undefined ? { direction: query.origin === 'received' ? 'INBOUND' : 'OUTBOUND' } : {}),
       ...(q ? { content: { path: ['fileName'], string_contains: q, mode: 'insensitive' } } : {}),

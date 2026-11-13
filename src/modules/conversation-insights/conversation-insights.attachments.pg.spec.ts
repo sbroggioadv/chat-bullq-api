@@ -24,6 +24,7 @@ pgSuite('Attachment filters on disposable PostgreSQL', () => {
       { fileName: 'contrato.png', direction: 'INBOUND', type: 'IMAGE' },
       { fileName: 'invoice.pdf', direction: 'OUTBOUND', type: 'DOCUMENT' },
       { fileName: null, direction: 'INBOUND', type: 'IMAGE' },
+      { fileName: '50%_back\\slash.pdf', direction: 'OUTBOUND', type: 'DOCUMENT' },
     ] as const;
     for (const [index, fixture] of fixtures.entries()) {
       ids.push((await pg.message.create({ data: { conversationId: conversation, direction: fixture.direction, type: fixture.type, content: { fileName: fixture.fileName }, createdAt: new Date(1700000000000 + index * 1000) } })).id);
@@ -39,9 +40,13 @@ pgSuite('Attachment filters on disposable PostgreSQL', () => {
     const result = await list({ q: 'contrato' });
     expect(result.items.map(item => item.messageId)).toEqual([ids[2], ids[1], ids[0]]);
   });
+  it.each(['%', '_', '\\'])('matches %s literally in the filename', async q => {
+    const result = await list({ q });
+    expect(result.items.map(item => item.messageId)).toEqual([ids[5]]);
+  });
   it.each(['received', 'sent'] as const)('filters %s by message direction', async origin => {
     const result = await list({ origin });
-    expect(result.items.map(item => item.messageId)).toEqual(origin === 'received' ? [ids[4], ids[2], ids[0]] : [ids[3], ids[1]]);
+    expect(result.items.map(item => item.messageId)).toEqual(origin === 'received' ? [ids[4], ids[2], ids[0]] : [ids[5], ids[3], ids[1]]);
   });
   it('combines all filters before applying the page limit and cursor', async () => {
     const query = { q: 'contrato', origin: 'received', kind: 'document', limit: '1' };
@@ -56,7 +61,7 @@ pgSuite('Attachment filters on disposable PostgreSQL', () => {
   it('keeps the unfiltered list, metadata and media route unchanged', async () => {
     const result = await list({});
     expect(result.items.map(item => item.messageId)).toEqual([...ids].reverse());
-    expect(result.items[4]).toMatchObject({ fileName: 'ConTrAtO.pdf', mediaPath: `/messages/${ids[0]}/media`, direction: 'INBOUND' });
+    expect(result.items[5]).toMatchObject({ fileName: 'ConTrAtO.pdf', mediaPath: `/messages/${ids[0]}/media`, direction: 'INBOUND' });
     expect(result.nextCursor).toBeNull();
   });
 });
