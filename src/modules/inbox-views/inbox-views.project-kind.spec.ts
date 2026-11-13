@@ -25,7 +25,7 @@ describe('saved inbox projectKind', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it.each(['MENTORSHIP', 'ANY', undefined])(
+  it.each(['PROJECT', 'MENTORSHIP', 'ANY', undefined])(
     'propaga %s do controller até findInbox e preserva os filtros salvos',
     async (projectKind) => {
       await expect(request(projectKind)).resolves.toBe(result);

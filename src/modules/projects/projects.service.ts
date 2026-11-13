@@ -391,7 +391,7 @@ export class ProjectsService {
 
   async resolveFilter(
     organizationId: string,
-    filter: { hoppeId?: string; responsibleUserId?: string; status?: string; kind?: 'ANY' | 'MENTORSHIP' },
+    filter: { hoppeId?: string; responsibleUserId?: string; status?: string; kind?: 'ANY' | 'PROJECT' | 'MENTORSHIP' },
   ): Promise<{ representativeIds: string[]; memberChannelIds: string[] }> {
     if (filter.kind) {
       const links = await this.prisma.projectConversation.findMany({
@@ -403,18 +403,25 @@ export class ProjectsService {
         where: { organizationId, deletedAt: null, groupJid: { not: null } },
         include: DETAIL_INCLUDE, orderBy: { updatedAt: 'desc' },
       });
+      const matchesKind = (project: ReturnType<ProjectsService['toDetail']>) =>
+        filter.kind === 'ANY' || project.kind === filter.kind;
+      const explicitIds = new Set(links.map(link => link.conversationId));
       const linked = new Map<string, { project: ReturnType<ProjectsService['toDetail']>; channelId: string }>();
-      for (const link of links) if (!linked.has(link.conversationId)) linked.set(link.conversationId, { project: this.toDetail(link.project), channelId: link.conversation.channelId });
+      for (const link of links) {
+        const project = this.toDetail(link.project);
+        if (matchesKind(project) && !linked.has(link.conversationId)) {
+          linked.set(link.conversationId, { project, channelId: link.conversation.channelId });
+        }
+      }
       const legacy = new Map<string, ReturnType<ProjectsService['toDetail']>>();
       for (const project of projects) if (project.groupJid && !legacy.has(project.groupJid)) legacy.set(project.groupJid, this.toDetail(project));
       const jids = [...legacy.keys()];
       const groups = await findGroupsByJids(this.prisma, organizationId, jids);
       for (const group of groups) {
         const project = legacy.get(group.jid);
-        if (project && !linked.has(group.id)) linked.set(group.id, { project, channelId: group.channelId });
+        if (project && !explicitIds.has(group.id) && matchesKind(project)) linked.set(group.id, { project, channelId: group.channelId });
       }
       const selected = [...linked].filter(([, { project }]) =>
-        (filter.kind !== 'MENTORSHIP' || project.kind === 'MENTORSHIP') &&
         (!filter.hoppeId || project.hoppeId === filter.hoppeId) &&
         (!filter.responsibleUserId || project.responsibleUserId === filter.responsibleUserId) &&
         (!filter.status || project.status === filter.status));
