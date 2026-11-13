@@ -116,7 +116,7 @@ export class ConversationsService {
       hoppeId?: string;
       responsibleUserId?: string;
       projectStatus?: string;
-      projectKind?: 'ANY' | 'MENTORSHIP';
+      projectKind?: 'ANY' | 'PROJECT' | 'MENTORSHIP';
     },
     page: number,
     limit: number,

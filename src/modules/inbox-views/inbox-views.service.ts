@@ -249,7 +249,7 @@ export class InboxViewsService {
       tagIds?: string;
       assignedToId?: string;
       stuck?: string;
-      projectKind?: 'ANY' | 'MENTORSHIP';
+      projectKind?: 'ANY' | 'PROJECT' | 'MENTORSHIP';
     },
   ) {
     const view = await this.findOne(id, organizationId, userId);

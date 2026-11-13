@@ -60,6 +60,7 @@ export class ConversationsController {
     description:
       'CSV de IDs de tags. OR — devolve conversas que tenham QUALQUER uma das tags (na conversa OU no contato).',
   })
+  @ApiQuery({ name: 'projectKind', required: false, enum: ['ANY', 'PROJECT', 'MENTORSHIP'] })
   findInbox(
     @CurrentOrg('id') orgId: string,
     @CurrentUser('id') userId: string,
@@ -82,7 +83,7 @@ export class ConversationsController {
     @Query('ids') ids?: string,
     @Query('projectKind') projectKind?: string,
   ) {
-    if (projectKind !== undefined && projectKind !== 'ANY' && projectKind !== 'MENTORSHIP') throw new BadRequestException('projectKind inválido');
+    if (projectKind !== undefined && projectKind !== 'ANY' && projectKind !== 'PROJECT' && projectKind !== 'MENTORSHIP') throw new BadRequestException('projectKind inválido');
     const conversationIds = ids === undefined ? undefined : ids.split(',').map((id) => id.trim());
     if (conversationIds && (conversationIds.length > 20 || conversationIds.some((id) => !/^c[a-z0-9]{24}$/.test(id)))) {
       throw new BadRequestException('ids inválidos');
@@ -116,7 +117,7 @@ export class ConversationsController {
         responsibleUserId: responsibleUserId || undefined,
         projectStatus: projectStatus || undefined,
         conversationIds,
-        projectKind: projectKind as 'ANY' | 'MENTORSHIP' | undefined,
+        projectKind: projectKind as 'ANY' | 'PROJECT' | 'MENTORSHIP' | undefined,
       },
       parseInt(page || '1', 10),
       parseInt(limit || '20', 10),

@@ -87,7 +87,7 @@ export class InboxViewsController {
     summary:
       'List conversations matching this view filters. Query params layer ON TOP — view = baseline, params = override (mesma semântica do inbox geral).',
   })
-  @ApiQuery({ name: 'projectKind', required: false, enum: ['ANY', 'MENTORSHIP'] })
+  @ApiQuery({ name: 'projectKind', required: false, enum: ['ANY', 'PROJECT', 'MENTORSHIP'] })
   conversations(
     @Param('id') id: string,
     @CurrentOrg('id') orgId: string,
@@ -105,7 +105,7 @@ export class InboxViewsController {
     @Query('stuck') stuck?: string,
     @Query('projectKind') projectKind?: string,
   ) {
-    if (projectKind !== undefined && projectKind !== 'ANY' && projectKind !== 'MENTORSHIP') {
+    if (projectKind !== undefined && projectKind !== 'ANY' && projectKind !== 'PROJECT' && projectKind !== 'MENTORSHIP') {
       throw new BadRequestException('projectKind inválido');
     }
     return this.service.findConversations(
@@ -124,7 +124,7 @@ export class InboxViewsController {
         tagIds,
         assignedToId,
         stuck,
-        projectKind: projectKind as 'ANY' | 'MENTORSHIP' | undefined,
+        projectKind: projectKind as 'ANY' | 'PROJECT' | 'MENTORSHIP' | undefined,
       },
     );
   }
